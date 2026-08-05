@@ -42,6 +42,10 @@ function json(value, status = 200) {
   });
 }
 
+// Admission limits, until per-submitter quotas and backoff exist.
+const MAX_INFLIGHT_TOTAL = 12;
+const MAX_INFLIGHT_PER_OWNER = 2;
+
 function now() {
   return new Date().toISOString().replace(/\.\d+Z$/, "Z");
 }
@@ -180,6 +184,26 @@ async function completeSubmission(request, env) {
     ]), 403);
   }
 
+  // Anyone who can prove push access to any public repository can reach this
+  // point, including on a repository they created a minute ago. Verification
+  // is expensive and long-running, so admission is capped until real quotas
+  // exist. This is deliberately blunt: refusing a genuine submitter with a
+  // clear message is recoverable, exhausting the runners is not.
+  const inflight = await readState(env, "index/inflight.json");
+  const open = Array.isArray(inflight.value?.open) ? inflight.value.open : [];
+  const owner = viewer.owner?.login ?? "";
+  if (open.length >= MAX_INFLIGHT_TOTAL) {
+    return html(errorPage(env, "Palomar is at capacity", [
+      "Too many submissions are being verified right now. Please try again later.",
+    ]), 503);
+  }
+  if (open.filter((item) => item.owner === owner).length >= MAX_INFLIGHT_PER_OWNER) {
+    return html(errorPage(env, "You already have submissions in flight", [
+      `Palomar verifies at most ${MAX_INFLIGHT_PER_OWNER} submissions at a time from one owner.`,
+      "Wait for those to finish before submitting another.",
+    ]), 429);
+  }
+
   const id = newSubmissionId();
   const token = newAccessToken();
   const record = {
@@ -197,6 +221,13 @@ async function completeSubmission(request, env) {
     events: [{ at: now(), status: "verifying", note: "Mechanical verification dispatched" }],
   };
   await writeState(env, statePath(id, "state.json"), record, `Open submission ${id}`);
+  await writeState(
+    env,
+    "index/inflight.json",
+    { open: [...open, { id, owner, at: record.created_at }] },
+    `Admit ${id}`,
+    inflight.sha,
+  );
   await writeState(
     env,
     `index/tokens/${record.token_sha256}.json`,
@@ -241,6 +272,19 @@ async function refresh(env, entry) {
       ...record.events,
       { at: now(), status: next.status, note: `Verification ${run.conclusion}` },
     ];
+  }
+  if (next.status !== "verifying" && record.status === "verifying") {
+    const inflight = await readState(env, "index/inflight.json");
+    const open = Array.isArray(inflight.value?.open) ? inflight.value.open : [];
+    if (open.some((item) => item.id === record.id)) {
+      await writeState(
+        env,
+        "index/inflight.json",
+        { open: open.filter((item) => item.id !== record.id) },
+        `Release ${record.id}`,
+        inflight.sha,
+      );
+    }
   }
   if (JSON.stringify(next) !== JSON.stringify(record)) {
     await writeState(
