@@ -1,0 +1,13 @@
+{
+  "name": "palomar-server",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/",
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev"
+  },
+  "devDependencies": {
+    "wrangler": "^4.118.0"
+  }
+}
