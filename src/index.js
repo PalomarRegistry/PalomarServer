@@ -111,7 +111,7 @@ async function beginSubmission(request, env) {
       "Palomar records point at source anyone can inspect, so submissions must be public.",
     ]), 400);
   }
-  if (!(await resolveCommit(env.GITHUB_TOKEN, repositoryName, commit))) {
+  if (!(await resolveCommit(env.SUBMISSION_TOKEN, repositoryName, commit))) {
     return html(errorPage(env, "That commit is not in that repository", [
       `${commit} was not found in ${repositoryName}.`,
     ]), 400);
