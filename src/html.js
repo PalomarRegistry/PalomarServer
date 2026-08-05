@@ -155,10 +155,10 @@ export function statusPage(env) {
       <dl class="details" id="review-summary"></dl>
       <div id="review-body"></div>
       <div class="decision">
-        <button type="button" id="publish">Register this result</button>
+        <button type="button" id="register">Register this result</button>
         <button type="button" id="withdraw" class="secondary">Withdraw the submission</button>
       </div>
-      <p class="hint warning" id="publish-warning">
+      <p class="hint warning" id="register-warning">
         Registration is permanent. It puts the record, the review, and the
         repository and commit into the public registry, and Palomar records are
         append-only: a registered record is never removed. Withdrawing leaves no

@@ -110,32 +110,32 @@ test("the review is delivered only to whoever holds the access token", async () 
 
 test("publication consent is recorded, and only by the submitter", async () => {
   const { written } = stubState(await fixture());
-  const response = await worker.fetch(request("/publish", "POST"), ENV);
+  const response = await worker.fetch(request("/register", "POST"), ENV);
   assert.equal(response.status, 200);
   const state = written.find((item) => item.path.endsWith("state.json"));
-  assert.equal(state.value.publish_consent, true);
-  assert.equal(state.value.publish_consent_review_sha256, "f".repeat(64));
-  assert.match(state.value.publish_consent_at, /^\d{4}-\d{2}-\d{2}T/);
+  assert.equal(state.value.registration_consent, true);
+  assert.equal(state.value.registration_consent_review_sha256, "f".repeat(64));
+  assert.match(state.value.registration_consent_at, /^\d{4}-\d{2}-\d{2}T/);
   assert.equal(state.sha, `sha-${statePath("a1b2c3d4e5f6", "state.json")}`);
 });
 
 test("consent cannot be given before there is a review to consent to", async () => {
   const { written } = stubState(await fixture({ status: "awaiting-review" }));
-  const response = await worker.fetch(request("/publish", "POST"), ENV);
+  const response = await worker.fetch(request("/register", "POST"), ENV);
   assert.equal(response.status, 409);
   assert.equal(written.length, 0);
 });
 
 test("a withdrawn submission cannot then be published", async () => {
   const { written } = stubState(await fixture({ status: "withdrawn" }));
-  const response = await worker.fetch(request("/publish", "POST"), ENV);
+  const response = await worker.fetch(request("/register", "POST"), ENV);
   assert.equal(response.status, 409);
   assert.equal(written.length, 0);
 });
 
 test("consent is not forged by an anonymous request", async () => {
   const { written } = stubState(await fixture());
-  const response = await worker.fetch(request("/publish", "POST", ""), ENV);
+  const response = await worker.fetch(request("/register", "POST", ""), ENV);
   assert.equal(response.status, 404);
   assert.equal(written.length, 0);
 });
@@ -144,7 +144,7 @@ test("consent is refused when no review has been delivered", async () => {
   // Consent is to a particular review. A record in review-ready state that
   // carries no delivered digest is not something anyone can consent to.
   const { written } = stubState(await fixture({ review_sha256: undefined }));
-  const response = await worker.fetch(request("/publish", "POST"), ENV);
+  const response = await worker.fetch(request("/register", "POST"), ENV);
   assert.equal(response.status, 409);
   assert.equal(written.length, 0);
 });

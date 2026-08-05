@@ -21,7 +21,7 @@ assume:
 
 - **Public from the moment you submit:** the repository and commit.
   Verification runs in a public Actions workflow whose logs are public.
-- **Never public unless the author publishes:** the review, the decision, and
+- **Never public unless the author registers:** the review, the decision, and
   the submitter's identity.
 - **"Private" means not public, not confidential.** Reviews are readable by
   operators, GitHub, and the model provider, and are kept indefinitely.
@@ -69,9 +69,9 @@ pinned run id, so the name is not the trust boundary in either place.
 
 ## Consent
 
-Publication is the submitter's decision and nobody else's. `/publish` records
+Registration is the submitter's decision and nobody else's. `/register` records
 consent together with the digest of the review the submitter was shown, and the
-reviewer refuses to publish anything whose bytes differ, so a revised review
+reviewer refuses to register anything whose bytes differ, so a revised review
 needs fresh consent rather than inheriting the old. Withdrawing leaves no public
 trace of the review or the decision.
 
@@ -92,7 +92,7 @@ palomar-review list                                  # what is awaiting review
 palomar-review run --submission <id> --engine codex  # dry run; nothing changes
 palomar-review run --submission <id> --engine codex --apply   # deliver privately
 # the submitter decides, on their status page
-palomar-review publish --submission <id>             # only after consent
+palomar-review register --submission <id>             # only after consent
 palomar-review finalize --submission <id> --pr <n>   # after the database PR merges
 ```
 
