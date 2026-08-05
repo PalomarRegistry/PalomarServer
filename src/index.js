@@ -418,6 +418,39 @@ export default {
         await release(env, next.id);
         return json({ ok: true });
       }
+      if (request.method === "GET" && url.pathname === "/api/review") {
+        // The review goes to whoever holds the access token, and to nobody
+        // else. It is never rendered into a public page or a public repository.
+        const entry = await loadByToken(env, sessionToken(request));
+        if (!entry) return json({ error: "not found" }, 404);
+        const review = await readState(env, statePath(entry.record.id, "review.json"));
+        if (!review.value) return json({ error: "no review yet" }, 404);
+        return json(review.value);
+      }
+      if (request.method === "POST" && url.pathname === "/publish") {
+        const entry = await loadByToken(env, sessionToken(request));
+        if (!entry) return json({ error: "not found" }, 404);
+        if (TERMINAL.has(entry.record.status)) {
+          return json({ error: `already ${entry.record.status}` }, 409);
+        }
+        // Consent is only meaningful once the submitter can see what they
+        // would be publishing.
+        if (entry.record.status !== "review-ready") {
+          return json({ error: "there is no review to publish yet" }, 409);
+        }
+        if (entry.record.publish_consent === true) return json({ ok: true });
+        const next = {
+          ...entry.record,
+          publish_consent: true,
+          publish_consent_at: now(),
+          events: [...entry.record.events,
+                   { at: now(), status: entry.record.status,
+                     note: "The submitter asked for this result to be published" }],
+        };
+        await writeState(env, statePath(next.id, "state.json"), next,
+                         `Publication consent for ${next.id}`, entry.sha);
+        return json({ ok: true });
+      }
       if (request.method === "GET" && url.pathname === "/api/submission") {
         const entry = await loadByToken(env, sessionToken(request));
         if (!entry) return json({ error: "not found" }, 404);
@@ -429,6 +462,8 @@ export default {
           commit: record.commit,
           created_at: record.created_at,
           run: record.run ?? null,
+          publish_consent: record.publish_consent === true,
+          published_url: record.published_url ?? null,
           events: record.events,
         });
       }

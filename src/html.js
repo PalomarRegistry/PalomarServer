@@ -118,6 +118,28 @@ export function statusPage(env) {
     <dl class="details" id="details"></dl>
     <h2>Progress</h2>
     <ol class="events" id="events"></ol>
+
+    <section id="review-section" hidden>
+      <h2>Your editorial review</h2>
+      <p class="hint">
+        This review is private. Nobody but you and the Palomar operators can
+        read it, and it stays that way unless you choose to publish.
+      </p>
+      <dl class="details" id="review-summary"></dl>
+      <div id="review-body"></div>
+      <div class="decision">
+        <button type="button" id="publish">Publish this result</button>
+        <button type="button" id="withdraw" class="secondary">Withdraw the submission</button>
+      </div>
+      <p class="hint warning" id="publish-warning">
+        Publishing is permanent. It puts the record, the review, and the
+        repository and commit into the public registry, and Palomar records are
+        append-only: a published record is never removed. Withdrawing leaves no
+        public trace of the review or the decision.
+      </p>
+      <p class="hint" id="decision-status" role="status"></p>
+    </section>
+
     <section class="disclosure">
       <h2>Keep this page</h2>
       <p>

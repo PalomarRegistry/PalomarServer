@@ -5,6 +5,27 @@ const token = location.hash.replace(/^#/, "");
 const summary = document.getElementById("summary");
 const details = document.getElementById("details");
 const events = document.getElementById("events");
+const reviewSection = document.getElementById("review-section");
+const reviewSummary = document.getElementById("review-summary");
+const reviewBody = document.getElementById("review-body");
+const decisionStatus = document.getElementById("decision-status");
+const publishButton = document.getElementById("publish");
+const withdrawButton = document.getElementById("withdraw");
+
+const DECISIONS = {
+  accept: "Accepted",
+  revise: "Revision requested",
+  reject: "Not accepted",
+  escalate: "Escalated: a specialist review is needed",
+};
+
+const SCORE_LABELS = {
+  statement_alignment: "Statement alignment",
+  definition_fidelity: "Definition fidelity",
+  notability: "Notability",
+  literature: "Literature",
+  clarity: "Clarity",
+};
 
 const LABELS = {
   verifying: "Mechanically verifying your submission.",
@@ -15,13 +36,87 @@ const LABELS = {
   withdrawn: "Withdrawn.",
 };
 
-function row(term, value) {
+function row(term, value, target = details) {
   const dt = document.createElement("dt");
   dt.textContent = term;
   const dd = document.createElement("dd");
   if (value instanceof Node) dd.append(value); else dd.textContent = value;
-  details.append(dt, dd);
+  target.append(dt, dd);
 }
+
+/** Review text is set with textContent throughout: it is never parsed as HTML. */
+function paragraphs(heading, items) {
+  if (!items?.length) return;
+  const h = document.createElement("h3");
+  h.textContent = heading;
+  reviewBody.append(h);
+  const list = document.createElement("ul");
+  for (const item of items) {
+    const li = document.createElement("li");
+    li.textContent = String(item);
+    list.append(li);
+  }
+  reviewBody.append(list);
+}
+
+let reviewShown = false;
+
+async function showReview() {
+  if (reviewShown) return;
+  const response = await fetch("/api/review", { credentials: "same-origin" });
+  if (!response.ok) return;
+  const review = await response.json();
+  reviewShown = true;
+  reviewSummary.replaceChildren();
+  reviewBody.replaceChildren();
+  row("Decision", DECISIONS[review.decision] ?? review.decision, reviewSummary);
+  row("Reviewed", review.reviewed_at ?? "", reviewSummary);
+  row("Reviewer models", (review.reviewer_models ?? []).join(", "), reviewSummary);
+  for (const [key, label] of Object.entries(SCORE_LABELS)) {
+    if (review.scores?.[key] != null) row(label, `${review.scores[key]} of 5`, reviewSummary);
+  }
+  const summaryText = document.createElement("p");
+  summaryText.textContent = review.summary ?? "";
+  reviewBody.append(summaryText);
+  paragraphs("Requested changes", review.requested_changes);
+  paragraphs("Warnings", review.warnings);
+  reviewSection.hidden = false;
+  publishButton.hidden = review.decision !== "accept";
+}
+
+async function decide(button, path, confirmation) {
+  if (!window.confirm(confirmation)) return;
+  publishButton.disabled = true;
+  withdrawButton.disabled = true;
+  decisionStatus.textContent = "Working…";
+  const response = await fetch(path, { method: "POST", credentials: "same-origin" });
+  if (!response.ok) {
+    const problem = await response.json().catch(() => ({}));
+    decisionStatus.textContent = `That did not work: ${problem.error ?? response.status}`;
+    publishButton.disabled = false;
+    withdrawButton.disabled = false;
+    return;
+  }
+  decisionStatus.textContent = "Recorded.";
+  poll();
+}
+
+publishButton?.addEventListener("click", () =>
+  decide(
+    publishButton,
+    "/publish",
+    "Publishing is permanent. The record, the review, and your repository and " +
+      "commit become public, and Palomar records are never removed. Publish?",
+  ),
+);
+withdrawButton?.addEventListener("click", () =>
+  decide(
+    withdrawButton,
+    "/withdraw",
+    "Withdrawing ends this submission. Nothing about the review or the " +
+      "decision becomes public. Withdraw?",
+  ),
+);
 
 function link(href, text) {
   const a = document.createElement("a");
@@ -63,7 +158,24 @@ async function poll() {
     events.append(li);
   }
 
-  if (data.status === "verifying") setTimeout(poll, 6000);
+  if (data.status === "review-ready") {
+    await showReview();
+    if (data.publish_consent) {
+      decisionStatus.textContent =
+        "Publication is under way. The record appears once an operator merges it.";
+      publishButton.disabled = true;
+      withdrawButton.disabled = true;
+    }
+  } else {
+    reviewSection.hidden = data.status !== "published";
+  }
+  if (data.status === "published" && data.published_url) {
+    row("Registry record", link(data.published_url, data.published_url));
+  }
+
+  if (data.status === "verifying" || (data.status === "review-ready" && data.publish_consent)) {
+    setTimeout(poll, 6000);
+  }
 }
 
 (async () => {

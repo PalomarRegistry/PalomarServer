@@ -37,3 +37,9 @@ legend { font-weight: 600; padding: 0 .35rem; }
 .choice input { width: auto; margin-top: .3rem; }
 .hint.warning { color: #a33; }
 @media (prefers-color-scheme: dark) { .hint.warning { color: #f0a; } }
+.decision { display: flex; flex-wrap: wrap; gap: .75rem; }
+button.secondary { color: inherit; background: transparent; border: 1px solid var(--line); }
+button[disabled] { opacity: .5; cursor: default; }
+#review-body h3 { font-size: 1rem; margin: 1.25rem 0 .25rem; }
+#review-body ul { padding-left: 1.1rem; }
+#review-body li { margin: .4rem 0; }
