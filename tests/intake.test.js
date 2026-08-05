@@ -118,3 +118,17 @@ test("nothing in the browser can block a submission", async () => {
   const disabled = [...script.matchAll(/(\w+)\.disabled\s*=/g)].map((m) => m[1]);
   assert.deepEqual(disabled, ["evidence"]);
 });
+
+test("one word for one thing, in the code as well as the copy", async () => {
+  // "Publication" invites the comparison with a journal that the registry
+  // exists not to be. Keeping it in field names and routes while the copy says
+  // registration is how a codebase ends up with two words for one idea, and
+  // how a field gets read under one name and written under the other.
+  const files = ["../src/index.js", "../src/html.js", "../src/submission.js",
+                 "../src/github.js", "../public/status.js", "../public/intake.js"];
+  for (const file of files) {
+    const source = await readFile(new URL(file, import.meta.url), "utf8");
+    const stray = [...source.matchAll(/\b\w*[Pp]ublish\w*|\b\w*[Pp]ublicat\w*/g)].map((m) => m[0]);
+    assert.deepEqual(stray, [], `${file} still says ${[...new Set(stray)].join(", ")}`);
+  }
+});

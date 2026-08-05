@@ -58,7 +58,7 @@ const RELATIONSHIP_LABELS = {
 const MAX_INFLIGHT_TOTAL = 12;
 const MAX_INFLIGHT_PER_OWNER = 2;
 
-const TERMINAL = new Set(["published", "withdrawn", "verification-failed"]);
+const TERMINAL = new Set(["registered", "withdrawn", "verification-failed"]);
 
 /** The one-time exchange: fragment in, short-lived host-only cookie out. */
 function sessionCookie(token) {
@@ -475,34 +475,34 @@ export default {
         if (!review.value) return json({ error: "no review yet" }, 404);
         return json(review.value);
       }
-      if (request.method === "POST" && url.pathname === "/publish") {
+      if (request.method === "POST" && url.pathname === "/register") {
         const entry = await loadByToken(env, sessionToken(request));
         if (!entry) return json({ error: "not found" }, 404);
         if (TERMINAL.has(entry.record.status)) {
           return json({ error: `already ${entry.record.status}` }, 409);
         }
         // Consent is only meaningful once the submitter can see what they
-        // would be publishing.
+        // would be registering.
         if (entry.record.status !== "review-ready") {
-          return json({ error: "there is no review to publish yet" }, 409);
+          return json({ error: "there is no review to register yet" }, 409);
         }
         // Consent is to the review the submitter has in front of them. The
-        // reviewer refuses to publish anything whose digest differs, so a
+        // reviewer refuses to register anything whose digest differs, so a
         // revised review requires fresh consent rather than inheriting this.
         const reviewed = entry.record.review_sha256;
-        if (!reviewed) return json({ error: "there is no review to publish yet" }, 409);
-        if (entry.record.publish_consent === true) return json({ ok: true });
+        if (!reviewed) return json({ error: "there is no review to register yet" }, 409);
+        if (entry.record.registration_consent === true) return json({ ok: true });
         const next = {
           ...entry.record,
-          publish_consent: true,
-          publish_consent_review_sha256: reviewed,
-          publish_consent_at: now(),
+          registration_consent: true,
+          registration_consent_review_sha256: reviewed,
+          registration_consent_at: now(),
           events: [...entry.record.events,
                    { at: now(), status: entry.record.status,
-                     note: "The submitter asked for this result to be published" }],
+                     note: "The submitter asked for this result to be registered" }],
         };
         await writeState(env, statePath(next.id, "state.json"), next,
-                         `Publication consent for ${next.id}`, entry.sha);
+                         `Registration consent for ${next.id}`, entry.sha);
         return json({ ok: true });
       }
       if (request.method === "GET" && url.pathname === "/api/submission") {
@@ -516,8 +516,8 @@ export default {
           commit: record.commit,
           created_at: record.created_at,
           run: record.run ?? null,
-          publish_consent: record.publish_consent === true,
-          published_url: record.published_url ?? null,
+          registration_consent: record.registration_consent === true,
+          registered_url: record.registered_url ?? null,
           events: record.events,
         });
       }

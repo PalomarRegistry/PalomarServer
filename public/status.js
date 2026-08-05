@@ -9,7 +9,7 @@ const reviewSection = document.getElementById("review-section");
 const reviewSummary = document.getElementById("review-summary");
 const reviewBody = document.getElementById("review-body");
 const decisionStatus = document.getElementById("decision-status");
-const publishButton = document.getElementById("publish");
+const registerButton = document.getElementById("register");
 const withdrawButton = document.getElementById("withdraw");
 
 const DECISIONS = {
@@ -32,7 +32,7 @@ const LABELS = {
   "verification-failed": "Mechanical verification did not pass.",
   "awaiting-review": "Verification passed. Waiting for editorial review.",
   "review-ready": "Your editorial review is ready.",
-  published: "Registered in the registry.",
+  registered: "Registered in the registry.",
   withdrawn: "Withdrawn.",
 };
 
@@ -81,19 +81,19 @@ async function showReview() {
   paragraphs("Requested changes", review.requested_changes);
   paragraphs("Warnings", review.warnings);
   reviewSection.hidden = false;
-  publishButton.hidden = review.decision !== "accept";
+  registerButton.hidden = review.decision !== "accept";
 }
 
 async function decide(button, path, confirmation) {
   if (!window.confirm(confirmation)) return;
-  publishButton.disabled = true;
+  registerButton.disabled = true;
   withdrawButton.disabled = true;
   decisionStatus.textContent = "Working…";
   const response = await fetch(path, { method: "POST", credentials: "same-origin" });
   if (!response.ok) {
     const problem = await response.json().catch(() => ({}));
     decisionStatus.textContent = `That did not work: ${problem.error ?? response.status}`;
-    publishButton.disabled = false;
+    registerButton.disabled = false;
     withdrawButton.disabled = false;
     return;
   }
@@ -101,10 +101,10 @@ async function decide(button, path, confirmation) {
   poll();
 }
 
-publishButton?.addEventListener("click", () =>
+registerButton?.addEventListener("click", () =>
   decide(
-    publishButton,
-    "/publish",
+    registerButton,
+    "/register",
     "Registration is permanent. The record, the review, and your repository " +
       "and commit become public, and Palomar records are never removed. Register?",
   ),
@@ -160,20 +160,20 @@ async function poll() {
 
   if (data.status === "review-ready") {
     await showReview();
-    if (data.publish_consent) {
+    if (data.registration_consent) {
       decisionStatus.textContent =
         "Registration is under way. The record appears once the change is merged.";
-      publishButton.disabled = true;
+      registerButton.disabled = true;
       withdrawButton.disabled = true;
     }
   } else {
-    reviewSection.hidden = data.status !== "published";
+    reviewSection.hidden = data.status !== "registered";
   }
-  if (data.status === "published" && data.published_url) {
-    row("Registry record", link(data.published_url, data.published_url));
+  if (data.status === "registered" && data.registered_url) {
+    row("Registry record", link(data.registered_url, data.registered_url));
   }
 
-  if (data.status === "verifying" || (data.status === "review-ready" && data.publish_consent)) {
+  if (data.status === "verifying" || (data.status === "review-ready" && data.registration_consent)) {
     setTimeout(poll, 6000);
   }
 }

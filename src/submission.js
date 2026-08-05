@@ -3,7 +3,7 @@
  *
  * Two identifiers, deliberately distinct. The submission id names a directory
  * in the state repository and is not secret. The access token is what lets
- * whoever holds it see a private review and publish or withdraw, so it never
+ * whoever holds it see a private review and register or withdraw, so it never
  * appears in the state repository, only its digest does, and it never reaches
  * the server in a URL path where it would land in request logs.
  */
@@ -56,7 +56,7 @@ export const STATUSES = {
   "verification-failed": "Mechanical verification did not pass",
   "awaiting-review": "Waiting for editorial review",
   "review-ready": "The editorial review is ready for you",
-  published: "Published to the registry",
+  registered: "Registered in the registry",
   withdrawn: "Withdrawn",
 };
 
