@@ -20,9 +20,13 @@ import {
 import { page, intakeForm, statusPage, errorPage } from "./html.js";
 
 const SECURITY_HEADERS = {
+  // The intake form checks the repository, the commit, and a cited Palomar ID
+  // straight from the browser, so those two origins are reachable and nothing
+  // else is. Neither answer is trusted: the server checks all three again.
   "content-security-policy":
     "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; " +
-    "connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+    "connect-src 'self' https://api.github.com https://raw.githubusercontent.com; " +
+    "base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
   "referrer-policy": "no-referrer",
   "x-content-type-options": "nosniff",
   "cache-control": "no-store",

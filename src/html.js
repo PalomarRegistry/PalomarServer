@@ -39,34 +39,36 @@ export function intakeForm(env, values = {}) {
 
     <section class="disclosure">
       <h2>What is public, and what is not</h2>
-      <ul>
-        <li>
-          <strong>Public from the moment you submit:</strong> your repository and commit.
-          Verification runs in a public GitHub Actions workflow, and its logs are public.
-          Whether you later publish is inferable from the registry.
-        </li>
-        <li>
-          <strong>Never public unless you publish:</strong> the review, the decision, and
-          your identity as submitter.
-        </li>
-        <li>
-          <strong>"Private" means not public, not confidential.</strong> Reviews are readable
-          by Palomar operators, by GitHub, and by the model provider, and are kept
-          indefinitely. Do not put anything sensitive in the notes field.
-        </li>
-      </ul>
+      <p>
+        The fact that this repository and commit have been submitted is
+        permanently and publicly recorded. Your identity, the review, and the
+        decision will not be public until you have seen them and decided to go
+        ahead with publication.
+      </p>
+      <p>
+        The reviews are not secret: they may be audited and acted on by the
+        Palomar moderation team.
+      </p>
     </section>
 
     <form method="post" action="/submit">
       <label for="repository">Repository</label>
-      <input id="repository" name="repository" required
+      <input id="repository" name="repository" required autocomplete="off"
+             aria-describedby="repository-hint"
              placeholder="owner/formalization" value="${escape(values.repository)}">
-      <p class="hint">A public GitHub repository, as <code>owner/name</code> or a URL.</p>
+      <p class="hint" id="repository-hint">
+        <span class="field-status" id="repository-status" aria-hidden="true"></span>
+        <span id="repository-message">A public GitHub repository, as <code>owner/name</code> or a URL.</span>
+      </p>
 
       <label for="commit">Commit</label>
-      <input id="commit" name="commit" required pattern="[0-9a-fA-F]{40}"
+      <input id="commit" name="commit" required pattern="[0-9a-fA-F]{40}" autocomplete="off"
+             aria-describedby="commit-hint"
              placeholder="0000000000000000000000000000000000000000" value="${escape(values.commit)}">
-      <p class="hint">A full 40-character SHA. Branches and tags move; a record must not.</p>
+      <p class="hint" id="commit-hint">
+        <span class="field-status" id="commit-status" aria-hidden="true"></span>
+        <span id="commit-message">A full 40-character SHA. Branches and tags move; a record must not.</span>
+      </p>
 
       <fieldset>
         <legend>Your relationship to this formalization</legend>
@@ -84,30 +86,44 @@ export function intakeForm(env, values = {}) {
         </p>
       </fieldset>
 
-      <label for="authorization_evidence">
-        How that approval was given <span class="optional">optional</span>
-      </label>
-      <textarea id="authorization_evidence" name="authorization_evidence" rows="3"></textarea>
-      <p class="hint warning">
-        Whatever you write here is published in the permanent record and cannot
-        be withdrawn. Do not name anyone who has not agreed to be named, and do
-        not paste private correspondence.
-      </p>
+      <div class="dependent" id="approval-evidence">
+        <label for="authorization_evidence">
+          How that approval was given <span class="optional">optional</span>
+        </label>
+        <textarea id="authorization_evidence" name="authorization_evidence" rows="3"
+                  aria-describedby="authorization_evidence-hint"></textarea>
+        <p class="hint warning" id="authorization_evidence-hint">
+          Published permanently and cannot be withdrawn. Do not name anyone who
+          has not agreed to be named.
+        </p>
+      </div>
 
       <label for="existing_id">Existing Palomar ID <span class="optional">optional</span></label>
-      <input id="existing_id" name="existing_id" placeholder="PALOMAR-2026-07-29-000123"
+      <input id="existing_id" name="existing_id" autocomplete="off"
+             pattern="PALOMAR-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{6}"
+             aria-describedby="existing_id-hint"
+             placeholder="PALOMAR-2026-07-29-000123"
              value="${escape(values.existing_id)}">
-      <p class="hint">Only to publish a new version of a result already in the registry.</p>
+      <p class="hint" id="existing_id-hint">
+        <span class="field-status" id="existing_id-status" aria-hidden="true"></span>
+        <span id="existing_id-message">Only to publish a new version of a result already in the registry.</span>
+      </p>
 
       <label for="context">Notes for the reviewer <span class="optional">optional</span></label>
-      <textarea id="context" name="context" rows="4"></textarea>
+      <textarea id="context" name="context" rows="4" aria-describedby="context-hint"></textarea>
+      <p class="hint" id="context-hint">
+        Read by the reviewer and kept with the private record. Do not put
+        anything sensitive here.
+      </p>
 
-      <button type="submit">Continue with GitHub</button>
+      <button type="submit">Authenticate via GitHub</button>
       <p class="hint">
         You will be asked to sign in so Palomar can confirm you have write access to the
         repository you are submitting. The sign-in is used once and not stored.
       </p>
+      <p class="visually-hidden" role="status" id="live-status"></p>
     </form>
+    <script src="/intake.js" defer></script>
   `);
 }
 
