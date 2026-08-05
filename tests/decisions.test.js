@@ -25,15 +25,16 @@ function encode(value) {
 }
 
 /** A state repository held in memory, plus a log of what was written to it. */
-function stubState(files) {
+function stubState(files, workflowRuns = null) {
   const written = [];
   const store = new Map(Object.entries(files));
   globalThis.fetch = async (url, init = {}) => {
+    const target = new URL(url);
+    if (target.pathname.includes("/actions/workflows/")) {
+      return Response.json({ workflow_runs: workflowRuns ?? [] });
+    }
     const path = decodeURI(
-      new URL(url).pathname.replace(
-        `/repos/${ENV.STATE_REPO}/contents/`,
-        "",
-      ),
+      target.pathname.replace(`/repos/${ENV.STATE_REPO}/contents/`, ""),
     );
     if ((init.method ?? "GET") === "GET") {
       if (!store.has(path)) return new Response("", { status: 404 });
@@ -62,6 +63,8 @@ async function fixture(overrides = {}) {
     context: null,
     authorization: { relationship: "maintainer" },
     created_at: "2026-08-01T00:00:00Z",
+    run: { id: 12345 },
+    review_sha256: "f".repeat(64),
     events: [],
     ...overrides,
   };
@@ -110,6 +113,7 @@ test("publication consent is recorded, and only by the submitter", async () => {
   assert.equal(response.status, 200);
   const state = written.find((item) => item.path.endsWith("state.json"));
   assert.equal(state.value.publish_consent, true);
+  assert.equal(state.value.publish_consent_review_sha256, "f".repeat(64));
   assert.match(state.value.publish_consent_at, /^\d{4}-\d{2}-\d{2}T/);
   assert.equal(state.sha, `sha-${statePath("a1b2c3d4e5f6", "state.json")}`);
 });
@@ -135,6 +139,15 @@ test("consent is not forged by an anonymous request", async () => {
   assert.equal(written.length, 0);
 });
 
+test("consent is refused when no review has been delivered", async () => {
+  // Consent is to a particular review. A record in review-ready state that
+  // carries no delivered digest is not something anyone can consent to.
+  const { written } = stubState(await fixture({ review_sha256: undefined }));
+  const response = await worker.fetch(request("/publish", "POST"), ENV);
+  assert.equal(response.status, 409);
+  assert.equal(written.length, 0);
+});
+
 test("the status feed never carries the submitter or the review", async () => {
   stubState(await fixture());
   const response = await worker.fetch(request("/api/submission"), ENV);
@@ -142,4 +155,42 @@ test("the status feed never carries the submitter or the review", async () => {
   assert.equal(response.status, 200);
   assert.ok(!body.includes("someone"), "the submitter's login must not be echoed");
   assert.ok(!body.includes("An example review"), "the review must not ride along");
+});
+
+test("the verification run is pinned once, and a later namesake cannot take it", async () => {
+  // The submission id is public: it is in the run name. A second run carrying
+  // it must not be able to become the run this submission is judged on.
+  const { written } = stubState(
+    await fixture({ status: "verifying", run: { id: 12345 } }),
+    [{
+      id: 99999,
+      name: "Verify submission a1b2c3d4e5f6",
+      status: "completed",
+      conclusion: "success",
+      html_url: "https://github.com/PalomarRegistry/PalomarSubmission/actions/runs/99999",
+      run_started_at: "2026-08-01T00:00:00Z",
+    }],
+  );
+  const response = await worker.fetch(request("/api/submission"), ENV);
+  const body = await response.json();
+  assert.equal(body.run.id, 12345);
+  assert.equal(body.status, "verifying");
+  assert.equal(written.length, 0, "a namesake run must not rewrite the record");
+});
+
+test("a run whose name merely quotes the submission id is not this submission's", async () => {
+  const { written } = stubState(
+    await fixture({ status: "verifying", run: undefined }),
+    [{
+      id: 99999,
+      name: "Verify submission a1b2c3d4e5f6 (rerun)",
+      status: "completed",
+      conclusion: "success",
+      html_url: "https://github.com/PalomarRegistry/PalomarSubmission/actions/runs/99999",
+      run_started_at: "2026-08-01T00:00:00Z",
+    }],
+  );
+  const response = await worker.fetch(request("/api/submission"), ENV);
+  assert.equal((await response.json()).status, "verifying");
+  assert.equal(written.length, 0);
 });
