@@ -80,3 +80,16 @@ button[disabled] { opacity: .5; cursor: default; }
 .field-status[data-state="missing"]::before { content: "\2717"; color: var(--caution); }
 .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden;
   clip-path: inset(50%); white-space: nowrap; }
+
+button[data-busy="true"] { opacity: .8; cursor: progress; }
+button[data-busy="true"]::after {
+  content: ""; display: inline-block; width: .8em; height: .8em; margin-left: .55rem;
+  vertical-align: -.05em; border: 2px solid currentColor; border-right-color: transparent;
+  border-radius: 50%; animation: spin .7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  button[data-busy="true"]::after { animation: none; border-right-color: currentColor; opacity: .4; }
+}
+.problems-block { border-color: var(--caution); }
+.problems { padding-left: 1.1rem; color: var(--caution); }

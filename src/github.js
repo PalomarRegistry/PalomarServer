@@ -10,6 +10,11 @@
 
 const API = "https://api.github.com";
 
+// Every write commits to one branch, so writers collide whenever two land
+// together. Retrying is cheap and a collision is not a disagreement about
+// anything; give it enough attempts that ordinary traffic never sees one.
+const MAX_WRITE_ATTEMPTS = 8;
+
 function headers(token) {
   return {
     authorization: `Bearer ${token}`,
@@ -38,10 +43,22 @@ async function call(token, path, init = {}) {
   return response.status === 204 ? true : response.json();
 }
 
-/** Does this commit exist in this public repository? */
+/**
+ * Does this commit exist in this public repository?
+ *
+ * A well-formed but absent SHA answers 422, not 404, so both mean "no". Left
+ * as an error, a mistyped commit reaches the submitter as a server fault
+ * instead of the one thing they could actually fix.
+ */
 export async function resolveCommit(token, repository, commit) {
-  const data = await call(token, `/repos/${repository}/commits/${commit}`);
-  return data?.sha ?? null;
+  const response = await fetch(`${API}/repos/${repository}/commits/${commit}`, {
+    headers: headers(token),
+  });
+  if (response.status === 404 || response.status === 422) return null;
+  if (!response.ok) {
+    throw new GitHubError(response.status, (await response.text()).slice(0, 300));
+  }
+  return (await response.json())?.sha ?? null;
 }
 
 export async function repository(token, name) {
@@ -81,22 +98,74 @@ function encode(value) {
  * 422 and we surface it, rather than overwriting a record we never read.
  */
 export async function writeState(env, path, value, message, sha = null) {
-  const body = { message, content: encode(value), ...(sha ? { sha } : {}) };
+  for (let attempt = 0; ; attempt += 1) {
+    const body = { message, content: encode(value), ...(sha ? { sha } : {}) };
+    const response = await fetch(
+      `${API}/repos/${env.STATE_REPO}/contents/${encodeURI(path)}`,
+      {
+        method: "PUT",
+        headers: { ...headers(env.GITHUB_TOKEN), "content-type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    );
+    if (response.ok) return response.json();
+    if ((response.status !== 409 && response.status !== 422) || attempt >= MAX_WRITE_ATTEMPTS) {
+      if (response.status === 409 || response.status === 422) {
+        throw new GitHubError(response.status, "state changed underneath this write");
+      }
+      throw new GitHubError(response.status, (await response.text()).slice(0, 300));
+    }
+    // Every write here commits to one branch, so a 409 has two very different
+    // causes: the file we are writing changed, or somebody else's commit landed
+    // on the branch first. Only the first is a real conflict. Telling them
+    // apart needs a read: if the file is still exactly as we left it, nothing
+    // we care about changed and the write can simply be retried.
+    if ((await blobSha(env, path)) !== sha) {
+      throw new GitHubError(response.status, "state changed underneath this write");
+    }
+    await pause(attempt);
+  }
+}
+
+/** The blob sha of a file in the state repository, or null if it is absent. */
+async function blobSha(env, path) {
+  const data = await call(env.GITHUB_TOKEN, `/repos/${env.STATE_REPO}/contents/${encodeURI(path)}`);
+  return data?.sha ?? null;
+}
+
+/**
+ * Back off with jitter, so two racing writers do not retry in lockstep.
+ *
+ * Capped, because a submitter is waiting on this: unbounded doubling would
+ * spend half a minute on the last attempt alone, which is worse than failing.
+ * A collision almost always clears on the first retry; the later attempts are
+ * for the rare pile-up.
+ */
+function pause(attempt) {
+  const spread = crypto.getRandomValues(new Uint8Array(1))[0] / 255;
+  const ms = Math.round(Math.min(2 ** attempt * 80, 800) * (0.5 + spread));
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Everything under one directory of the state repository. */
+export async function listState(env, directory) {
+  const data = await call(
+    env.GITHUB_TOKEN,
+    `/repos/${env.STATE_REPO}/contents/${encodeURI(directory)}`,
+  );
+  return Array.isArray(data) ? data : [];
+}
+
+export async function deleteState(env, path, sha, message) {
   const response = await fetch(
     `${API}/repos/${env.STATE_REPO}/contents/${encodeURI(path)}`,
     {
-      method: "PUT",
+      method: "DELETE",
       headers: { ...headers(env.GITHUB_TOKEN), "content-type": "application/json" },
-      body: JSON.stringify(body),
+      body: JSON.stringify({ message, sha }),
     },
   );
-  if (response.status === 409 || response.status === 422) {
-    throw new GitHubError(response.status, "state changed underneath this write");
-  }
-  if (!response.ok) {
-    throw new GitHubError(response.status, (await response.text()).slice(0, 300));
-  }
-  return response.json();
+  return response.ok;
 }
 
 /**

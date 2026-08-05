@@ -240,3 +240,111 @@ test("the state token never reaches the submission repository, and vice versa", 
     "the state path must be exercised",
   );
 });
+
+test("a commit racing on the branch is retried, not shown to the submitter", async () => {
+  // Every write commits to one branch, so two submissions a second apart, or a
+  // submission and the reconciliation cron, collide. That is not a conflict
+  // over anything anyone cares about, and it must not surface as an error.
+  const attempts = [];
+  globalThis.fetch = async (url, init = {}) => {
+    const method = init.method ?? "GET";
+    if (method === "GET") return new Response("", { status: 404 }); // still absent
+    attempts.push(method);
+    if (attempts.length < 3) return new Response("conflict", { status: 409 });
+    return Response.json({ content: {} });
+  };
+  const { writeState } = await import("../src/github.js");
+  await writeState(ENV, "pending/abc.json", { a: 1 }, "create");
+  assert.equal(attempts.length, 3, "the write should have been retried");
+});
+
+test("a real change to the file is a conflict and is not retried away", async () => {
+  // The file we meant to update is not the file that is there now, so retrying
+  // would overwrite whatever landed. The caller has to re-read and re-decide.
+  let writes = 0;
+  globalThis.fetch = async (url, init = {}) => {
+    if ((init.method ?? "GET") === "GET") return Response.json({ sha: "somebody-elses-sha" });
+    writes += 1;
+    return new Response("conflict", { status: 409 });
+  };
+  const { writeState, GitHubError } = await import("../src/github.js");
+  await assert.rejects(
+    () => writeState(ENV, "submissions/x/state.json", { a: 1 }, "update", "the-sha-we-read"),
+    (error) => error instanceof GitHubError && /state changed underneath/.test(error.message),
+  );
+  assert.equal(writes, 1, "a genuine conflict must not be retried");
+});
+
+test("a submitter is never left waiting on the retries", async () => {
+  // Unbounded doubling would spend half a minute on the last attempt alone.
+  const { writeState } = await import("../src/github.js");
+  let writes = 0;
+  globalThis.fetch = async (url, init = {}) => {
+    if ((init.method ?? "GET") === "GET") return new Response("", { status: 404 });
+    writes += 1;
+    return new Response("conflict", { status: 409 });
+  };
+  const started = Date.now();
+  await assert.rejects(() => writeState(ENV, "pending/abc.json", { a: 1 }, "create"));
+  const elapsed = Date.now() - started;
+  assert.ok(elapsed < 10_000, `retrying took ${elapsed}ms, which a submitter would feel`);
+});
+
+test("retrying gives up rather than hammering GitHub", async () => {
+  let writes = 0;
+  globalThis.fetch = async (url, init = {}) => {
+    if ((init.method ?? "GET") === "GET") return new Response("", { status: 404 });
+    writes += 1;
+    return new Response("conflict", { status: 409 });
+  };
+  const { writeState } = await import("../src/github.js");
+  await assert.rejects(() => writeState(ENV, "pending/abc.json", { a: 1 }, "create"));
+  assert.ok(writes <= 10, `gave up after ${writes} attempts`);
+  assert.ok(writes > 1, "it should have retried at least once");
+});
+
+test("an abandoned sign-in is discarded, and a fresh one is left alone", async () => {
+  // A pending record holds what somebody typed. The ones nobody comes back for
+  // are never consumed, so without this they accumulate for ever.
+  const now = Date.parse("2026-08-05T12:00:00Z");
+  const files = {
+    "abandoned.json": { created_at: "2026-08-05T09:00:00Z" },
+    "fresh.json": { created_at: "2026-08-05T11:59:00Z" },
+    "undated.json": {},
+  };
+  const deleted = [];
+  globalThis.fetch = async (url, init = {}) => {
+    const path = new URL(url).pathname;
+    const method = init.method ?? "GET";
+    if (method === "DELETE") {
+      deleted.push(path.split("/").pop());
+      return Response.json({ ok: true });
+    }
+    if (path.endsWith("/contents/pending")) {
+      return Response.json(
+        Object.keys(files).map((name) => ({ name, type: "file", sha: `sha-${name}` })),
+      );
+    }
+    const name = decodeURIComponent(path.split("/").pop());
+    return Response.json({
+      content: Buffer.from(JSON.stringify(files[name])).toString("base64"),
+      sha: `sha-${name}`,
+    });
+  };
+  const { sweepPending } = await import("../src/index.js");
+  const removed = await sweepPending(ENV, now);
+  assert.deepEqual(deleted.sort(), ["abandoned.json", "undated.json"]);
+  assert.equal(removed, 2);
+});
+
+test("a commit that does not exist is answered, not treated as a fault", async () => {
+  // GitHub answers 422 for a well-formed SHA it does not have, and 404 for a
+  // malformed one. Both mean the same thing to a submitter.
+  const { resolveCommit } = await import("../src/github.js");
+  for (const status of [404, 422]) {
+    globalThis.fetch = async () => new Response("no commit found", { status });
+    assert.equal(await resolveCommit("t", "owner/name", "0".repeat(40)), null);
+  }
+  globalThis.fetch = async () => new Response("boom", { status: 500 });
+  await assert.rejects(() => resolveCommit("t", "owner/name", "0".repeat(40)));
+});

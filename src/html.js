@@ -27,12 +27,21 @@ export function page(env, title, body) {
 </html>`;
 }
 
-export function intakeForm(env, values = {}) {
+export function intakeForm(env, values = {}, problems = []) {
+  const trouble = problems.length
+    ? `<section class="disclosure problems-block" role="alert">
+         <h2>That submission did not go through</h2>
+         <ul class="problems">${problems.map((p) => `<li>${escape(p)}</li>`).join("")}</ul>
+         <p class="hint">Everything you typed is still below.</p>
+       </section>`
+    : "";
   return page(env, "Submit a result", `
     <h1>Submit a Lean-verified result</h1>
+    ${trouble}
     <p class="lede">
-      Palomar verifies an immutable snapshot of a public repository and reviews it
-      editorially. Read the
+      Palomar verifies an immutable snapshot of a public repository, and performs
+      a basic AI check that the formal and informal statements match and that the
+      result is plausibly interesting to some mathematician. Read the
       <a href="https://github.com/PalomarRegistry/PalomarPolicy/blob/main/CONTRIBUTING.md">submission policy</a>
       first.
     </p>
@@ -43,11 +52,11 @@ export function intakeForm(env, values = {}) {
         The fact that this repository and commit have been submitted is
         permanently and publicly recorded. Your identity, the review, and the
         decision will not be public until you have seen them and decided to go
-        ahead with publication.
+        ahead with registration.
       </p>
       <p>
-        The reviews are not secret: they may be audited and acted on by the
-        Palomar moderation team.
+        The reviews are not completely secret prior to registration: they may be
+        audited and acted on by the Palomar moderation team.
       </p>
     </section>
 
@@ -73,11 +82,13 @@ export function intakeForm(env, values = {}) {
       <fieldset>
         <legend>Your relationship to this formalization</legend>
         <label class="choice">
-          <input type="radio" name="authorization_relationship" value="maintainer" required>
+          <input type="radio" name="authorization_relationship" value="maintainer" required
+                 ${values.authorization_relationship === "maintainer" ? "checked" : ""}>
           I am a responsible author or maintainer of it
         </label>
         <label class="choice">
-          <input type="radio" name="authorization_relationship" value="approved">
+          <input type="radio" name="authorization_relationship" value="approved"
+                 ${values.authorization_relationship === "approved" ? "checked" : ""}>
           I have approval from a responsible author or maintainer
         </label>
         <p class="hint">
@@ -91,9 +102,9 @@ export function intakeForm(env, values = {}) {
           How that approval was given <span class="optional">optional</span>
         </label>
         <textarea id="authorization_evidence" name="authorization_evidence" rows="3"
-                  aria-describedby="authorization_evidence-hint"></textarea>
+                  aria-describedby="authorization_evidence-hint">${escape(values.authorization_evidence)}</textarea>
         <p class="hint warning" id="authorization_evidence-hint">
-          Published permanently and cannot be withdrawn. Do not name anyone who
+          Registered permanently and cannot be withdrawn. Do not name anyone who
           has not agreed to be named.
         </p>
       </div>
@@ -106,11 +117,11 @@ export function intakeForm(env, values = {}) {
              value="${escape(values.existing_id)}">
       <p class="hint" id="existing_id-hint">
         <span class="field-status" id="existing_id-status" aria-hidden="true"></span>
-        <span id="existing_id-message">Only to publish a new version of a result already in the registry.</span>
+        <span id="existing_id-message">Only to register a new version of a result already in the registry.</span>
       </p>
 
       <label for="context">Notes for the reviewer <span class="optional">optional</span></label>
-      <textarea id="context" name="context" rows="4" aria-describedby="context-hint"></textarea>
+      <textarea id="context" name="context" rows="4" aria-describedby="context-hint">${escape(values.context)}</textarea>
       <p class="hint" id="context-hint">
         Read by the reviewer and kept with the private record. Do not put
         anything sensitive here.
@@ -139,18 +150,18 @@ export function statusPage(env) {
       <h2>Your editorial review</h2>
       <p class="hint">
         This review is private. Nobody but you and the Palomar operators can
-        read it, and it stays that way unless you choose to publish.
+        read it, and it stays that way unless you choose to register it.
       </p>
       <dl class="details" id="review-summary"></dl>
       <div id="review-body"></div>
       <div class="decision">
-        <button type="button" id="publish">Publish this result</button>
+        <button type="button" id="publish">Register this result</button>
         <button type="button" id="withdraw" class="secondary">Withdraw the submission</button>
       </div>
       <p class="hint warning" id="publish-warning">
-        Publishing is permanent. It puts the record, the review, and the
+        Registration is permanent. It puts the record, the review, and the
         repository and commit into the public registry, and Palomar records are
-        append-only: a published record is never removed. Withdrawing leaves no
+        append-only: a registered record is never removed. Withdrawing leaves no
         public trace of the review or the decision.
       </p>
       <p class="hint" id="decision-status" role="status"></p>
