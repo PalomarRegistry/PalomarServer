@@ -50,10 +50,48 @@ and never appear in the repository:
 | `GITHUB_TOKEN` | writes submission state and dispatches verification |
 | `TOKEN_PEPPER` | so a leaked state repository does not yield live links |
 
-## Status
+## The verification run
 
-Intake, push proof, state, and the status page are built and deployed.
-Verification dispatch is wired but cannot complete until the mechanical
-pipeline accepts a submission that has no GitHub issue behind it: the report
-schema, the reviewer, and the database schema all key on an issue number
-today. That is tracked as the schema-v7 work.
+Dispatching a workflow does not return a run id, so the server finds the run it
+started by name: the workflow's `run-name` is `Verify submission <id>`. The
+submission id is public, so anyone able to dispatch that workflow can produce a
+run carrying it. The name is therefore matched exactly, and the run is pinned
+the first time it is seen and never replaced. The reviewer accepts only the
+pinned run id, so the name is not the trust boundary in either place.
+
+## Consent
+
+Publication is the submitter's decision and nobody else's. `/publish` records
+consent together with the digest of the review the submitter was shown, and the
+reviewer refuses to publish anything whose bytes differ, so a revised review
+needs fresh consent rather than inheriting the old. Withdrawing leaves no public
+trace of the review or the decision.
+
+## The state a submission holds
+
+```text
+submissions/<id>/state.json   # the record: status, source, authorization, run, consent
+submissions/<id>/review.json  # the private review, once delivered
+index/tokens/<digest>.json    # access token digest to submission id
+index/inflight.json           # admission slots, released by cron reconciliation
+pending/<digest>.json         # a one-time intake nonce, consumed at OAuth callback
+```
+
+## Operating a submission
+
+```bash
+palomar-review list                                  # what is awaiting review
+palomar-review run --submission <id> --engine codex  # dry run; nothing changes
+palomar-review run --submission <id> --engine codex --apply   # deliver privately
+# the submitter decides, on their status page
+palomar-review publish --submission <id>             # only after consent
+palomar-review finalize --submission <id> --pr <n>   # after the database PR merges
+```
+
+## Deploying
+
+```bash
+npm test
+npx wrangler deploy
+curl -s https://submit.palomar-registry.org/healthz
+```
