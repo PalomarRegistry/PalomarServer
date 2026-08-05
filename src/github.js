@@ -138,9 +138,10 @@ export async function findVerificationRun(env, requestId) {
     env.GITHUB_TOKEN,
     `/repos/${env.SUBMISSION_REPO}/actions/workflows/${env.VERIFY_WORKFLOW}/runs?per_page=40`,
   );
-  const run = (data?.workflow_runs ?? []).find((item) =>
-    typeof item.name === "string" && item.name.includes(requestId),
-  );
+  // Exact name, not a substring: the submission id appears in a public run
+  // name, so anything that merely quotes it is not this submission's run.
+  const expected = `Verify submission ${requestId}`;
+  const run = (data?.workflow_runs ?? []).find((item) => item.name === expected);
   if (!run) return null;
   return {
     id: run.id,

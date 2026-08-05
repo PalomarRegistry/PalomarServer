@@ -303,6 +303,9 @@ async function refresh(env, entry) {
   if (record.status !== "verifying") return record;
   const run = await findVerificationRun(env, record.id);
   if (!run) return record;
+  // The run is pinned the first time it is seen. A second run carrying the
+  // same public submission id must not be able to take its place.
+  if (record.run?.id && record.run.id !== run.id) return record;
 
   const next = { ...record, run };
   if (run.status === "completed") {
@@ -438,10 +441,16 @@ export default {
         if (entry.record.status !== "review-ready") {
           return json({ error: "there is no review to publish yet" }, 409);
         }
+        // Consent is to the review the submitter has in front of them. The
+        // reviewer refuses to publish anything whose digest differs, so a
+        // revised review requires fresh consent rather than inheriting this.
+        const reviewed = entry.record.review_sha256;
+        if (!reviewed) return json({ error: "there is no review to publish yet" }, 409);
         if (entry.record.publish_consent === true) return json({ ok: true });
         const next = {
           ...entry.record,
           publish_consent: true,
+          publish_consent_review_sha256: reviewed,
           publish_consent_at: now(),
           events: [...entry.record.events,
                    { at: now(), status: entry.record.status,
