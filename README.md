@@ -8,7 +8,7 @@ Live at <https://submit.palomar-registry.org>.
 ## Why it holds no state
 
 The Worker keeps nothing between requests. A submission is a directory of JSON
-files committed to the private `PalomarRegistry/PalomarSubmissions`
+files committed to the private `PalomarRegistry/PalomarSubmissionState`
 repository, and every transition is a commit. Switch the Worker off and the
 record is complete; the operator CLI can drive any submission to a terminal
 state without it. That is the property that stops this becoming something we
