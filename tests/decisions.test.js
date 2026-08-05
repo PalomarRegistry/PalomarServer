@@ -1,0 +1,145 @@
+/**
+ * The decision endpoints: what the submitter can see, and what they must do
+ * before anything about their submission becomes public.
+ *
+ * The state repository is stubbed at the fetch boundary, which is the only way
+ * the Worker reaches durable state.
+ */
+
+import assert from "node:assert/strict";
+import test from "node:test";
+import worker from "../src/index.js";
+import { statePath, tokenDigest } from "../src/submission.js";
+
+const ENV = {
+  STATE_REPO: "PalomarRegistry/PalomarSubmissionState",
+  SITE_URL: "https://palomar-registry.org",
+  GITHUB_TOKEN: "test-token",
+  TOKEN_PEPPER: "test-pepper",
+};
+
+const TOKEN = "a".repeat(64);
+
+function encode(value) {
+  return Buffer.from(JSON.stringify(value, null, 2) + "\n", "utf-8").toString("base64");
+}
+
+/** A state repository held in memory, plus a log of what was written to it. */
+function stubState(files) {
+  const written = [];
+  const store = new Map(Object.entries(files));
+  globalThis.fetch = async (url, init = {}) => {
+    const path = decodeURI(
+      new URL(url).pathname.replace(
+        `/repos/${ENV.STATE_REPO}/contents/`,
+        "",
+      ),
+    );
+    if ((init.method ?? "GET") === "GET") {
+      if (!store.has(path)) return new Response("", { status: 404 });
+      return Response.json({ content: encode(store.get(path)), sha: `sha-${path}` });
+    }
+    const body = JSON.parse(init.body);
+    const value = JSON.parse(Buffer.from(body.content, "base64").toString("utf-8"));
+    written.push({ path, value, sha: body.sha });
+    store.set(path, value);
+    return Response.json({ content: {} });
+  };
+  return { written, store };
+}
+
+async function fixture(overrides = {}) {
+  const record = {
+    schema_version: 1,
+    id: "a1b2c3d4e5f6",
+    status: "review-ready",
+    repository: "example/project",
+    commit: "1".repeat(40),
+    owner: "example",
+    submitter: "someone",
+    push_verified: true,
+    existing_id: null,
+    context: null,
+    authorization: { relationship: "maintainer" },
+    created_at: "2026-08-01T00:00:00Z",
+    events: [],
+    ...overrides,
+  };
+  return {
+    [`index/tokens/${await tokenDigest(ENV, TOKEN)}.json`]: { id: record.id },
+    [statePath(record.id, "state.json")]: record,
+    [statePath(record.id, "review.json")]: {
+      schema_version: 1,
+      submission_id: record.id,
+      decision: "accept",
+      summary: "An example review.",
+      scores: {},
+      warnings: [],
+      requested_changes: [],
+      passes: [],
+    },
+  };
+}
+
+function request(path, method = "GET", cookie = `palomar_session=${TOKEN}`) {
+  return new Request(`https://submit.palomar-registry.org${path}`, {
+    method,
+    headers: cookie ? { cookie } : {},
+  });
+}
+
+test("the review is delivered only to whoever holds the access token", async () => {
+  stubState(await fixture());
+  const held = await worker.fetch(request("/api/review"), ENV);
+  assert.equal(held.status, 200);
+  assert.equal((await held.json()).decision, "accept");
+
+  const anonymous = await worker.fetch(request("/api/review", "GET", ""), ENV);
+  assert.equal(anonymous.status, 404);
+
+  const wrongToken = await worker.fetch(
+    request("/api/review", "GET", `palomar_session=${"b".repeat(64)}`),
+    ENV,
+  );
+  assert.equal(wrongToken.status, 404);
+});
+
+test("publication consent is recorded, and only by the submitter", async () => {
+  const { written } = stubState(await fixture());
+  const response = await worker.fetch(request("/publish", "POST"), ENV);
+  assert.equal(response.status, 200);
+  const state = written.find((item) => item.path.endsWith("state.json"));
+  assert.equal(state.value.publish_consent, true);
+  assert.match(state.value.publish_consent_at, /^\d{4}-\d{2}-\d{2}T/);
+  assert.equal(state.sha, `sha-${statePath("a1b2c3d4e5f6", "state.json")}`);
+});
+
+test("consent cannot be given before there is a review to consent to", async () => {
+  const { written } = stubState(await fixture({ status: "awaiting-review" }));
+  const response = await worker.fetch(request("/publish", "POST"), ENV);
+  assert.equal(response.status, 409);
+  assert.equal(written.length, 0);
+});
+
+test("a withdrawn submission cannot then be published", async () => {
+  const { written } = stubState(await fixture({ status: "withdrawn" }));
+  const response = await worker.fetch(request("/publish", "POST"), ENV);
+  assert.equal(response.status, 409);
+  assert.equal(written.length, 0);
+});
+
+test("consent is not forged by an anonymous request", async () => {
+  const { written } = stubState(await fixture());
+  const response = await worker.fetch(request("/publish", "POST", ""), ENV);
+  assert.equal(response.status, 404);
+  assert.equal(written.length, 0);
+});
+
+test("the status feed never carries the submitter or the review", async () => {
+  stubState(await fixture());
+  const response = await worker.fetch(request("/api/submission"), ENV);
+  const body = await response.text();
+  assert.equal(response.status, 200);
+  assert.ok(!body.includes("someone"), "the submitter's login must not be echoed");
+  assert.ok(!body.includes("An example review"), "the review must not ride along");
+});
