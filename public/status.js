@@ -1,5 +1,6 @@
-// The access token lives in the URL fragment, which is never sent to a server.
-// It is read here and passed explicitly to the API.
+// The access token lives in the URL fragment, which browsers never send to a
+// server. It is posted once in exchange for a short-lived cookie, then removed
+// from the address bar, so it never appears in a request path or a log.
 const token = location.hash.replace(/^#/, "");
 const summary = document.getElementById("summary");
 const details = document.getElementById("details");
@@ -30,11 +31,20 @@ function link(href, text) {
   return a;
 }
 
+async function establishSession() {
+  if (!token) return false;
+  const body = new FormData();
+  body.set("token", token);
+  const response = await fetch("/session", { method: "POST", body, credentials: "same-origin" });
+  // Drop the token from the address bar and from history once exchanged.
+  history.replaceState(null, "", location.pathname + location.search);
+  return response.ok;
+}
+
 async function poll() {
-  if (!token) { summary.textContent = "This link is missing its access token."; return; }
   let data;
   try {
-    const response = await fetch(`/api/submission?token=${encodeURIComponent(token)}`);
+    const response = await fetch("/api/submission", { credentials: "same-origin" });
     if (!response.ok) { summary.textContent = "This submission could not be found."; return; }
     data = await response.json();
   } catch { summary.textContent = "Could not reach the server. Retrying."; setTimeout(poll, 8000); return; }
@@ -56,4 +66,10 @@ async function poll() {
   if (data.status === "verifying") setTimeout(poll, 6000);
 }
 
-poll();
+(async () => {
+  if (token && !(await establishSession())) {
+    summary.textContent = "This submission could not be found.";
+    return;
+  }
+  poll();
+})();

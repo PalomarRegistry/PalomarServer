@@ -28,3 +28,12 @@ button { margin-top: 1.5rem; padding: .6rem 1.1rem; font: inherit; font-weight: 
 .events { color: var(--dim); font-size: .9rem; }
 .problems { color: #b3261e; }
 code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .9em; }
+
+fieldset { margin: 1.25rem 0 0; padding: .75rem 1rem 1rem; border: 1px solid var(--line);
+  border-radius: 6px; }
+legend { font-weight: 600; padding: 0 .35rem; }
+.choice { display: flex; gap: .5rem; align-items: flex-start; font-weight: 400;
+  margin-top: .5rem; }
+.choice input { width: auto; margin-top: .3rem; }
+.hint.warning { color: #a33; }
+@media (prefers-color-scheme: dark) { .hint.warning { color: #f0a; } }

@@ -60,7 +60,9 @@ export const STATUSES = {
   withdrawn: "Withdrawn",
 };
 
-export function newRecord({ id, repositoryName, commit, owner, submitter, existingId, context }) {
+export function newRecord({
+  id, repositoryName, commit, owner, submitter, existingId, context, authorization,
+}) {
   return {
     schema_version: 1,
     id,
@@ -72,6 +74,7 @@ export function newRecord({ id, repositoryName, commit, owner, submitter, existi
     push_verified: true,
     existing_id: existingId || null,
     context: context || null,
+    authorization,
     created_at: null,
     events: [],
   };

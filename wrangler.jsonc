@@ -4,6 +4,9 @@
   "main": "src/index.js",
   "compatibility_date": "2026-08-01",
   "observability": { "enabled": true },
+  // Admission slots are freed here rather than when a submitter's page polls,
+  // so a closed tab cannot hold one forever.
+  "triggers": { "crons": ["*/10 * * * *"] },
   "routes": [{ "pattern": "submit.palomar-registry.org/*", "zone_name": "palomar-registry.org" }],
   "assets": { "directory": "./public", "binding": "ASSETS" },
   "vars": {

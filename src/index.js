@@ -43,8 +43,30 @@ function json(value, status = 200) {
 }
 
 // Admission limits, until per-submitter quotas and backoff exist.
+const RELATIONSHIPS = new Set(["maintainer", "approved"]);
+// The verifier speaks the long form; the form and the record speak the short.
+const RELATIONSHIP_LABELS = {
+  maintainer: "I am a responsible author or maintainer",
+  approved: "I have approval from a responsible author or maintainer",
+};
 const MAX_INFLIGHT_TOTAL = 12;
 const MAX_INFLIGHT_PER_OWNER = 2;
+
+const TERMINAL = new Set(["published", "withdrawn", "verification-failed"]);
+
+/** The one-time exchange: fragment in, short-lived host-only cookie out. */
+function sessionCookie(token) {
+  return {
+    "set-cookie":
+      `palomar_session=${token}; Path=/; Max-Age=43200; HttpOnly; Secure; SameSite=Strict`,
+  };
+}
+
+function sessionToken(request) {
+  const cookie = request.headers.get("cookie") ?? "";
+  const match = /(?:^|;\s*)palomar_session=([0-9a-f]{64})(?:;|$)/.exec(cookie);
+  return match ? match[1] : null;
+}
 
 function now() {
   return new Date().toISOString().replace(/\.\d+Z$/, "Z");
@@ -62,6 +84,8 @@ async function beginSubmission(request, env) {
   const commit = String(form.get("commit") ?? "").trim().toLowerCase();
   const existingId = String(form.get("existing_id") ?? "").trim();
   const context = String(form.get("context") ?? "").trim().slice(0, 4000);
+  const relationship = String(form.get("authorization_relationship") ?? "").trim();
+  const evidence = String(form.get("authorization_evidence") ?? "").trim().slice(0, 2000);
 
   const problems = [];
   if (!repositoryName) problems.push("Repository must be a GitHub owner/name or URL.");
@@ -70,6 +94,9 @@ async function beginSubmission(request, env) {
   }
   if (existingId && !PALOMAR_ID_RE.test(existingId)) {
     problems.push("Existing Palomar ID is malformed.");
+  }
+  if (!RELATIONSHIPS.has(relationship)) {
+    problems.push("Say whether you maintain this formalization or have approval to submit it.");
   }
   if (problems.length) return html(errorPage(env, "That submission is not ready", problems), 400);
 
@@ -99,6 +126,8 @@ async function beginSubmission(request, env) {
     commit,
     existing_id: existingId || null,
     context: context || null,
+    authorization_relationship: relationship,
+    authorization_evidence: evidence || null,
     created_at: now(),
   };
   await writeState(
@@ -215,6 +244,12 @@ async function completeSubmission(request, env) {
       submitter: user?.login ?? null,
       existingId: pending.value.existing_id,
       context: pending.value.context,
+      authorization: {
+        relationship: pending.value.authorization_relationship,
+        ...(pending.value.authorization_evidence
+          ? { evidence: pending.value.authorization_evidence }
+          : {}),
+      },
     }),
     created_at: now(),
     token_sha256: await tokenDigest(env, token),
@@ -239,6 +274,10 @@ async function completeSubmission(request, env) {
     commit: record.commit,
     requestId: id,
     options: {
+      authorization_relationship: RELATIONSHIP_LABELS[record.authorization.relationship],
+      ...(record.authorization.evidence
+        ? { authorization_evidence: record.authorization.evidence }
+        : {}),
       ...(record.existing_id ? { existing_id: record.existing_id } : {}),
       ...(record.context ? { context: record.context } : {}),
     },
@@ -274,17 +313,7 @@ async function refresh(env, entry) {
     ];
   }
   if (next.status !== "verifying" && record.status === "verifying") {
-    const inflight = await readState(env, "index/inflight.json");
-    const open = Array.isArray(inflight.value?.open) ? inflight.value.open : [];
-    if (open.some((item) => item.id === record.id)) {
-      await writeState(
-        env,
-        "index/inflight.json",
-        { open: open.filter((item) => item.id !== record.id) },
-        `Release ${record.id}`,
-        inflight.sha,
-      );
-    }
+    await release(env, record.id);
   }
   if (JSON.stringify(next) !== JSON.stringify(record)) {
     await writeState(
@@ -298,7 +327,56 @@ async function refresh(env, entry) {
   return next;
 }
 
+async function release(env, id) {
+  const inflight = await readState(env, "index/inflight.json");
+  const open = Array.isArray(inflight.value?.open) ? inflight.value.open : [];
+  if (!open.some((item) => item.id === id)) return;
+  await writeState(env, "index/inflight.json",
+                   { open: open.filter((item) => item.id !== id) },
+                   `Release ${id}`, inflight.sha);
+}
+
+/**
+ * Free admission slots whose submissions have finished.
+ *
+ * Slots used to be released only when the submitter's page polled, so closing
+ * the tab held one forever and enough abandoned submissions would wedge
+ * intake. This runs on a schedule instead, so nothing depends on a browser
+ * staying open.
+ */
+async function reconcile(env) {
+  const inflight = await readState(env, "index/inflight.json");
+  const open = Array.isArray(inflight.value?.open) ? inflight.value.open : [];
+  const still = [];
+  for (const item of open) {
+    const record = await readState(env, statePath(item.id, "state.json"));
+    if (!record.value) continue;               // vanished: do not hold its slot
+    if (record.value.status !== "verifying") continue;
+    const run = await findVerificationRun(env, item.id);
+    if (run?.status === "completed") {
+      await writeState(env, statePath(item.id, "state.json"), {
+        ...record.value,
+        run,
+        status: run.conclusion === "success" ? "awaiting-review" : "verification-failed",
+        events: [...record.value.events,
+                 { at: now(), status: "reconciled", note: `Verification ${run.conclusion}` }],
+      }, `Reconcile ${item.id}`, record.sha);
+      continue;
+    }
+    still.push(item);
+  }
+  if (still.length !== open.length) {
+    await writeState(env, "index/inflight.json", { open: still },
+                     "Reconcile admissions", inflight.sha);
+  }
+  return { released: open.length - still.length, open: still.length };
+}
+
 export default {
+  async scheduled(event, env) {
+    await reconcile(env);
+  },
+
   async fetch(request, env) {
     const url = new URL(request.url);
 
@@ -313,11 +391,35 @@ export default {
         return await completeSubmission(request, env);
       }
       if (request.method === "GET" && url.pathname === "/s") {
-        // The token is in the fragment; the page reads it and calls the API.
+        // The token is in the fragment, which browsers never send. The page
+        // posts it once to /session and thereafter holds only a cookie.
         return html(statusPage(env));
       }
+      if (request.method === "POST" && url.pathname === "/session") {
+        const token = (await request.formData()).get("token");
+        const entry = await loadByToken(env, String(token ?? ""));
+        if (!entry) return json({ error: "not found" }, 404);
+        return json({ ok: true }, 200, sessionCookie(String(token)));
+      }
+      if (request.method === "POST" && url.pathname === "/withdraw") {
+        const entry = await loadByToken(env, sessionToken(request));
+        if (!entry) return json({ error: "not found" }, 404);
+        if (TERMINAL.has(entry.record.status)) {
+          return json({ error: `already ${entry.record.status}` }, 409);
+        }
+        const next = {
+          ...entry.record,
+          status: "withdrawn",
+          events: [...entry.record.events,
+                   { at: now(), status: "withdrawn", note: "Withdrawn by the submitter" }],
+        };
+        await writeState(env, statePath(next.id, "state.json"), next,
+                         `Withdraw ${next.id}`, entry.sha);
+        await release(env, next.id);
+        return json({ ok: true });
+      }
       if (request.method === "GET" && url.pathname === "/api/submission") {
-        const entry = await loadByToken(env, url.searchParams.get("token"));
+        const entry = await loadByToken(env, sessionToken(request));
         if (!entry) return json({ error: "not found" }, 404);
         const record = await refresh(env, entry);
         return json({

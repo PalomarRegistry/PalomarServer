@@ -68,6 +68,32 @@ export function intakeForm(env, values = {}) {
              placeholder="0000000000000000000000000000000000000000" value="${escape(values.commit)}">
       <p class="hint">A full 40-character SHA. Branches and tags move; a record must not.</p>
 
+      <fieldset>
+        <legend>Your relationship to this formalization</legend>
+        <label class="choice">
+          <input type="radio" name="authorization_relationship" value="maintainer" required>
+          I am a responsible author or maintainer of it
+        </label>
+        <label class="choice">
+          <input type="radio" name="authorization_relationship" value="approved">
+          I have approval from a responsible author or maintainer
+        </label>
+        <p class="hint">
+          If this repository is only a thin wrapper around another formalization,
+          answer about that underlying repository, not the wrapper.
+        </p>
+      </fieldset>
+
+      <label for="authorization_evidence">
+        How that approval was given <span class="optional">optional</span>
+      </label>
+      <textarea id="authorization_evidence" name="authorization_evidence" rows="3"></textarea>
+      <p class="hint warning">
+        Whatever you write here is published in the permanent record and cannot
+        be withdrawn. Do not name anyone who has not agreed to be named, and do
+        not paste private correspondence.
+      </p>
+
       <label for="existing_id">Existing Palomar ID <span class="optional">optional</span></label>
       <input id="existing_id" name="existing_id" placeholder="PALOMAR-2026-07-29-000123"
              value="${escape(values.existing_id)}">
