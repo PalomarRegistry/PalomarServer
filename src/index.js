@@ -207,6 +207,10 @@ async function completeSubmission(request, env) {
     repositoryName: record.repository,
     commit: record.commit,
     requestId: id,
+    options: {
+      ...(record.existing_id ? { existing_id: record.existing_id } : {}),
+      ...(record.context ? { context: record.context } : {}),
+    },
   });
 
   // The token goes in the fragment, which browsers never send to a server, so

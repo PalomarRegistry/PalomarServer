@@ -100,7 +100,7 @@ export async function writeState(env, path, value, message, sha = null) {
 }
 
 /** Start a verification run. Returns nothing useful: the run is found by id. */
-export async function dispatchVerification(env, { repositoryName, commit, requestId }) {
+export async function dispatchVerification(env, { repositoryName, commit, requestId, options }) {
   const response = await fetch(
     `${API}/repos/${env.SUBMISSION_REPO}/actions/workflows/${env.VERIFY_WORKFLOW}/dispatches`,
     {
@@ -108,7 +108,16 @@ export async function dispatchVerification(env, { repositoryName, commit, reques
       headers: { ...headers(env.GITHUB_TOKEN), "content-type": "application/json" },
       body: JSON.stringify({
         ref: "main",
-        inputs: { repository: repositoryName, commit, request_id: requestId },
+        inputs: {
+          repository: repositoryName,
+          commit,
+          request_id: requestId,
+          // The optional fields the issue form offers, so a server submitter
+          // is not quietly told less than an issue submitter would be.
+          ...(options && Object.keys(options).length
+            ? { options: JSON.stringify(options) }
+            : {}),
+        },
       }),
     },
   );
