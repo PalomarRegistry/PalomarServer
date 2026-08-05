@@ -32,7 +32,7 @@ const LABELS = {
   "verification-failed": "Mechanical verification did not pass.",
   "awaiting-review": "Verification passed. Waiting for editorial review.",
   "review-ready": "Your editorial review is ready.",
-  published: "Published to the registry.",
+  published: "Registered in the registry.",
   withdrawn: "Withdrawn.",
 };
 
@@ -105,8 +105,8 @@ publishButton?.addEventListener("click", () =>
   decide(
     publishButton,
     "/publish",
-    "Publishing is permanent. The record, the review, and your repository and " +
-      "commit become public, and Palomar records are never removed. Publish?",
+    "Registration is permanent. The record, the review, and your repository " +
+      "and commit become public, and Palomar records are never removed. Register?",
   ),
 );
 withdrawButton?.addEventListener("click", () =>
@@ -162,7 +162,7 @@ async function poll() {
     await showReview();
     if (data.publish_consent) {
       decisionStatus.textContent =
-        "Publication is under way. The record appears once an operator merges it.";
+        "Registration is under way. The record appears once the change is merged.";
       publishButton.disabled = true;
       withdrawButton.disabled = true;
     }

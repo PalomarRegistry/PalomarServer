@@ -172,3 +172,27 @@ syncApproval();
 if (repository.input?.value) checkRepository(repository);
 if (commit.input?.value) checkCommit(commit);
 if (existingId.input?.value) checkExistingId(existingId);
+
+/**
+ * Say that something is happening.
+ *
+ * Submitting checks the repository and the commit with GitHub and writes a
+ * record before it can redirect, which takes a few seconds. Without this the
+ * button looks broken, and the natural response to a button that looks broken
+ * is to press it again.
+ */
+const form = document.querySelector('form[action="/submit"]');
+const submit = form?.querySelector('button[type="submit"]');
+
+form?.addEventListener("submit", () => {
+  if (!submit) return;
+  // Not disabled: a disabled submit button is not sent with the form, and
+  // some browsers will not submit at all. Blocked by hand instead.
+  submit.dataset.busy = "true";
+  submit.textContent = "Authenticating via GitHub…";
+  announce("Checking the repository and commit with GitHub.");
+});
+
+// Nothing here cancels the submit event. A guard against double submission
+// would also be a way to lose a submission, and the server now retries a
+// racing write rather than failing it, so a second press is harmless.

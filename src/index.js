@@ -12,6 +12,8 @@ import {
 import {
   dispatchVerification,
   findVerificationRun,
+  deleteState,
+  listState,
   readState,
   repository as fetchRepository,
   resolveCommit,
@@ -91,6 +93,16 @@ async function beginSubmission(request, env) {
   const relationship = String(form.get("authorization_relationship") ?? "").trim();
   const evidence = String(form.get("authorization_evidence") ?? "").trim().slice(0, 2000);
 
+  const values = {
+    repository: String(form.get("repository") ?? ""),
+    commit: String(form.get("commit") ?? ""),
+    existing_id: existingId,
+    context,
+    authorization_relationship: relationship,
+    authorization_evidence: evidence,
+  };
+  const rejected = (...problems) => html(intakeForm(env, values, problems), 400);
+
   const problems = [];
   if (!repositoryName) problems.push("Repository must be a GitHub owner/name or URL.");
   if (!COMMIT_RE.test(commit)) {
@@ -102,23 +114,19 @@ async function beginSubmission(request, env) {
   if (!RELATIONSHIPS.has(relationship)) {
     problems.push("Say whether you maintain this formalization or have approval to submit it.");
   }
-  if (problems.length) return html(errorPage(env, "That submission is not ready", problems), 400);
+  if (problems.length) return rejected(...problems);
 
   const repo = await fetchRepository(env.GITHUB_TOKEN, repositoryName);
   if (!repo) {
-    return html(errorPage(env, "That repository is not visible", [
-      `${repositoryName} could not be read. Palomar accepts public repositories only.`,
-    ]), 400);
+    return rejected(`${repositoryName} could not be read. Palomar accepts public repositories only.`);
   }
   if (repo.private) {
-    return html(errorPage(env, "That repository is private", [
+    return rejected(
       "Palomar records point at source anyone can inspect, so submissions must be public.",
-    ]), 400);
+    );
   }
   if (!(await resolveCommit(env.SUBMISSION_TOKEN, repositoryName, commit))) {
-    return html(errorPage(env, "That commit is not in that repository", [
-      `${commit} was not found in ${repositoryName}.`,
-    ]), 400);
+    return rejected(`${commit} was not found in ${repositoryName}.`);
   }
 
   // A pending intake, so the callback can recover exactly what was asked for
@@ -134,12 +142,19 @@ async function beginSubmission(request, env) {
     authorization_evidence: evidence || null,
     created_at: now(),
   };
-  await writeState(
-    env,
-    `pending/${await digest(nonce)}.json`,
-    pending,
-    `Begin submission for ${repositoryName}`,
-  );
+  try {
+    await writeState(
+      env,
+      `pending/${await digest(nonce)}.json`,
+      pending,
+      `Begin submission for ${repositoryName}`,
+    );
+  } catch (error) {
+    // Nothing the submitter did wrong, and nothing they should have to retype.
+    return rejected(
+      "Palomar could not record that submission just now. Nothing was lost; try again.",
+    );
+  }
 
   const authorize = new URL("https://github.com/login/oauth/authorize");
   authorize.searchParams.set("client_id", env.OAUTH_CLIENT_ID);
@@ -379,9 +394,35 @@ async function reconcile(env) {
   return { released: open.length - still.length, open: still.length };
 }
 
+/**
+ * Discard intake records nobody came back for.
+ *
+ * A pending record is written before the submitter is sent to GitHub. Most are
+ * consumed seconds later; the ones from an abandoned sign-in are never
+ * consumed at all, and without this they accumulate for the life of the
+ * registry. They hold what somebody typed, so they are not kept indefinitely
+ * for no reason.
+ */
+export async function sweepPending(env, now = Date.now()) {
+  let removed = 0;
+  for (const item of await listState(env, "pending")) {
+    if (item.type !== "file" || !item.name.endsWith(".json")) continue;
+    const record = await readState(env, `pending/${item.name}`);
+    const created = Date.parse(record.value?.created_at ?? "");
+    // An hour is far longer than a sign-in takes and short enough that an
+    // abandoned one does not linger.
+    if (Number.isFinite(created) && now - created < 3600_000) continue;
+    if (await deleteState(env, `pending/${item.name}`, item.sha, "Discard an abandoned intake")) {
+      removed += 1;
+    }
+  }
+  return removed;
+}
+
 export default {
   async scheduled(event, env) {
     await reconcile(env);
+    await sweepPending(env);
   },
 
   async fetch(request, env) {
@@ -485,8 +526,13 @@ export default {
       }
       return html(errorPage(env, "No such page", []), 404);
     } catch (error) {
+      // Never show a submitter the provider's vocabulary. They cannot act on
+      // "GitHub 409", and it reads as their fault when it is ours.
+      console.error("unhandled", url.pathname, String(error?.stack ?? error));
       return html(
-        errorPage(env, "Something went wrong", [String(error?.message ?? error).slice(0, 300)]),
+        errorPage(env, "Palomar could not complete that just now", [
+          "Nothing was lost. Try again in a moment.",
+        ]),
         500,
       );
     }

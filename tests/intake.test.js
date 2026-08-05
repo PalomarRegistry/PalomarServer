@@ -14,7 +14,8 @@ const form = intakeForm(ENV);
 test("the disclosure says what is recorded and when it becomes public", () => {
   assert.match(form, /permanently and publicly recorded/);
   assert.match(form, /will not be public until you have seen them/);
-  assert.match(form, /may be audited and acted on by the\s+Palomar moderation team/);
+  assert.match(form, /not completely secret prior to registration/);
+  assert.match(form, /audited and acted on by the\s+Palomar moderation team/);
   // The earlier wording claimed reviews were readable by "the model provider"
   // and told people not to write anything sensitive in a field the reviewer
   // reads. That belongs beside the field, not in the headline promise.
@@ -23,7 +24,39 @@ test("the disclosure says what is recorded and when it becomes public", () => {
 
 test("the approval note is a field of its own, so it can be turned off", () => {
   assert.match(form, /<div class="dependent" id="approval-evidence">/);
-  assert.match(form, /Published permanently and cannot be withdrawn/);
+  assert.match(form, /Registered permanently and cannot be withdrawn/);
+});
+
+test("what a submitter typed survives a rejected submission", () => {
+  // Retyping a 40-character SHA and a paragraph of notes because the server
+  // had a bad moment is not acceptable.
+  const filled = intakeForm(ENV, {
+    repository: "owner/project",
+    commit: "a".repeat(40),
+    existing_id: "PALOMAR-2026-07-29-000123",
+    context: "Notes <with> markup & an ampersand",
+    authorization_relationship: "approved",
+    authorization_evidence: "Approved by the maintainer",
+  }, ["Palomar could not record that submission just now."]);
+
+  assert.match(filled, /value="owner\/project"/);
+  assert.match(filled, new RegExp(`value="${"a".repeat(40)}"`));
+  assert.match(filled, /value="PALOMAR-2026-07-29-000123"/);
+  assert.match(filled, /Notes &lt;with&gt; markup &amp; an ampersand/);
+  assert.match(filled, /Approved by the maintainer/);
+  assert.match(filled, /value="approved"\s*\n?\s*checked/);
+  assert.match(filled, /could not record that submission/);
+  // What was typed is escaped, not interpolated.
+  assert.doesNotMatch(filled, /<with>/);
+});
+
+test("public text speaks of registration, not publication", () => {
+  // "Publication" invites the comparison with a journal that the registry
+  // exists not to be. Route names and record fields keep their old spelling;
+  // this is about what a submitter reads.
+  const visible = form.replace(/<[^>]*>/g, " ");
+  assert.doesNotMatch(visible, /\bpublicat|\bpublish/i);
+  assert.match(visible, /registration/i);
 });
 
 test("the button says what it does", () => {
@@ -74,9 +107,14 @@ test("the script never sends what the submitter typed anywhere but those origins
   assert.ok(destinations.length >= 2);
 });
 
-test("a failed lookup never blocks a submission", async () => {
+test("nothing in the browser can block a submission", async () => {
   const script = await readFile(new URL("../public/intake.js", import.meta.url), "utf8");
   // A rate limit or an outage on somebody else's API is not a reason to refuse
-  // someone's work, so nothing here may disable submission or cancel the event.
-  assert.doesNotMatch(script, /preventDefault|submit\.disabled|setCustomValidity/);
+  // someone's work. Neither is a second press of a button that looked dead:
+  // a guard against double submission is also a way to lose a submission.
+  assert.doesNotMatch(script, /preventDefault|setCustomValidity/);
+  // The one thing disabled anywhere is the approval note, which applies to
+  // only one of the two answers. The submit control is never touched.
+  const disabled = [...script.matchAll(/(\w+)\.disabled\s*=/g)].map((m) => m[1]);
+  assert.deepEqual(disabled, ["evidence"]);
 });
