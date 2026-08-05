@@ -43,12 +43,20 @@ declaration a submitter makes about that.
 Variables live in `wrangler.jsonc`. Secrets are set with `wrangler secret put`
 and never appear in the repository:
 
-| Secret | What it is |
-| --- | --- |
-| `OAUTH_CLIENT_ID` | GitHub OAuth App client id, for the push-access check |
-| `OAUTH_CLIENT_SECRET` | its client secret |
-| `GITHUB_TOKEN` | writes submission state and dispatches verification |
-| `TOKEN_PEPPER` | so a leaked state repository does not yield live links |
+| Secret | What it is | Reach |
+| --- | --- | --- |
+| `OAUTH_CLIENT_ID` | GitHub OAuth App client id, for the push-access check | — |
+| `OAUTH_CLIENT_SECRET` | its client secret | — |
+| `GITHUB_TOKEN` | writes submission state | `PalomarSubmissionState`, contents |
+| `SUBMISSION_TOKEN` | starts and reads verification runs | `PalomarSubmission`, actions |
+| `TOKEN_PEPPER` | so a leaked state repository does not yield live links | — |
+
+Two GitHub tokens, not one, because a fine-grained token grants the same
+permissions to every repository it names. A single token covering both
+repositories would carry write access to the verification code itself, and this
+server is internet-facing and takes untrusted input: a leaked secret would
+become a way to forge mechanical verification. Neither token needs admin
+anywhere, and neither can touch `PalomarDatabase`.
 
 ## The verification run
 

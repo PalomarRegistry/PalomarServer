@@ -99,13 +99,21 @@ export async function writeState(env, path, value, message, sha = null) {
   return response.json();
 }
 
-/** Start a verification run. Returns nothing useful: the run is found by id. */
+/**
+ * Start a verification run. Returns nothing useful: the run is found by id.
+ *
+ * This uses a token that can do nothing but start and read verification runs.
+ * A fine-grained token grants the same permissions to every repository it
+ * names, so one token covering both the submission repository and the state
+ * repository would carry write access to the verification code itself, and a
+ * leaked server secret would become a way to forge mechanical verification.
+ */
 export async function dispatchVerification(env, { repositoryName, commit, requestId, options }) {
   const response = await fetch(
     `${API}/repos/${env.SUBMISSION_REPO}/actions/workflows/${env.VERIFY_WORKFLOW}/dispatches`,
     {
       method: "POST",
-      headers: { ...headers(env.GITHUB_TOKEN), "content-type": "application/json" },
+      headers: { ...headers(env.SUBMISSION_TOKEN), "content-type": "application/json" },
       body: JSON.stringify({
         ref: "main",
         inputs: {
@@ -135,7 +143,7 @@ export async function dispatchVerification(env, { repositoryName, commit, reques
  */
 export async function findVerificationRun(env, requestId) {
   const data = await call(
-    env.GITHUB_TOKEN,
+    env.SUBMISSION_TOKEN,
     `/repos/${env.SUBMISSION_REPO}/actions/workflows/${env.VERIFY_WORKFLOW}/runs?per_page=40`,
   );
   // Exact name, not a substring: the submission id appears in a public run

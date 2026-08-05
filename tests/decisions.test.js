@@ -14,7 +14,8 @@ import { statePath, tokenDigest } from "../src/submission.js";
 const ENV = {
   STATE_REPO: "PalomarRegistry/PalomarSubmissionState",
   SITE_URL: "https://palomar-registry.org",
-  GITHUB_TOKEN: "test-token",
+  GITHUB_TOKEN: "state-token",
+  SUBMISSION_TOKEN: "dispatch-token",
   TOKEN_PEPPER: "test-pepper",
 };
 
@@ -193,4 +194,36 @@ test("a run whose name merely quotes the submission id is not this submission's"
   const response = await worker.fetch(request("/api/submission"), ENV);
   assert.equal((await response.json()).status, "verifying");
   assert.equal(written.length, 0);
+});
+
+test("the state token never reaches the submission repository, and vice versa", async () => {
+  // A fine-grained token grants the same permissions everywhere it reaches, so
+  // the two are separate on purpose. Sending either to the other's repository
+  // would quietly restore the single over-privileged token.
+  const seen = [];
+  globalThis.fetch = async (url, init = {}) => {
+    seen.push({
+      host: new URL(url).pathname,
+      token: (init.headers?.authorization ?? "").replace("Bearer ", ""),
+    });
+    if (new URL(url).pathname.includes("/actions/workflows/")) {
+      return Response.json({ workflow_runs: [] });
+    }
+    return new Response("", { status: 404 });
+  };
+  const env = { ...ENV, SUBMISSION_REPO: "PalomarRegistry/PalomarSubmission",
+                VERIFY_WORKFLOW: "submission.yml" };
+  const { findVerificationRun, readState } = await import("../src/github.js");
+  await findVerificationRun(env, "a1b2c3d4e5f6");
+  await readState(env, "submissions/a1b2c3d4e5f6/state.json");
+
+  for (const call of seen) {
+    if (call.host.includes("PalomarSubmission/")) {
+      assert.equal(call.token, "dispatch-token", "the state token must not reach verification");
+    }
+    if (call.host.includes("PalomarSubmissionState")) {
+      assert.equal(call.token, "state-token", "the dispatch token must not reach the record");
+    }
+  }
+  assert.ok(seen.length >= 2);
 });
