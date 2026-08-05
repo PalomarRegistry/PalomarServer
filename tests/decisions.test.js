@@ -213,9 +213,15 @@ test("the state token never reaches the submission repository, and vice versa", 
   };
   const env = { ...ENV, SUBMISSION_REPO: "PalomarRegistry/PalomarSubmission",
                 VERIFY_WORKFLOW: "submission.yml" };
-  const { findVerificationRun, readState } = await import("../src/github.js");
+  const { dispatchVerification, findVerificationRun, readState, writeState } =
+    await import("../src/github.js");
   await findVerificationRun(env, "a1b2c3d4e5f6");
   await readState(env, "submissions/a1b2c3d4e5f6/state.json");
+  await dispatchVerification(env, {
+    repositoryName: "example/project", commit: "1".repeat(40),
+    requestId: "a1b2c3d4e5f6", options: {},
+  }).catch(() => {});
+  await writeState(env, "submissions/a1b2c3d4e5f6/state.json", {}, "m").catch(() => {});
 
   for (const call of seen) {
     if (call.host.includes("PalomarSubmission/")) {
@@ -225,5 +231,12 @@ test("the state token never reaches the submission repository, and vice versa", 
       assert.equal(call.token, "state-token", "the dispatch token must not reach the record");
     }
   }
-  assert.ok(seen.length >= 2);
+  assert.ok(
+    seen.some((call) => call.host.includes("/actions/workflows/")),
+    "the dispatch path must be exercised",
+  );
+  assert.ok(
+    seen.some((call) => call.host.includes("PalomarSubmissionState/contents")),
+    "the state path must be exercised",
+  );
 });
