@@ -386,6 +386,27 @@ test("a directory really called `invalid` is a path, not an error", async () => 
   assert.doesNotMatch(body, /must be a path inside the repository/);
 });
 
+test("what agents are told about this service is true of this service", async () => {
+  const guide = await readFile(new URL("../public/llms.txt", import.meta.url), "utf8");
+  const server = await readFile(new URL("../src/index.js", import.meta.url), "utf8");
+
+  // A document that drifts from the routes is worse than no document: an
+  // agent following it fails in a way it cannot diagnose.
+  const named = [...guide.matchAll(/`(?:GET|POST) (\/[a-z/]+)`/g)].map((m) => m[1]);
+  assert.ok(named.length >= 5, "the guide names no endpoints");
+  for (const path of new Set(named)) {
+    assert.match(server, new RegExp(`url\\.pathname === "${path}"`), `${path} does not exist`);
+  }
+
+  // The one thing it must say, since nothing in the protocol enforces it.
+  assert.match(guide, /do not drive the GitHub sign-in yourself/i);
+  assert.match(guide, /\/register/);
+
+  // It points at the policy rather than paraphrasing it, because a paraphrase
+  // is a second copy that goes stale silently.
+  assert.match(guide, /PalomarPolicy\/blob\/main\/CONTRIBUTING\.md/);
+});
+
 test("a path that escapes the repository is refused", async () => {
   for (const bad of ["../etc/passwd", "/absolute", "a/../../b", "a\\\\b", "a/./b"]) {
     const response = await worker.fetch(
