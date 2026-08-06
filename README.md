@@ -108,7 +108,8 @@ palomar-review finalize --submission <id> --pr <n>   # after the database PR mer
 
 Pushes to `main` are deployed automatically after the test suite passes. The
 GitHub repository must provide `CLOUDFLARE_ACCOUNT_ID` and
-`CLOUDFLARE_API_TOKEN` as Actions secrets.
+`CLOUDFLARE_API_TOKEN` as Actions secrets. CI uploads and promotes a version;
+it does not change the existing route or cron trigger.
 
 To deploy manually:
 
