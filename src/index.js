@@ -103,21 +103,30 @@ async function beginSubmission(request, env) {
   const relationship = String(form.get("authorization_relationship") ?? "").trim();
   const evidence = String(form.get("authorization_evidence") ?? "").trim().slice(0, 2000);
 
-  // A repository-relative path, or null. Anything absolute, anything walking
-  // upwards, and anything with a backslash or a control character is refused
-  // here as well as by the verifier.
+  // A repository-relative path, as `{path}` or `{invalid: true}`.
+  //
+  // The rules are the verifier's, character for character. Anywhere the two
+  // disagree the submitter loses: a path this accepts and the verifier refuses
+  // costs a dispatched run that was always going to fail, and one this refuses
+  // and the verifier would have accepted is a submission turned away for no
+  // reason. A tagged result rather than a sentinel string, so a directory
+  // genuinely called `invalid` is a path and not an error.
   const path = (name) => {
-    const typed = String(form.get(name) ?? "").trim();
-    if (!typed) return null;
-    // A leading slash is refused rather than stripped: quietly rewriting what
-    // somebody typed into a different path is worse than telling them.
-    if (typed.startsWith("/")) return "invalid";
-    const raw = typed.replace(/\/+$/, "");
-    if (!raw) return "invalid";
-    const bad = raw.split("/").some((part) => !part || part === "." || part === "..");
-    // eslint-disable-next-line no-control-regex
-    if (bad || /[\\:*?"<>|]|[\x00-\x1f]/.test(raw) || raw.length > 400) return "invalid";
-    return raw;
+    const raw = String(form.get(name) ?? "").trim();
+    if (!raw) return { path: null };
+    // Nothing here is rewritten. A trailing slash and a leading slash are both
+    // refused rather than trimmed: quietly turning what somebody typed into a
+    // different path is worse than telling them.
+    const segments = raw.split("/");
+    const bad =
+      raw.startsWith("/") ||
+      raw.length > 400 ||
+      segments.some((part) => !part || part === "." || part === "..") ||
+      /[\\?#]/.test(raw) ||
+      segments[0].includes(":") ||
+      // eslint-disable-next-line no-control-regex
+      /[\x00-\x1f\x7f]/.test(raw);
+    return bad ? { invalid: true } : { path: raw };
   };
   const projectPath = path("project_path");
   const configPath = path("comparator_config_path");
@@ -152,7 +161,7 @@ async function beginSubmission(request, env) {
     ["Comparator configuration", configPath],
     ["Formalization metadata", metadataPath],
   ]) {
-    if (value === "invalid") {
+    if (value.invalid) {
       problems.push(`${name} must be a path inside the repository, written with forward slashes.`);
     }
   }
@@ -181,9 +190,9 @@ async function beginSubmission(request, env) {
     existing_id: existingId || null,
     context: context || null,
     requested_paths: {
-      project_path: projectPath === "invalid" ? null : projectPath,
-      comparator_config_path: configPath === "invalid" ? null : configPath,
-      formalization_metadata_path: metadataPath === "invalid" ? null : metadataPath,
+      project_path: projectPath.path,
+      comparator_config_path: configPath.path,
+      formalization_metadata_path: metadataPath.path,
     },
     authorization_relationship: relationship,
     authorization_evidence: evidence || null,
@@ -591,6 +600,12 @@ export default {
           status: record.status,
           repository: record.repository,
           commit: record.commit,
+          // Shown so a submitter can see what was actually asked for. The
+          // layout fields are partly filled in by a script reading the
+          // repository, and something filled in for you is worth confirming.
+          requested_paths: Object.fromEntries(
+            Object.entries(record.requested_paths ?? {}).filter(([, value]) => value),
+          ),
           created_at: record.created_at,
           run: record.run ?? null,
           review_started_at: record.review_started_at ?? null,

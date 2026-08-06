@@ -267,10 +267,9 @@ test("a project that is not at the repository root can be submitted", async () =
 
 test("the layout is worked out from the repository rather than asked for", async () => {
   const { locateProject } = await import("../public/normalize.js");
-  assert.deepEqual(
-    locateProject(["lean-toolchain", "comparator.json", "lakefile.toml"]),
-    { found: true, project: "", metadata: "", lakefile: true, ambiguous: false },
-  );
+  const found = locateProject(["lean-toolchain", "comparator.json", "lakefile.toml"]);
+  assert.equal(found.found, true);
+  assert.equal(found.project, "");
   const nested = locateProject([
     "formalization.yaml", "examples/p/comparator.json", "examples/p/lakefile.lean",
   ]);
@@ -278,8 +277,82 @@ test("the layout is worked out from the repository rather than asked for", async
   // Metadata at the repository root is normal even for a nested project.
   assert.equal(nested.metadata, "formalization.yaml");
   // Two projects is a question for the submitter, not a guess.
-  assert.equal(locateProject(["a/comparator.json", "b/comparator.json"]).ambiguous, true);
+  assert.equal(locateProject([
+    "a/comparator.json", "a/lakefile.toml", "b/comparator.json", "b/lakefile.toml",
+  ]).ambiguous, true);
   assert.equal(locateProject(["README.md"]).found, false);
+});
+
+test("nothing that only looks like a project is suggested as one", async () => {
+  const { locateProject } = await import("../public/normalize.js");
+  const real = ["proof/comparator.json", "proof/lakefile.toml"];
+
+  // A name that merely ends in the right characters is a different file.
+  assert.equal(locateProject([...real, "tests/not-comparator.json"]).project, "proof");
+  // A dependency checkout carries whole projects of somebody else's.
+  assert.equal(
+    locateProject([...real, ".lake/packages/dep/comparator.json", ".lake/packages/dep/lakefile.toml"]).project,
+    "proof",
+  );
+  // A configuration with no Lakefile beside it is a fixture, not a project.
+  assert.equal(locateProject([...real, "fixtures/comparator.json"]).project, "proof");
+  // The verifier refuses every symlinked component, so suggesting one would
+  // send a submitter to a run that could only fail.
+  assert.equal(
+    locateProject([
+      { path: "comparator.json", type: "blob", mode: "120000" },
+      { path: "lakefile.toml", type: "blob", mode: "100644" },
+    ]).found,
+    false,
+  );
+  // One metadata file is an answer. Two is a guess, and a guess is silently
+  // wrong: the submitter would never see which was chosen.
+  assert.equal(locateProject([...real, "docs/formalization.yaml"]).metadata, "docs/formalization.yaml");
+  assert.equal(
+    locateProject([...real, "docs/formalization.yaml", "papers/formalization.yaml"]).metadata,
+    "",
+  );
+});
+
+test("a rejected submission gives back the layout it was told", async () => {
+  const response = await worker.fetch(
+    new Request("https://submit.palomar-registry.org/submit", {
+      method: "POST",
+      body: new URLSearchParams({
+        repository: "owner/name",
+        commit: "nonsense",
+        authorization_relationship: "maintainer",
+        project_path: "proof",
+        comparator_config_path: "proof/Comparator/config.json",
+        formalization_metadata_path: "docs/formalization.yaml",
+      }),
+    }),
+    ENV,
+  );
+  const body = await response.text();
+  assert.equal(response.status, 400);
+  // Silently blanking these would submit the default paths next time, which
+  // can verify a different project in the same repository.
+  assert.match(body, /value="proof"/);
+  assert.match(body, /value="proof\/Comparator\/config\.json"/);
+  assert.match(body, /value="docs\/formalization\.yaml"/);
+  // And shown, not folded away where nobody looks before pressing submit.
+  assert.match(body, /<details id="layout"[^>]* open>/);
+});
+
+test("a directory really called `invalid` is a path, not an error", async () => {
+  const response = await worker.fetch(
+    new Request("https://submit.palomar-registry.org/submit", {
+      method: "POST",
+      body: new URLSearchParams({
+        repository: "owner/name", commit: "nope",
+        authorization_relationship: "maintainer", project_path: "invalid",
+      }),
+    }),
+    ENV,
+  );
+  const body = await response.text();
+  assert.doesNotMatch(body, /must be a path inside the repository/);
 });
 
 test("a path that escapes the repository is refused", async () => {

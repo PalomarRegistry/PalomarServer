@@ -130,13 +130,20 @@ const checkCommit = latest(async (settle, parts) => {
   const name = normalizeRepository(repository.input.value);
   if (!sha) {
     const typed = parts.input.value.trim();
+    describeLayout();
     return settle(typed ? "missing" : "", typed ? "A commit is 40 hexadecimal characters." : DEFAULT.commit);
   }
-  if (!name) return settle("", DEFAULT.commit);
+  if (!name) {
+    describeLayout();
+    return settle("", DEFAULT.commit);
+  }
   settle("checking", "Looking for that commit…");
   const data = await githubJson(`repos/${name}/commits/${sha}`);
   if (data === "rate-limited") return settle("", DEFAULT.commit);
-  if (!data?.sha) return settle("missing", `That commit is not in ${name}.`);
+  if (!data?.sha) {
+    describeLayout();
+    return settle("missing", `That commit is not in ${name}.`);
+  }
   const when = String(data.commit?.committer?.date ?? "").slice(0, 10);
   settle(
     "found",
@@ -159,6 +166,31 @@ function say(text, found) {
 }
 
 /**
+ * Withdraw a suggestion that no longer describes the submission.
+ *
+ * A path filled in for one commit is wrong for the next, and wrong in the
+ * worst way: it names a directory that may well exist there too, so the
+ * submission verifies against a project nobody chose. Only values this script
+ * put there are cleared, and only while they are untouched, so anything typed
+ * by hand survives a change of commit.
+ */
+function autofill(input, value) {
+  if (!input) return;
+  const mine = input.dataset.suggested !== undefined && input.value === input.dataset.suggested;
+  if (input.value !== "" && !mine) return;
+  input.value = value;
+  if (value) input.dataset.suggested = value;
+  else delete input.dataset.suggested;
+}
+
+const DEFAULT_LAYOUT = layoutMessage?.textContent;
+
+function clearSuggestions() {
+  for (const input of [projectPath, configPath, metadataPath]) autofill(input, "");
+  say(DEFAULT_LAYOUT);
+}
+
+/**
  * Work out where the project is, from the repository tree at that commit.
  *
  * A submission whose project is not at the root is acceptable and always has
@@ -167,42 +199,55 @@ function say(text, found) {
  * Everything filled in is a suggestion they can change, and the server checks
  * the paths again regardless.
  */
-const describeLayout = latest(async (settle, name, sha) => {
-  if (!layout || !name || !sha) return;
+let layoutToken = 0;
+
+async function describeLayout(name, sha) {
+  if (!layout) return;
+  // Every exit below is a change of subject: whatever is filled in describes
+  // the previous commit, and must go before anything is said about this one.
+  const mine = ++layoutToken;
+  const current = () => mine === layoutToken;
+  clearSuggestions();
+  if (!name || !sha) return;
+
   let tree;
   try {
     const response = await fetch(
       `https://api.github.com/repos/${name}/git/trees/${sha}?recursive=1`,
       { headers: { accept: "application/vnd.github+json" } },
     );
+    if (!current()) return;
+    if (response.status === 403 || response.status === 429) {
+      return say("GitHub is rate-limiting this browser, so the layout was not checked. Fill these in if the project is not at the root.");
+    }
     if (!response.ok) return;
     tree = await response.json();
   } catch {
     return;
   }
-  if (!Array.isArray(tree.tree)) return;
-  const paths = tree.tree.filter((item) => item.type === "blob").map((item) => item.path);
-  const where = locateProject(paths);
+  if (!current() || !Array.isArray(tree.tree)) return;
+  if (tree.truncated) {
+    layout.open = true;
+    return say("This repository is too large for GitHub to list in one request, so the layout was not checked. Fill these in if the project is not at the root.");
+  }
+  const where = locateProject(tree.tree);
 
   if (where.found && !where.project) {
-    say("The project is at the repository root, which is what Palomar expects.", true);
-    return;
+    if (where.metadata) autofill(metadataPath, where.metadata);
+    return say("The project is at the repository root, which is what Palomar expects.", true);
   }
   if (where.found) {
-    if (projectPath && !projectPath.value) projectPath.value = where.project;
-    if (metadataPath && !metadataPath.value && where.metadata) metadataPath.value = where.metadata;
+    autofill(projectPath, where.project);
+    if (where.metadata) autofill(metadataPath, where.metadata);
     layout.open = true;
-    say(`The project looks like it is in ${where.project}, so that has been filled in. Change it if that is wrong.`, true);
-    return;
-  }
-  if (where.ambiguous) {
-    layout.open = true;
-    say(`This repository has more than one project: ${where.candidates.join(", ")}. Say which one is being submitted.`);
-    return;
+    return say(`The project looks like it is in ${where.project}, so that has been filled in. Change it if that is wrong.`, true);
   }
   layout.open = true;
-  say("No comparator.json was found at that commit. Palomar needs one, in the project directory.");
-});
+  if (where.ambiguous) {
+    return say(`This repository has more than one project: ${where.candidates.join(", ")}. Say which one is being submitted.`);
+  }
+  say("No comparator.json was found beside a Lakefile at that commit. If the project's configuration is named something else, say where it is.");
+}
 
 const checkExistingId = latest(async (settle, parts) => {
   const typed = parts.input.value.trim();
