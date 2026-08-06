@@ -102,3 +102,6 @@ button[data-busy="true"]::after {
 details.disclosure > summary { cursor: pointer; font-weight: 600; padding: .5rem 0; }
 details.disclosure[open] > summary { margin-bottom: .25rem; }
 .layout-found { color: var(--accent); }
+/* Nothing to do here is the usual case, so it recedes rather than asking to
+   be read. Anything else keeps the ordinary weight. */
+#layout[data-layout="ok"] > summary { font-weight: 400; color: var(--dim); }

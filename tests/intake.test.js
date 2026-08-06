@@ -337,7 +337,38 @@ test("a rejected submission gives back the layout it was told", async () => {
   assert.match(body, /value="proof\/Comparator\/config\.json"/);
   assert.match(body, /value="docs\/formalization\.yaml"/);
   // And shown, not folded away where nobody looks before pressing submit.
-  assert.match(body, /<details id="layout"[^>]* open>/);
+  assert.match(body, /<details id="layout"[^>]* open/);
+  assert.match(body, /non-standard file layout/);
+});
+
+test("the layout heading says whether there is anything in it to do", async () => {
+  const script = await readFile(new URL("../public/intake.js", import.meta.url), "utf8");
+
+  // Nothing typed and nothing checked yet claims neither way.
+  const fresh = intakeForm(ENV, {}, []);
+  assert.match(fresh, /<summary id="layout-summary">File layout<\/summary>/);
+  assert.match(fresh, /data-layout="unchecked"/);
+  assert.doesNotMatch(fresh, /looks okay/);
+
+  // A layout somebody spelled out is non-standard by definition, whatever the
+  // repository turns out to look like.
+  assert.match(
+    intakeForm(ENV, { project_path: "proof" }, []),
+    /<summary id="layout-summary">It looks like you have a non-standard file layout<\/summary>/,
+  );
+
+  // The settled case is the one that recedes, and it is the only one that does.
+  assert.match(script, /ok: "File layout looks okay"/);
+  const css = await readFile(new URL("../public/style.css", import.meta.url), "utf8");
+  assert.match(css, /#layout\[data-layout="ok"\][^{]*\{[^}]*var\(--dim\)/);
+  assert.doesNotMatch(css, /#layout\[data-layout="custom"\]/);
+
+  // Every state the script can set has words to show for it.
+  const states = [...script.matchAll(/summarize\("(\w+)"\)/g)].map((m) => m[1]);
+  assert.ok(states.length >= 3, "the summary is never changed");
+  for (const state of new Set(states)) {
+    assert.match(script, new RegExp(`${state}: "`), `summarize("${state}") says nothing`);
+  }
 });
 
 test("a directory really called `invalid` is a path, not an error", async () => {

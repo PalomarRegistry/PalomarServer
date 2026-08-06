@@ -84,8 +84,11 @@ export function intakeForm(env, values = {}, problems = []) {
         <span id="commit-message">A full 40-character SHA. Branches and tags move; a record must not.</span>
       </p>
 
-      <details id="layout" class="disclosure"${layoutOpen ? " open" : ""}>
-        <summary>Where the Lean project is <span class="optional">usually nothing to do</span></summary>
+      <details id="layout" class="disclosure"${layoutOpen ? " open" : ""}
+               data-layout="${layoutOpen ? "custom" : "unchecked"}">
+        <summary id="layout-summary">${
+          layoutOpen ? "It looks like you have a non-standard file layout" : "File layout"
+        }</summary>
         <p class="hint" id="layout-message">
           Palomar looks for the project at the repository root. If it is
           somewhere else, these are filled in for you once the commit is
