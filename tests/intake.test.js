@@ -244,3 +244,14 @@ test("every status the reviewer can set has something to show for it", async () 
       `the page has no label for "${status}"`);
   }
 });
+
+test("every page asks for the favicon, and it is servable", async () => {
+  const { statusPage } = await import("../src/html.js");
+  for (const [name, page] of [["intake", form], ["status", statusPage(ENV)]]) {
+    assert.match(page, /rel="icon" href="\/favicon\.svg"/, `${name} does not ask for the favicon`);
+  }
+  const icon = await readFile(new URL("../public/favicon.svg", import.meta.url), "utf8");
+  assert.match(icon, /prefers-color-scheme: dark/);
+  // The policy is default-src 'none' with img-src 'self', so nothing external.
+  assert.doesNotMatch(icon, /<script|xlink:href|href="http/);
+});
