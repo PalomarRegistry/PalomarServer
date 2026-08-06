@@ -425,3 +425,14 @@ test("a duration is only claimed once one has been measured", async () => {
   const measured = await worker.fetch(request("/api/submission"), ENV);
   assert.equal((await measured.json()).typical_review_seconds, 300, "the median of what was measured");
 });
+
+test("an event never claims a status the submission cannot be in", async () => {
+  // Reconciliation stamped its events "reconciled", which is not a status
+  // anything else recognises, so the timeline disagreed with the record.
+  const { STATUSES } = await import("../src/submission.js");
+  const source = await readFile(new URL("../src/index.js", import.meta.url), "utf8");
+  const stamped = [...source.matchAll(/\{ at: now\(\), status: "([a-z-]+)"/g)].map((m) => m[1]);
+  for (const status of stamped) {
+    assert.ok(status in STATUSES, `an event claims the status "${status}", which does not exist`);
+  }
+});

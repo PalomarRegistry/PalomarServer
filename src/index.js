@@ -400,12 +400,14 @@ async function reconcile(env) {
     if (record.value.status !== "verifying") continue;
     const run = await findVerificationRun(env, item.id);
     if (run?.status === "completed") {
+      const settled =
+        run.conclusion === "success" ? "awaiting-review" : "verification-failed";
       await writeState(env, statePath(item.id, "state.json"), {
         ...record.value,
         run,
-        status: run.conclusion === "success" ? "awaiting-review" : "verification-failed",
+        status: settled,
         events: [...record.value.events,
-                 { at: now(), status: "reconciled", note: `Verification ${run.conclusion}` }],
+                 { at: now(), status: settled, note: `Verification ${run.conclusion}` }],
       }, `Reconcile ${item.id}`, record.sha);
       continue;
     }
