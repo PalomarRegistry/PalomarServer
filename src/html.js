@@ -13,6 +13,7 @@ export function page(env, title, body) {
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>${escape(title)} — Palomar</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml">
     <link rel="stylesheet" href="/style.css">
   </head>
   <body>
