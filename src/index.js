@@ -66,8 +66,20 @@ const RELATIONSHIP_LABELS = {
 };
 const MAX_INFLIGHT_TOTAL = 12;
 const MAX_INFLIGHT_PER_OWNER = 2;
+const CURRENT_REVIEW_SCHEMA_VERSION = 2;
+const REVIEW_DECISIONS = new Set(["accept", "revise", "reject"]);
 
 const TERMINAL = new Set(["registered", "withdrawn", "verification-failed"]);
+
+function isCurrentReview(review, submissionId) {
+  return review !== null && typeof review === "object" && !Array.isArray(review) &&
+    review.schema_version === CURRENT_REVIEW_SCHEMA_VERSION &&
+    review.submission_id === submissionId && REVIEW_DECISIONS.has(review.decision);
+}
+
+function obsoleteReview() {
+  return json({ error: "the review uses an obsolete or invalid contract and must be rerun" }, 409);
+}
 
 /** The one-time exchange: fragment in, short-lived host-only cookie out. */
 function sessionCookie(token) {
@@ -557,6 +569,7 @@ export default {
         if (!entry) return json({ error: "not found" }, 404);
         const review = await readState(env, statePath(entry.record.id, "review.json"));
         if (!review.value) return json({ error: "no review yet" }, 404);
+        if (!isCurrentReview(review.value, entry.record.id)) return obsoleteReview();
         return json(review.value);
       }
       if (request.method === "POST" && url.pathname === "/register") {
@@ -569,6 +582,11 @@ export default {
         // would be registering.
         if (entry.record.status !== "review-ready") {
           return json({ error: "there is no review to register yet" }, 409);
+        }
+        const review = await readState(env, statePath(entry.record.id, "review.json"));
+        if (!isCurrentReview(review.value, entry.record.id)) return obsoleteReview();
+        if (review.value.decision !== "accept") {
+          return json({ error: "only an accepted review can be registered" }, 409);
         }
         // Consent is to the review the submitter has in front of them. The
         // reviewer refuses to register anything whose digest differs, so a

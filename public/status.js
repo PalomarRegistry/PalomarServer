@@ -17,7 +17,6 @@ const DECISIONS = {
   accept: "Accepted",
   revise: "Revision requested",
   reject: "Not accepted",
-  escalate: "Escalated: a specialist review is needed",
 };
 
 const SCORE_LABELS = {
@@ -102,7 +101,7 @@ async function showReview() {
   reviewShown = true;
   reviewSummary.replaceChildren();
   reviewBody.replaceChildren();
-  row("Decision", DECISIONS[review.decision] ?? review.decision, reviewSummary);
+  row("Decision", DECISIONS[review.decision] ?? "Review unavailable", reviewSummary);
   row("Reviewed", review.reviewed_at ?? "", reviewSummary);
   row("Reviewer models", (review.reviewer_models ?? []).join(", "), reviewSummary);
   for (const [key, label] of Object.entries(SCORE_LABELS)) {

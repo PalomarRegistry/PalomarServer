@@ -80,7 +80,8 @@ Registration is the submitter's decision and nobody else's. `/register` records
 consent together with the digest of the review the submitter was shown, and the
 reviewer refuses to register anything whose bytes differ, so a revised review
 needs fresh consent rather than inheriting the old. Withdrawing leaves no public
-trace of the review or the decision.
+trace of the review or the decision. Only an accepted review under the current
+review contract can be registered; an older in-flight review must be rerun.
 
 ## The state a submission holds
 
