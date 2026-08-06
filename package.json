@@ -5,6 +5,7 @@
   "scripts": {
     "test": "node --test tests/*.test.js",
     "deploy": "wrangler deploy",
+    "deploy:redirect": "wrangler deploy --config redirect/wrangler.jsonc",
     "dev": "wrangler dev"
   },
   "devDependencies": {

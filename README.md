@@ -118,3 +118,12 @@ npm test
 npx wrangler deploy
 curl -s https://submit.palomar-registry.org/healthz
 ```
+
+The separate, secret-free `palomar-domain-redirect` Worker owns
+`palomarregistry.org` and `www.palomarregistry.org`. It permanently redirects
+every path and query string to the same URL at `palomar-registry.org`:
+
+```bash
+npm run deploy:redirect
+curl -sSI https://palomarregistry.org/about.html
+```
