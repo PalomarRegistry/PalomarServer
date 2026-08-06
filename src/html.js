@@ -80,6 +80,29 @@ export function intakeForm(env, values = {}, problems = []) {
         <span id="commit-message">A full 40-character SHA. Branches and tags move; a record must not.</span>
       </p>
 
+      <details id="layout" class="disclosure">
+        <summary>Where the Lean project is <span class="optional">usually nothing to do</span></summary>
+        <p class="hint" id="layout-message">
+          Palomar looks for the project at the repository root. If it is
+          somewhere else, these are filled in for you once the commit is
+          checked.
+        </p>
+
+        <label for="project_path">Project directory</label>
+        <input id="project_path" name="project_path" autocomplete="off"
+               placeholder="left blank for the repository root">
+        <p class="hint">The directory holding the Lakefile and comparator.json.</p>
+
+        <label for="comparator_config_path">Comparator configuration</label>
+        <input id="comparator_config_path" name="comparator_config_path" autocomplete="off"
+               placeholder="left blank for comparator.json in the project">
+
+        <label for="formalization_metadata_path">Formalization metadata</label>
+        <input id="formalization_metadata_path" name="formalization_metadata_path"
+               autocomplete="off"
+               placeholder="left blank for formalization.yaml in the project">
+      </details>
+
       <fieldset>
         <legend>Your relationship to this formalization</legend>
         <label class="choice">

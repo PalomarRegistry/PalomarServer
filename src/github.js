@@ -147,6 +147,27 @@ function pause(attempt) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * Ask the reviewer to run now.
+ *
+ * The schedule is best-effort: GitHub throttles and skips it under load, and
+ * it has gone hours without firing. Waiting for it means a submission sits
+ * ready with nothing looking at it, so the moment there is work the server
+ * says so. The schedule stays as a backstop for anything this missed.
+ */
+export async function dispatchReviewer(env) {
+  if (!env.REVIEW_WORKFLOW) return false;
+  const response = await fetch(
+    `${API}/repos/${env.STATE_REPO}/actions/workflows/${env.REVIEW_WORKFLOW}/dispatches`,
+    {
+      method: "POST",
+      headers: { ...headers(env.GITHUB_TOKEN), "content-type": "application/json" },
+      body: JSON.stringify({ ref: "main" }),
+    },
+  );
+  return response.ok;
+}
+
 /** Everything under one directory of the state repository. */
 export async function listState(env, directory) {
   const data = await call(

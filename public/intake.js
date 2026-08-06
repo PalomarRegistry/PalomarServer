@@ -14,6 +14,7 @@
  */
 
 import {
+  locateProject,
   normalizeCommit,
   normalizePalomarId,
   normalizeRepository,
@@ -142,6 +143,65 @@ const checkCommit = latest(async (settle, parts) => {
     when ? `Found that commit, from ${when}` : "Found that commit",
     `https://github.com/${name}/commit/${sha}`,
   );
+  describeLayout(name, sha);
+});
+
+const layout = document.getElementById("layout");
+const layoutMessage = document.getElementById("layout-message");
+const projectPath = document.getElementById("project_path");
+const configPath = document.getElementById("comparator_config_path");
+const metadataPath = document.getElementById("formalization_metadata_path");
+
+function say(text, found) {
+  if (!layoutMessage) return;
+  layoutMessage.textContent = text;
+  layoutMessage.classList.toggle("layout-found", Boolean(found));
+}
+
+/**
+ * Work out where the project is, from the repository tree at that commit.
+ *
+ * A submission whose project is not at the root is acceptable and always has
+ * been, but nothing said so and nothing asked. Finding it here means a
+ * submitter does not discover the requirement by having their work refused.
+ * Everything filled in is a suggestion they can change, and the server checks
+ * the paths again regardless.
+ */
+const describeLayout = latest(async (settle, name, sha) => {
+  if (!layout || !name || !sha) return;
+  let tree;
+  try {
+    const response = await fetch(
+      `https://api.github.com/repos/${name}/git/trees/${sha}?recursive=1`,
+      { headers: { accept: "application/vnd.github+json" } },
+    );
+    if (!response.ok) return;
+    tree = await response.json();
+  } catch {
+    return;
+  }
+  if (!Array.isArray(tree.tree)) return;
+  const paths = tree.tree.filter((item) => item.type === "blob").map((item) => item.path);
+  const where = locateProject(paths);
+
+  if (where.found && !where.project) {
+    say("The project is at the repository root, which is what Palomar expects.", true);
+    return;
+  }
+  if (where.found) {
+    if (projectPath && !projectPath.value) projectPath.value = where.project;
+    if (metadataPath && !metadataPath.value && where.metadata) metadataPath.value = where.metadata;
+    layout.open = true;
+    say(`The project looks like it is in ${where.project}, so that has been filled in. Change it if that is wrong.`, true);
+    return;
+  }
+  if (where.ambiguous) {
+    layout.open = true;
+    say(`This repository has more than one project: ${where.candidates.join(", ")}. Say which one is being submitted.`);
+    return;
+  }
+  layout.open = true;
+  say("No comparator.json was found at that commit. Palomar needs one, in the project directory.");
 });
 
 const checkExistingId = latest(async (settle, parts) => {

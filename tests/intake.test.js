@@ -255,3 +255,46 @@ test("every page asks for the favicon, and it is servable", async () => {
   // The policy is default-src 'none' with img-src 'self', so nothing external.
   assert.doesNotMatch(icon, /<script|xlink:href|href="http/);
 });
+
+test("a project that is not at the repository root can be submitted", async () => {
+  // The verifier has always taken these paths and CONTRIBUTING has always
+  // documented them, but the form collected none of them, so a nested project
+  // was documented and unsubmittable.
+  for (const name of ["project_path", "comparator_config_path", "formalization_metadata_path"]) {
+    assert.match(form, new RegExp(`name="${name}"`), `the form cannot say ${name}`);
+  }
+});
+
+test("the layout is worked out from the repository rather than asked for", async () => {
+  const { locateProject } = await import("../public/normalize.js");
+  assert.deepEqual(
+    locateProject(["lean-toolchain", "comparator.json", "lakefile.toml"]),
+    { found: true, project: "", metadata: "", lakefile: true, ambiguous: false },
+  );
+  const nested = locateProject([
+    "formalization.yaml", "examples/p/comparator.json", "examples/p/lakefile.lean",
+  ]);
+  assert.equal(nested.project, "examples/p");
+  // Metadata at the repository root is normal even for a nested project.
+  assert.equal(nested.metadata, "formalization.yaml");
+  // Two projects is a question for the submitter, not a guess.
+  assert.equal(locateProject(["a/comparator.json", "b/comparator.json"]).ambiguous, true);
+  assert.equal(locateProject(["README.md"]).found, false);
+});
+
+test("a path that escapes the repository is refused", async () => {
+  for (const bad of ["../etc/passwd", "/absolute", "a/../../b", "a\\\\b", "a/./b"]) {
+    const response = await worker.fetch(
+      new Request("https://submit.palomar-registry.org/submit", {
+        method: "POST",
+        body: new URLSearchParams({
+          repository: "owner/name", commit: "a".repeat(40),
+          authorization_relationship: "maintainer", project_path: bad,
+        }),
+      }),
+      ENV,
+    );
+    const body = await response.text();
+    assert.match(body, /must be a path inside the repository/, `${bad} was not refused`);
+  }
+});

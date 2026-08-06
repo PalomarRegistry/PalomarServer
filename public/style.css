@@ -98,3 +98,7 @@ button[data-busy="true"]::after {
   font-size: .8rem; width: 100%; }
 .details:has(> #submission-link) { display: flex; gap: .5rem; align-items: center; }
 .details:has(> #submission-link) button { margin-top: 0; white-space: nowrap; }
+
+details.disclosure > summary { cursor: pointer; font-weight: 600; padding: .5rem 0; }
+details.disclosure[open] > summary { margin-bottom: .25rem; }
+.layout-found { color: var(--accent); }

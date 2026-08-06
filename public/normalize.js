@@ -38,3 +38,56 @@ export function normalizePalomarId(raw) {
   const value = String(raw ?? "").trim().toUpperCase();
   return PALOMAR_ID_RE.test(value) ? value : null;
 }
+
+/**
+ * The files Palomar needs, and where it looks for them by default.
+ *
+ * A submission whose Lean project is not at the repository root is perfectly
+ * acceptable; it just has to say so. Working out where things are is something
+ * a browser can do from the repository tree, so a submitter should not have to
+ * discover the requirement by having a submission refused.
+ */
+export const REQUIRED_AT_PROJECT_ROOT = ["lean-toolchain", "comparator.json"];
+export const LAKEFILES = ["lakefile.toml", "lakefile.lean"];
+
+function directoryOf(path) {
+  const cut = path.lastIndexOf("/");
+  return cut === -1 ? "" : path.slice(0, cut);
+}
+
+/**
+ * Given every path in a repository, work out which directory is the project.
+ *
+ * The Comparator configuration is the marker: it is required, and it sits in
+ * the project directory. One of them means one project. Several means the
+ * submitter has to choose, and none means there is nothing to submit.
+ */
+export function locateProject(paths) {
+  const configs = paths.filter((path) => path.endsWith("comparator.json"));
+  const metadata = paths.filter((path) => path.endsWith("formalization.yaml"));
+  const candidates = [...new Set(configs.map(directoryOf))];
+
+  if (candidates.length === 1) {
+    const project = candidates[0];
+    const lakefile = LAKEFILES.some((name) =>
+      paths.includes(project ? `${project}/${name}` : name));
+    return {
+      found: true,
+      project,
+      // Metadata may sit at the repository root even for a nested project.
+      metadata: metadata.includes(project ? `${project}/formalization.yaml` : "formalization.yaml")
+        ? ""
+        : (metadata[0] ?? ""),
+      lakefile,
+      ambiguous: false,
+    };
+  }
+  return {
+    found: false,
+    project: "",
+    metadata: "",
+    lakefile: false,
+    ambiguous: candidates.length > 1,
+    candidates,
+  };
+}

@@ -187,7 +187,7 @@ async function poll() {
     progress.append(el("p", REVIEW_EXPLANATION));
     const notes = [];
     if (data.status === "awaiting-review") {
-      notes.push("Palomar looks for submissions to review every 15 minutes.");
+      notes.push("Palomar has been asked to start it.");
     }
     if (data.status === "reviewing" && data.review_started_at) {
       const elapsed = (Date.now() - Date.parse(data.review_started_at)) / 1000;

@@ -13,6 +13,7 @@ import {
   dispatchVerification,
   findVerificationRun,
   deleteState,
+  dispatchReviewer,
   listState,
   readState,
   repository as fetchRepository,
@@ -102,6 +103,26 @@ async function beginSubmission(request, env) {
   const relationship = String(form.get("authorization_relationship") ?? "").trim();
   const evidence = String(form.get("authorization_evidence") ?? "").trim().slice(0, 2000);
 
+  // A repository-relative path, or null. Anything absolute, anything walking
+  // upwards, and anything with a backslash or a control character is refused
+  // here as well as by the verifier.
+  const path = (name) => {
+    const typed = String(form.get(name) ?? "").trim();
+    if (!typed) return null;
+    // A leading slash is refused rather than stripped: quietly rewriting what
+    // somebody typed into a different path is worse than telling them.
+    if (typed.startsWith("/")) return "invalid";
+    const raw = typed.replace(/\/+$/, "");
+    if (!raw) return "invalid";
+    const bad = raw.split("/").some((part) => !part || part === "." || part === "..");
+    // eslint-disable-next-line no-control-regex
+    if (bad || /[\\:*?"<>|]|[\x00-\x1f]/.test(raw) || raw.length > 400) return "invalid";
+    return raw;
+  };
+  const projectPath = path("project_path");
+  const configPath = path("comparator_config_path");
+  const metadataPath = path("formalization_metadata_path");
+
   const values = {
     repository: String(form.get("repository") ?? ""),
     commit: String(form.get("commit") ?? ""),
@@ -109,6 +130,9 @@ async function beginSubmission(request, env) {
     context,
     authorization_relationship: relationship,
     authorization_evidence: evidence,
+    project_path: String(form.get("project_path") ?? ""),
+    comparator_config_path: String(form.get("comparator_config_path") ?? ""),
+    formalization_metadata_path: String(form.get("formalization_metadata_path") ?? ""),
   };
   const rejected = (...problems) => html(intakeForm(env, values, problems), 400);
 
@@ -122,6 +146,15 @@ async function beginSubmission(request, env) {
   }
   if (!RELATIONSHIPS.has(relationship)) {
     problems.push("Say whether you maintain this formalization or have approval to submit it.");
+  }
+  for (const [name, value] of [
+    ["Project directory", projectPath],
+    ["Comparator configuration", configPath],
+    ["Formalization metadata", metadataPath],
+  ]) {
+    if (value === "invalid") {
+      problems.push(`${name} must be a path inside the repository, written with forward slashes.`);
+    }
   }
   if (problems.length) return rejected(...problems);
 
@@ -147,6 +180,11 @@ async function beginSubmission(request, env) {
     commit,
     existing_id: existingId || null,
     context: context || null,
+    requested_paths: {
+      project_path: projectPath === "invalid" ? null : projectPath,
+      comparator_config_path: configPath === "invalid" ? null : configPath,
+      formalization_metadata_path: metadataPath === "invalid" ? null : metadataPath,
+    },
     authorization_relationship: relationship,
     authorization_evidence: evidence || null,
     created_at: now(),
@@ -272,6 +310,7 @@ async function completeSubmission(request, env) {
       submitter: user?.login ?? null,
       existingId: pending.value.existing_id,
       context: pending.value.context,
+      requestedPaths: pending.value.requested_paths ?? {},
       authorization: {
         relationship: pending.value.authorization_relationship,
         ...(pending.value.authorization_evidence
@@ -303,6 +342,11 @@ async function completeSubmission(request, env) {
     requestId: id,
     options: {
       authorization_relationship: RELATIONSHIP_LABELS[record.authorization.relationship],
+      // A project that is not at the repository root is acceptable and has to
+      // be able to say so; the verifier has always taken these.
+      ...Object.fromEntries(
+        Object.entries(record.requested_paths ?? {}).filter(([, value]) => value),
+      ),
       ...(record.authorization.evidence
         ? { authorization_evidence: record.authorization.evidence }
         : {}),
@@ -361,6 +405,10 @@ async function refresh(env, entry) {
   if (next.status !== "verifying" && record.status === "verifying") {
     await release(env, record.id);
   }
+  if (next.status === "awaiting-review") {
+    // Failing to ask only costs the schedule's latency, so it is not fatal.
+    await dispatchReviewer(env).catch(() => false);
+  }
   if (JSON.stringify(next) !== JSON.stringify(record)) {
     await writeState(
       env,
@@ -409,6 +457,7 @@ async function reconcile(env) {
         events: [...record.value.events,
                  { at: now(), status: settled, note: `Verification ${run.conclusion}` }],
       }, `Reconcile ${item.id}`, record.sha);
+      if (settled === "awaiting-review") await dispatchReviewer(env).catch(() => false);
       continue;
     }
     still.push(item);
@@ -529,6 +578,8 @@ export default {
         };
         await writeState(env, statePath(next.id, "state.json"), next,
                          `Registration consent for ${next.id}`, entry.sha);
+        // The submitter has just decided; do not make them wait on a cron.
+        await dispatchReviewer(env).catch(() => false);
         return json({ ok: true });
       }
       if (request.method === "GET" && url.pathname === "/api/submission") {
