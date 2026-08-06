@@ -436,3 +436,19 @@ test("an event never claims a status the submission cannot be in", async () => {
     assert.ok(status in STATUSES, `an event claims the status "${status}", which does not exist`);
   }
 });
+
+test("a duration is written the way a person would say it", async () => {
+  // The page said "about 1 seconds", which is two faults at once: the
+  // plural, and a figure that came from a test rather than a review.
+  const script = await readFile(new URL("../public/status.js", import.meta.url), "utf8");
+  const duration = new Function(
+    script.slice(script.indexOf("function duration"), script.indexOf("let reviewShown")) +
+      "; return duration;",
+  )();
+  assert.equal(duration(1), "1 second");
+  assert.equal(duration(2), "2 seconds");
+  assert.equal(duration(90), "2 minutes");
+  assert.equal(duration(60), "60 seconds");
+  assert.equal(duration(3600), "60 minutes");
+  assert.doesNotMatch(duration(1), /1 seconds/);
+});

@@ -57,9 +57,10 @@ const SETTLED = new Set([
   "review-failed",
 ]);
 
-function minutes(seconds) {
-  if (seconds < 90) return `${Math.round(seconds)} seconds`;
-  return `${Math.round(seconds / 60)} minutes`;
+function duration(seconds) {
+  const inMinutes = seconds >= 90;
+  const value = Math.round(inMinutes ? seconds / 60 : seconds);
+  return `${value} ${inMinutes ? "minute" : "second"}${value === 1 ? "" : "s"}`;
 }
 
 function el(tag, text) {
@@ -191,11 +192,11 @@ async function poll() {
     if (data.status === "reviewing" && data.review_started_at) {
       const elapsed = (Date.now() - Date.parse(data.review_started_at)) / 1000;
       if (Number.isFinite(elapsed) && elapsed > 0) {
-        notes.push(`Running for ${minutes(elapsed)}.`);
+        notes.push(`Running for ${duration(elapsed)}.`);
       }
     }
     if (data.typical_review_seconds) {
-      notes.push(`Recent reviews have taken about ${minutes(data.typical_review_seconds)}.`);
+      notes.push(`Recent reviews have taken about ${duration(data.typical_review_seconds)}.`);
     }
     if (notes.length) progress.append(el("p", notes.join(" ")));
   }
