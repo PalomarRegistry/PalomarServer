@@ -191,3 +191,20 @@ test("the live checks link back to what they found", async () => {
   // value, which has already matched a strict pattern.
   assert.match(script, /link\.textContent = message/);
 });
+
+test("the policy permits the sign-in the form redirects to", async () => {
+  // form-action applies to the redirect chain, not only the first hop. The
+  // submission posts here and is answered with a redirect to GitHub, so a
+  // policy naming only 'self' blocks every submission that gets that far, and
+  // reports it against this origin, which is misleading as well as fatal.
+  const response = await worker.fetch(
+    new Request("https://submit.palomar-registry.org/"), ENV,
+  );
+  const policy = response.headers.get("content-security-policy");
+  assert.match(policy, /form-action 'self' https:\/\/github\.com/);
+
+  // And the place the form is actually sent is inside that list.
+  const { intakeForm } = await import("../src/html.js");
+  const action = /action="([^"]+)"/.exec(intakeForm(ENV))[1];
+  assert.equal(action, "/submit", "the form posts somewhere form-action must allow");
+});

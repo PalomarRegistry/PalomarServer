@@ -28,7 +28,11 @@ const SECURITY_HEADERS = {
   "content-security-policy":
     "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; " +
     "connect-src 'self' https://api.github.com https://raw.githubusercontent.com; " +
-    "base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+    // form-action governs the whole redirect chain, not just the first hop.
+    // Submitting posts to this origin and is answered with a redirect to
+    // GitHub for sign-in, so leaving GitHub out blocks every submission that
+    // gets far enough to be redirected, and blames the original URL for it.
+    "base-uri 'none'; form-action 'self' https://github.com; frame-ancestors 'none'",
   "referrer-policy": "no-referrer",
   "x-content-type-options": "nosniff",
   "cache-control": "no-store",
