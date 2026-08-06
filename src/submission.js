@@ -53,6 +53,7 @@ export const STATUSES = {
   "awaiting-review": "Waiting for the automated review",
   reviewing: "The automated review is running",
   "review-ready": "The automated review is ready for you",
+  "review-failed": "The automated review could not be completed",
   registered: "Registered in the registry",
   withdrawn: "Withdrawn",
 };

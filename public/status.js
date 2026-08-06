@@ -34,6 +34,10 @@ const LABELS = {
   "awaiting-review": "Verification passed. Waiting for the automated review.",
   reviewing: "Running the automated review.",
   "review-ready": "Your automated review is ready.",
+  "review-failed":
+    "Palomar could not complete the automated review. This is a fault at our end, " +
+    "not with your submission. Keep this link; the operators can see it and will " +
+    "look into it.",
   registered: "Registered in the registry.",
   withdrawn: "Withdrawn.",
 };
@@ -47,7 +51,11 @@ const REVIEW_EXPLANATION =
 
 // Nothing is running for a submission in these states, so the page stops
 // asking. Everything else is in motion and the page keeps itself current.
-const SETTLED = new Set(["verification-failed", "registered", "withdrawn"]);
+const SETTLED = new Set([
+  "verification-failed", "registered", "withdrawn",
+  // Nothing further happens without an operator, so the page stops asking.
+  "review-failed",
+]);
 
 function minutes(seconds) {
   if (seconds < 90) return `${Math.round(seconds)} seconds`;
