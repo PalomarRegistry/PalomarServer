@@ -40,9 +40,10 @@ const LABELS = {
 
 // What the automated review is, said once, where someone is waiting for it.
 const REVIEW_EXPLANATION =
-  "The automated review checks the alignment between the formal statements and " +
-  "the informal account in formalization.yaml, and judges whether the result is " +
-  "plausibly interesting to some mathematician.";
+  "The automated review checks that your formal statements agree with the informal " +
+  "account of them, wherever you have written it: module documentation or docstrings " +
+  "in the Challenge, the README, or formalization.yaml. It also judges whether the " +
+  "result is plausibly interesting to some mathematician.";
 
 // Nothing is running for a submission in these states, so the page stops
 // asking. Everything else is in motion and the page keeps itself current.
