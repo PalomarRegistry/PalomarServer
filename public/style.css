@@ -93,3 +93,8 @@ button[data-busy="true"]::after {
 }
 .problems-block { border-color: var(--caution); }
 .problems { padding-left: 1.1rem; color: var(--caution); }
+
+#submission-link { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: .8rem; width: 100%; }
+.details:has(> #submission-link) { display: flex; gap: .5rem; align-items: center; }
+.details:has(> #submission-link) button { margin-top: 0; white-space: nowrap; }

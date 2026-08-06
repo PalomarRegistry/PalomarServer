@@ -131,8 +131,11 @@ async function establishSession() {
   const body = new FormData();
   body.set("token", token);
   const response = await fetch("/session", { method: "POST", body, credentials: "same-origin" });
-  // Drop the token from the address bar and from history once exchanged.
-  history.replaceState(null, "", location.pathname + location.search);
+  // The fragment stays in the address bar. It is the only key to this
+  // submission, the cookie it buys lasts half a day, and the page tells the
+  // submitter to bookmark this link: removing the key would make that advice
+  // false and lose the submission the moment the cookie expired. A fragment is
+  // never sent to a server, which is why the key is carried in one.
   return response.ok;
 }
 
@@ -177,6 +180,20 @@ async function poll() {
     setTimeout(poll, 6000);
   }
 }
+
+const linkField = document.getElementById("submission-link");
+const copyButton = document.getElementById("copy-link");
+if (linkField) linkField.value = location.href;
+copyButton?.addEventListener("click", async () => {
+  try {
+    await navigator.clipboard.writeText(linkField.value);
+    copyButton.textContent = "Copied";
+  } catch {
+    // No clipboard permission: select it so it can be copied by hand.
+    linkField.select();
+    copyButton.textContent = "Press to copy";
+  }
+});
 
 (async () => {
   if (token && !(await establishSession())) {

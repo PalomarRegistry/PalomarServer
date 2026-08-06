@@ -168,10 +168,20 @@ export function statusPage(env) {
     </section>
 
     <section class="disclosure">
-      <h2>Keep this page</h2>
+      <h2>Keep this link</h2>
       <p>
-        The link in your address bar is the only way back to this submission. Palomar
-        does not email, and there is no account to sign in to. Bookmark it.
+        This is the only way back to this submission. Palomar does not email,
+        and there is no account to sign in to. Bookmark it, or copy it
+        somewhere you will still have it tomorrow.
+      </p>
+      <p class="details">
+        <input id="submission-link" readonly aria-label="Link to this submission">
+        <button type="button" id="copy-link" class="secondary">Copy</button>
+      </p>
+      <p class="hint warning">
+        Anyone with this link can read the review and register or withdraw the
+        submission. It is not in the page's web address by accident: the part
+        after the # is never sent to any server. Treat it like a password.
       </p>
     </section>
     <script src="/status.js" defer></script>
