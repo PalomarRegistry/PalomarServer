@@ -34,6 +34,13 @@ token is discarded immediately. Afterwards the only way back to a submission
 is the link, whose secret lives in the URL fragment so it never reaches a
 server log or a `Referer` header.
 
+The key is carried after the `#` because a browser leaves that part out of the
+requests it makes, so it does not reach an access log or a `Referer` header.
+The status page does send it to Palomar once, in the body of a `POST`, to
+exchange it for a short-lived cookie. Saying it is "never sent to a server"
+would be wrong, and the page does not say so: it says to treat the link like a
+password, which is the part a submitter can act on.
+
 Push access is not authorship. It does not establish approval from the
 responsible authors of a substantive formalization, and does not replace the
 declaration a submitter makes about that.

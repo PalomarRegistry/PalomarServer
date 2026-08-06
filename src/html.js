@@ -142,15 +142,19 @@ export function statusPage(env) {
   return page(env, "Your submission", `
     <h1>Your submission</h1>
     <p class="lede" id="summary">Loading…</p>
+    <div id="progress-detail"></div>
+    <p class="hint">This page keeps itself up to date. You do not need to reload it.</p>
     <dl class="details" id="details"></dl>
     <h2>Progress</h2>
     <ol class="events" id="events"></ol>
 
     <section id="review-section" hidden>
-      <h2>Your editorial review</h2>
+      <h2>Your automated review</h2>
       <p class="hint">
-        This review is private. Nobody but you and the Palomar operators can
-        read it, and it stays that way unless you choose to register it.
+        This is an automated review of the alignment between your formal
+        statements and the informal account in <code>formalization.yaml</code>.
+        No person read it. It is private: nobody but you and the Palomar
+        moderation team can see it, and it stays that way unless you register.
       </p>
       <dl class="details" id="review-summary"></dl>
       <div id="review-body"></div>
@@ -180,8 +184,7 @@ export function statusPage(env) {
       </p>
       <p class="hint warning">
         Anyone with this link can read the review and register or withdraw the
-        submission. It is not in the page's web address by accident: the part
-        after the # is never sent to any server. Treat it like a password.
+        submission. Treat it like a password.
       </p>
     </section>
     <script src="/status.js" defer></script>

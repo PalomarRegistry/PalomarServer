@@ -5,6 +5,7 @@ const token = location.hash.replace(/^#/, "");
 const summary = document.getElementById("summary");
 const details = document.getElementById("details");
 const events = document.getElementById("events");
+const progress = document.getElementById("progress-detail");
 const reviewSection = document.getElementById("review-section");
 const reviewSummary = document.getElementById("review-summary");
 const reviewBody = document.getElementById("review-body");
@@ -30,11 +31,33 @@ const SCORE_LABELS = {
 const LABELS = {
   verifying: "Mechanically verifying your submission.",
   "verification-failed": "Mechanical verification did not pass.",
-  "awaiting-review": "Verification passed. Waiting for editorial review.",
-  "review-ready": "Your editorial review is ready.",
+  "awaiting-review": "Verification passed. Waiting for the automated review.",
+  reviewing: "Running the automated review.",
+  "review-ready": "Your automated review is ready.",
   registered: "Registered in the registry.",
   withdrawn: "Withdrawn.",
 };
+
+// What the automated review is, said once, where someone is waiting for it.
+const REVIEW_EXPLANATION =
+  "The automated review checks the alignment between the formal statements and " +
+  "the informal account in formalization.yaml, and judges whether the result is " +
+  "plausibly interesting to some mathematician.";
+
+// Nothing is running for a submission in these states, so the page stops
+// asking. Everything else is in motion and the page keeps itself current.
+const SETTLED = new Set(["verification-failed", "registered", "withdrawn"]);
+
+function minutes(seconds) {
+  if (seconds < 90) return `${Math.round(seconds)} seconds`;
+  return `${Math.round(seconds / 60)} minutes`;
+}
+
+function el(tag, text) {
+  const node = document.createElement(tag);
+  node.textContent = text;
+  return node;
+}
 
 function row(term, value, target = details) {
   const dt = document.createElement("dt");
@@ -148,6 +171,26 @@ async function poll() {
   } catch { summary.textContent = "Could not reach the server. Retrying."; setTimeout(poll, 8000); return; }
 
   summary.textContent = LABELS[data.status] ?? data.status;
+  progress.replaceChildren();
+
+  if (data.status === "awaiting-review" || data.status === "reviewing") {
+    progress.append(el("p", REVIEW_EXPLANATION));
+    const notes = [];
+    if (data.status === "awaiting-review") {
+      notes.push("Palomar looks for submissions to review every 15 minutes.");
+    }
+    if (data.status === "reviewing" && data.review_started_at) {
+      const elapsed = (Date.now() - Date.parse(data.review_started_at)) / 1000;
+      if (Number.isFinite(elapsed) && elapsed > 0) {
+        notes.push(`Running for ${minutes(elapsed)}.`);
+      }
+    }
+    if (data.typical_review_seconds) {
+      notes.push(`Recent reviews have taken about ${minutes(data.typical_review_seconds)}.`);
+    }
+    if (notes.length) progress.append(el("p", notes.join(" ")));
+  }
+
   details.replaceChildren();
   row("Repository", link(`https://github.com/${data.repository}`, data.repository));
   row("Commit", data.commit);
@@ -176,8 +219,11 @@ async function poll() {
     row("Registry record", link(data.registered_url, data.registered_url));
   }
 
-  if (data.status === "verifying" || (data.status === "review-ready" && data.registration_consent)) {
-    setTimeout(poll, 6000);
+  // Anything not settled is still moving, so keep asking. Stopping here is
+  // what left a page saying "waiting for review" while the review arrived.
+  if (!SETTLED.has(data.status)) {
+    const waitingOnAPerson = data.status === "review-ready" && !data.registration_consent;
+    if (!waitingOnAPerson) setTimeout(poll, 6000);
   }
 }
 

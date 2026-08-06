@@ -325,6 +325,21 @@ async function loadByToken(env, token) {
   return record.value ? { record: record.value, sha: record.sha } : null;
 }
 
+/**
+ * How long an automated review has been taking lately, in seconds.
+ *
+ * Recorded by the reviewer as each review finishes. Absent until one has, so
+ * the page says nothing about duration rather than inventing a figure.
+ */
+async function typicalReviewSeconds(env) {
+  const timing = await readState(env, "index/review-timing.json");
+  const seconds = timing.value?.seconds;
+  if (!Array.isArray(seconds) || !seconds.length) return null;
+  const sorted = [...seconds].filter((n) => Number.isFinite(n) && n > 0).sort((a, b) => a - b);
+  if (!sorted.length) return null;
+  return Math.round(sorted[Math.floor(sorted.length / 2)]);
+}
+
 /** Refresh a verifying submission from the run it dispatched. */
 async function refresh(env, entry) {
   const record = entry.record;
@@ -525,6 +540,8 @@ export default {
           commit: record.commit,
           created_at: record.created_at,
           run: record.run ?? null,
+          review_started_at: record.review_started_at ?? null,
+          typical_review_seconds: await typicalReviewSeconds(env),
           registration_consent: record.registration_consent === true,
           registered_url: record.registered_url ?? null,
           events: record.events,

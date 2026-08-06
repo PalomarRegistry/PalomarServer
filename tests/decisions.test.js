@@ -8,6 +8,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFile } from "node:fs/promises";
 import worker from "../src/index.js";
 import { statePath, tokenDigest } from "../src/submission.js";
 
@@ -396,4 +397,31 @@ test("a redirect carries the fragment the submitter needs", async () => {
   // submitter would land on a status page with no way to identify themselves.
   const redirect = Response.redirect("https://submit.palomar-registry.org/s#" + TOKEN, 303);
   assert.equal(redirect.headers.get("location"), `https://submit.palomar-registry.org/s#${TOKEN}`);
+});
+
+test("the page keeps asking while anything is still moving", async () => {
+  // It only re-polled while verifying, so once verification passed the page
+  // sat on "waiting for the automated review" and never showed the review.
+  const script = await readFile(new URL("../public/status.js", import.meta.url), "utf8");
+  const settled = /const SETTLED = new Set\(\[([^\]]*)\]\)/.exec(script)[1];
+  for (const moving of ["verifying", "awaiting-review", "reviewing"]) {
+    assert.ok(!settled.includes(moving), `${moving} must not be treated as settled`);
+  }
+  for (const done of ["registered", "withdrawn", "verification-failed"]) {
+    assert.ok(settled.includes(done), `${done} should stop the polling`);
+  }
+});
+
+test("a duration is only claimed once one has been measured", async () => {
+  // With nothing recorded the page says nothing about how long a review takes,
+  // rather than showing a figure nobody measured.
+  stubState(await fixture());
+  const empty = await worker.fetch(request("/api/submission"), ENV);
+  assert.equal((await empty.json()).typical_review_seconds, null);
+
+  const withTiming = await fixture();
+  withTiming["index/review-timing.json"] = { schema_version: 1, seconds: [200, 400, 300] };
+  stubState(withTiming);
+  const measured = await worker.fetch(request("/api/submission"), ENV);
+  assert.equal((await measured.json()).typical_review_seconds, 300, "the median of what was measured");
 });

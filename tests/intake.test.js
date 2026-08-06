@@ -220,4 +220,8 @@ test("the status page keeps the key it tells the submitter to bookmark", async (
   const page = statusPage(ENV);
   assert.match(page, /id="submission-link"/);
   assert.match(page, /Treat it like a password/);
+  // The page used to claim the fragment was never sent to any server, while
+  // the same page posts it to /session to start the session. Browsers keep it
+  // out of the requests they make; that is not the same claim.
+  assert.doesNotMatch(page, /never sent to any server/);
 });
