@@ -50,8 +50,9 @@ export function statePath(id, name) {
 export const STATUSES = {
   verifying: "Mechanically verifying the submission",
   "verification-failed": "Mechanical verification did not pass",
-  "awaiting-review": "Waiting for editorial review",
-  "review-ready": "The editorial review is ready for you",
+  "awaiting-review": "Waiting for the automated review",
+  reviewing: "The automated review is running",
+  "review-ready": "The automated review is ready for you",
   registered: "Registered in the registry",
   withdrawn: "Withdrawn",
 };
