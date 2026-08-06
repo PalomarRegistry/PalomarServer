@@ -36,6 +36,10 @@ export function intakeForm(env, values = {}, problems = []) {
          <p class="hint">Everything you typed is still below.</p>
        </section>`
     : "";
+  // A layout that was spelled out by hand must be visible when the form comes
+  // back, or a submitter corrects one field and unknowingly reverts the rest.
+  const layoutOpen = ["project_path", "comparator_config_path", "formalization_metadata_path"]
+    .some((name) => String(values[name] ?? "") !== "");
   return page(env, "Submit a result", `
     <h1>Submit a Lean-verified result</h1>
     ${trouble}
@@ -79,6 +83,32 @@ export function intakeForm(env, values = {}, problems = []) {
         <span class="field-status" id="commit-status" aria-hidden="true"></span>
         <span id="commit-message">A full 40-character SHA. Branches and tags move; a record must not.</span>
       </p>
+
+      <details id="layout" class="disclosure"${layoutOpen ? " open" : ""}>
+        <summary>Where the Lean project is <span class="optional">usually nothing to do</span></summary>
+        <p class="hint" id="layout-message">
+          Palomar looks for the project at the repository root. If it is
+          somewhere else, these are filled in for you once the commit is
+          checked.
+        </p>
+
+        <label for="project_path">Project directory</label>
+        <input id="project_path" name="project_path" autocomplete="off"
+               placeholder="left blank for the repository root"
+               value="${escape(values.project_path)}">
+        <p class="hint">The directory holding the Lakefile and comparator.json.</p>
+
+        <label for="comparator_config_path">Comparator configuration</label>
+        <input id="comparator_config_path" name="comparator_config_path" autocomplete="off"
+               placeholder="left blank for comparator.json in the project"
+               value="${escape(values.comparator_config_path)}">
+
+        <label for="formalization_metadata_path">Formalization metadata</label>
+        <input id="formalization_metadata_path" name="formalization_metadata_path"
+               autocomplete="off"
+               placeholder="left blank for formalization.yaml in the project"
+               value="${escape(values.formalization_metadata_path)}">
+      </details>
 
       <fieldset>
         <legend>Your relationship to this formalization</legend>

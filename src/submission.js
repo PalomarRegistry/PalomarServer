@@ -60,6 +60,7 @@ export const STATUSES = {
 
 export function newRecord({
   id, repositoryName, commit, owner, submitter, existingId, context, authorization,
+  requestedPaths = {},
 }) {
   return {
     schema_version: 1,
@@ -72,6 +73,13 @@ export function newRecord({
     push_verified: true,
     existing_id: existingId || null,
     context: context || null,
+    // What the submitter asked to be verified, which the reviewer binds the
+    // mechanical report against.
+    requested_paths: {
+      project_path: requestedPaths.project_path || "",
+      comparator_config_path: requestedPaths.comparator_config_path || "",
+      formalization_metadata_path: requestedPaths.formalization_metadata_path || "",
+    },
     authorization,
     created_at: null,
     events: [],

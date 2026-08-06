@@ -187,7 +187,7 @@ async function poll() {
     progress.append(el("p", REVIEW_EXPLANATION));
     const notes = [];
     if (data.status === "awaiting-review") {
-      notes.push("Palomar looks for submissions to review every 15 minutes.");
+      notes.push("Palomar has been asked to start it.");
     }
     if (data.status === "reviewing" && data.review_started_at) {
       const elapsed = (Date.now() - Date.parse(data.review_started_at)) / 1000;
@@ -204,6 +204,16 @@ async function poll() {
   details.replaceChildren();
   row("Repository", link(`https://github.com/${data.repository}`, data.repository));
   row("Commit", data.commit);
+  // The form fills these in for you when it can, so say what was submitted.
+  // Nothing else in the pipeline ever shows a submitter the layout it used.
+  for (const [key, label] of [
+    ["project_path", "Project directory"],
+    ["comparator_config_path", "Comparator configuration"],
+    ["formalization_metadata_path", "Formalization metadata"],
+  ]) {
+    const value = data.requested_paths?.[key];
+    if (value) row(label, value);
+  }
   row("Submitted", data.created_at ?? "");
   if (data.run?.url) row("Verification run", link(data.run.url, data.run.url.split("/").pop()));
 

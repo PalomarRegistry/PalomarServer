@@ -452,3 +452,48 @@ test("a duration is written the way a person would say it", async () => {
   assert.equal(duration(3600), "60 minutes");
   assert.doesNotMatch(duration(1), /1 seconds/);
 });
+
+test("the reviewer is asked to run the moment there is work", async () => {
+  // The schedule is best-effort: it went hours without firing and a submission
+  // sat ready with nothing looking at it. Waiting for a cron is not a plan.
+  const dispatched = [];
+  globalThis.fetch = async (url, init = {}) => {
+    const path = new URL(url).pathname;
+    if (path.includes("/actions/workflows/reviewer.yml/dispatches")) {
+      dispatched.push(path);
+      return new Response("", { status: 204 });
+    }
+    if (path.includes("/actions/workflows/")) {
+      return Response.json({
+        workflow_runs: [{
+          id: 12345, name: "Verify submission a1b2c3d4e5f6", status: "completed",
+          conclusion: "success", html_url: "https://example.test/run",
+          run_started_at: "2026-08-01T00:00:00Z",
+        }],
+      });
+    }
+    if ((init.method ?? "GET") !== "GET") return Response.json({ content: {} });
+    if (!store.has(path)) return new Response("", { status: 404 });
+    return Response.json({ content: encode(store.get(path)), sha: "sha" });
+  };
+  const files = await fixture({ status: "verifying" });
+  const store = new Map(
+    Object.entries(files).map(([k, v]) => [`/repos/${ENV.STATE_REPO}/contents/${k}`, v]),
+  );
+  const env = { ...ENV, SUBMISSION_REPO: "PalomarRegistry/PalomarSubmission",
+                VERIFY_WORKFLOW: "submission.yml", REVIEW_WORKFLOW: "reviewer.yml" };
+  await worker.fetch(request("/api/submission"), env);
+  assert.equal(dispatched.length, 1, "verification finishing did not ask for a review");
+});
+
+test("a submission that is not ready does not ask for a review", async () => {
+  const dispatched = [];
+  globalThis.fetch = async (url) => {
+    if (new URL(url).pathname.includes("reviewer.yml/dispatches")) dispatched.push(url);
+    return new Response("", { status: 404 });
+  };
+  const env = { ...ENV, REVIEW_WORKFLOW: "reviewer.yml" };
+  stubState(await fixture({ status: "review-ready" }));
+  await worker.fetch(request("/api/submission"), env);
+  assert.deepEqual(dispatched, []);
+});

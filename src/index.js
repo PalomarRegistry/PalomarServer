@@ -13,6 +13,7 @@ import {
   dispatchVerification,
   findVerificationRun,
   deleteState,
+  dispatchReviewer,
   listState,
   readState,
   repository as fetchRepository,
@@ -102,6 +103,35 @@ async function beginSubmission(request, env) {
   const relationship = String(form.get("authorization_relationship") ?? "").trim();
   const evidence = String(form.get("authorization_evidence") ?? "").trim().slice(0, 2000);
 
+  // A repository-relative path, as `{path}` or `{invalid: true}`.
+  //
+  // The rules are the verifier's, character for character. Anywhere the two
+  // disagree the submitter loses: a path this accepts and the verifier refuses
+  // costs a dispatched run that was always going to fail, and one this refuses
+  // and the verifier would have accepted is a submission turned away for no
+  // reason. A tagged result rather than a sentinel string, so a directory
+  // genuinely called `invalid` is a path and not an error.
+  const path = (name) => {
+    const raw = String(form.get(name) ?? "").trim();
+    if (!raw) return { path: null };
+    // Nothing here is rewritten. A trailing slash and a leading slash are both
+    // refused rather than trimmed: quietly turning what somebody typed into a
+    // different path is worse than telling them.
+    const segments = raw.split("/");
+    const bad =
+      raw.startsWith("/") ||
+      raw.length > 400 ||
+      segments.some((part) => !part || part === "." || part === "..") ||
+      /[\\?#]/.test(raw) ||
+      segments[0].includes(":") ||
+      // eslint-disable-next-line no-control-regex
+      /[\x00-\x1f\x7f]/.test(raw);
+    return bad ? { invalid: true } : { path: raw };
+  };
+  const projectPath = path("project_path");
+  const configPath = path("comparator_config_path");
+  const metadataPath = path("formalization_metadata_path");
+
   const values = {
     repository: String(form.get("repository") ?? ""),
     commit: String(form.get("commit") ?? ""),
@@ -109,6 +139,9 @@ async function beginSubmission(request, env) {
     context,
     authorization_relationship: relationship,
     authorization_evidence: evidence,
+    project_path: String(form.get("project_path") ?? ""),
+    comparator_config_path: String(form.get("comparator_config_path") ?? ""),
+    formalization_metadata_path: String(form.get("formalization_metadata_path") ?? ""),
   };
   const rejected = (...problems) => html(intakeForm(env, values, problems), 400);
 
@@ -122,6 +155,15 @@ async function beginSubmission(request, env) {
   }
   if (!RELATIONSHIPS.has(relationship)) {
     problems.push("Say whether you maintain this formalization or have approval to submit it.");
+  }
+  for (const [name, value] of [
+    ["Project directory", projectPath],
+    ["Comparator configuration", configPath],
+    ["Formalization metadata", metadataPath],
+  ]) {
+    if (value.invalid) {
+      problems.push(`${name} must be a path inside the repository, written with forward slashes.`);
+    }
   }
   if (problems.length) return rejected(...problems);
 
@@ -147,6 +189,11 @@ async function beginSubmission(request, env) {
     commit,
     existing_id: existingId || null,
     context: context || null,
+    requested_paths: {
+      project_path: projectPath.path,
+      comparator_config_path: configPath.path,
+      formalization_metadata_path: metadataPath.path,
+    },
     authorization_relationship: relationship,
     authorization_evidence: evidence || null,
     created_at: now(),
@@ -272,6 +319,7 @@ async function completeSubmission(request, env) {
       submitter: user?.login ?? null,
       existingId: pending.value.existing_id,
       context: pending.value.context,
+      requestedPaths: pending.value.requested_paths ?? {},
       authorization: {
         relationship: pending.value.authorization_relationship,
         ...(pending.value.authorization_evidence
@@ -303,6 +351,11 @@ async function completeSubmission(request, env) {
     requestId: id,
     options: {
       authorization_relationship: RELATIONSHIP_LABELS[record.authorization.relationship],
+      // A project that is not at the repository root is acceptable and has to
+      // be able to say so; the verifier has always taken these.
+      ...Object.fromEntries(
+        Object.entries(record.requested_paths ?? {}).filter(([, value]) => value),
+      ),
       ...(record.authorization.evidence
         ? { authorization_evidence: record.authorization.evidence }
         : {}),
@@ -361,6 +414,10 @@ async function refresh(env, entry) {
   if (next.status !== "verifying" && record.status === "verifying") {
     await release(env, record.id);
   }
+  if (next.status === "awaiting-review") {
+    // Failing to ask only costs the schedule's latency, so it is not fatal.
+    await dispatchReviewer(env).catch(() => false);
+  }
   if (JSON.stringify(next) !== JSON.stringify(record)) {
     await writeState(
       env,
@@ -409,6 +466,7 @@ async function reconcile(env) {
         events: [...record.value.events,
                  { at: now(), status: settled, note: `Verification ${run.conclusion}` }],
       }, `Reconcile ${item.id}`, record.sha);
+      if (settled === "awaiting-review") await dispatchReviewer(env).catch(() => false);
       continue;
     }
     still.push(item);
@@ -529,6 +587,8 @@ export default {
         };
         await writeState(env, statePath(next.id, "state.json"), next,
                          `Registration consent for ${next.id}`, entry.sha);
+        // The submitter has just decided; do not make them wait on a cron.
+        await dispatchReviewer(env).catch(() => false);
         return json({ ok: true });
       }
       if (request.method === "GET" && url.pathname === "/api/submission") {
@@ -540,6 +600,12 @@ export default {
           status: record.status,
           repository: record.repository,
           commit: record.commit,
+          // Shown so a submitter can see what was actually asked for. The
+          // layout fields are partly filled in by a script reading the
+          // repository, and something filled in for you is worth confirming.
+          requested_paths: Object.fromEntries(
+            Object.entries(record.requested_paths ?? {}).filter(([, value]) => value),
+          ),
           created_at: record.created_at,
           run: record.run ?? null,
           review_started_at: record.review_started_at ?? null,
