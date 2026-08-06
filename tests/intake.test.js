@@ -14,6 +14,8 @@ const form = intakeForm(ENV);
 test("the disclosure says what is recorded and when it becomes public", () => {
   assert.match(form, /permanently and publicly recorded/);
   assert.match(form, /will not be public until you have seen them/);
+  // "The review" invites the reading that a person did it. Say what it is.
+  assert.match(form, /the automated review/);
   assert.match(form, /not completely secret prior to registration/);
   assert.match(form, /audited and acted on by the\s+Palomar moderation team/);
   // The earlier wording claimed reviews were readable by "the model provider"
