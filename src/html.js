@@ -151,10 +151,11 @@ export function statusPage(env) {
     <section id="review-section" hidden>
       <h2>Your automated review</h2>
       <p class="hint">
-        This is an automated review of the alignment between your formal
-        statements and the informal account in <code>formalization.yaml</code>.
-        No person read it. It is private: nobody but you and the Palomar
-        moderation team can see it, and it stays that way unless you register.
+        This is an automated review of whether your formal statements agree
+        with the informal account of them, and whether the result is plausibly
+        of interest. No person read it. It is private: nobody but you and the
+        Palomar moderation team can see it, and it stays that way unless you
+        register.
       </p>
       <dl class="details" id="review-summary"></dl>
       <div id="review-body"></div>
