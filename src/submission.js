@@ -32,20 +32,16 @@ export async function tokenDigest(env, token) {
   return digest(`${env.TOKEN_PEPPER ?? ""}:${token}`);
 }
 
-export const REPOSITORY_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
-export const COMMIT_RE = /^[0-9a-f]{40}$/;
-export const PALOMAR_ID_RE = /^PALOMAR-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{6}$/;
-
-/**
- * Accept a repository as owner/name from either a bare pair or a GitHub URL.
- * Anything else is refused rather than guessed at.
- */
-export function parseRepository(raw) {
-  const value = String(raw ?? "").trim().replace(/\.git$/, "").replace(/\/+$/, "");
-  if (REPOSITORY_RE.test(value)) return value;
-  const match = /^https?:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)$/.exec(value);
-  return match ? match[1] : null;
-}
+// Defined in one place and shared with the browser, so the form, its live
+// checks and this server cannot disagree about what a submitted value means.
+export {
+  COMMIT_RE,
+  PALOMAR_ID_RE,
+  REPOSITORY_RE,
+  normalizeCommit,
+  normalizePalomarId,
+  normalizeRepository,
+} from "../public/normalize.js";
 
 export function statePath(id, name) {
   return `submissions/${id}/${name}`;
