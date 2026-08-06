@@ -185,9 +185,36 @@ function autofill(input, value) {
 
 const DEFAULT_LAYOUT = layoutMessage?.textContent;
 
+/**
+ * Say, on the closed disclosure, whether there is anything in here to do.
+ *
+ * Almost always there is not, and a heading that has to be opened to find that
+ * out is a heading everybody opens. So the settled case recedes, and the case
+ * worth reading keeps its weight. `unchecked` is not a claim either way: it is
+ * what stands before a commit has been looked at, and after a rate limit or a
+ * repository too large to list.
+ */
+const layoutSummary = document.getElementById("layout-summary");
+const SUMMARIES = {
+  unchecked: "File layout",
+  ok: "File layout looks okay",
+  custom: "It looks like you have a non-standard file layout",
+};
+
+function summarize(state) {
+  if (!layout) return;
+  layout.dataset.layout = state;
+  if (layoutSummary) layoutSummary.textContent = SUMMARIES[state];
+}
+
 function clearSuggestions() {
   for (const input of [projectPath, configPath, metadataPath]) autofill(input, "");
   say(DEFAULT_LAYOUT);
+  // Something typed by hand is a non-standard layout whatever the tree says,
+  // and clearing the suggestions does not clear that.
+  summarize([projectPath, configPath, metadataPath].some((input) => input?.value)
+    ? "custom"
+    : "unchecked");
 }
 
 /**
@@ -232,21 +259,36 @@ async function describeLayout(name, sha) {
   }
   const where = locateProject(tree.tree);
 
-  if (where.found && !where.project) {
-    if (where.metadata) autofill(metadataPath, where.metadata);
+  if (where.found && !where.project && !where.metadata) {
+    summarize("ok");
     return say("The project is at the repository root, which is what Palomar expects.", true);
+  }
+  if (where.found && !where.project) {
+    autofill(metadataPath, where.metadata);
+    summarize("custom");
+    return say(`The project is at the repository root, but its formalization.yaml is in ${where.metadata}, so that has been filled in.`, true);
   }
   if (where.found) {
     autofill(projectPath, where.project);
     if (where.metadata) autofill(metadataPath, where.metadata);
     layout.open = true;
+    summarize("custom");
     return say(`The project looks like it is in ${where.project}, so that has been filled in. Change it if that is wrong.`, true);
   }
   layout.open = true;
+  summarize("custom");
   if (where.ambiguous) {
     return say(`This repository has more than one project: ${where.candidates.join(", ")}. Say which one is being submitted.`);
   }
   say("No comparator.json was found beside a Lakefile at that commit. If the project's configuration is named something else, say where it is.");
+}
+
+// Filling one of these in by hand makes the layout non-standard whatever the
+// tree looked like, and the summary should not go on saying otherwise.
+for (const input of [projectPath, configPath, metadataPath]) {
+  input?.addEventListener("input", () => {
+    if (input.value) summarize("custom");
+  });
 }
 
 const checkExistingId = latest(async (settle, parts) => {
