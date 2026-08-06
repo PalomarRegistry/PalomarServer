@@ -13,11 +13,14 @@
  * moment before the submission would have anyway.
  */
 
+import {
+  normalizeCommit,
+  normalizePalomarId,
+  normalizeRepository,
+} from "./normalize.js";
+
 const REGISTRY_INDEX =
   "https://raw.githubusercontent.com/PalomarRegistry/PalomarDatabase/main/index.json";
-const REPOSITORY_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
-const COMMIT_RE = /^[0-9a-f]{40}$/i;
-const PALOMAR_ID_RE = /^PALOMAR-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{6}$/;
 
 const live = document.getElementById("live-status");
 
@@ -37,18 +40,39 @@ function field(name) {
   };
 }
 
-function show(parts, state, message) {
+function show(parts, state, message, href) {
   if (parts.status) parts.status.dataset.state = state ?? "";
-  if (parts.message && message) parts.message.textContent = message;
+  if (parts.message && message) {
+    parts.message.replaceChildren();
+    if (href) {
+      // So the submitter can check what was found. In a new tab, because
+      // leaving this page would discard everything they have typed.
+      const link = document.createElement("a");
+      link.href = href;
+      link.textContent = message;
+      link.target = "_blank";
+      link.rel = "noreferrer noopener";
+      parts.message.append(link);
+    } else {
+      parts.message.textContent = message;
+    }
+  }
   if (state === "found" || state === "missing") announce(message);
 }
 
-/** owner/name, from a bare pair or a GitHub URL, or null. */
-function parseRepository(raw) {
-  const value = String(raw ?? "").trim().replace(/\.git$/, "").replace(/\/+$/, "");
-  if (REPOSITORY_RE.test(value)) return value;
-  const match = /^https?:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)$/.exec(value);
-  return match ? match[1] : null;
+/**
+ * Put the value the server will read back into the field.
+ *
+ * Otherwise the browser validates the `pattern` attribute against what was
+ * typed while everything else validates what it means, and a commit pasted
+ * with a stray space is reported as found and then refused as malformed.
+ */
+function settle(parts, normalize) {
+  if (!parts.input) return;
+  const normalized = normalize(parts.input.value);
+  if (normalized !== null && normalized !== parts.input.value) {
+    parts.input.value = normalized;
+  }
 }
 
 /** Run the newest request only: an earlier answer must not overwrite a later one. */
@@ -56,8 +80,8 @@ function latest(run) {
   let token = 0;
   return async (...args) => {
     const mine = ++token;
-    const settle = (state, message) => {
-      if (mine === token) show(args[0], state, message);
+    const settle = (state, message, href) => {
+      if (mine === token) show(args[0], state, message, href);
     };
     await run(settle, ...args);
   };
@@ -89,22 +113,23 @@ const DEFAULT = {
 };
 
 const checkRepository = latest(async (settle, parts) => {
-  const name = parseRepository(parts.input.value);
+  const name = normalizeRepository(parts.input.value);
   if (!name) return settle("", DEFAULT.repository);
   settle("checking", `Looking for ${name}…`);
   const data = await githubJson(`repos/${name}`);
   if (data === "rate-limited") return settle("", DEFAULT.repository);
   if (!data) return settle("missing", `No public repository called ${name}.`);
   if (data.private) return settle("missing", `${name} is private; Palomar indexes public repositories.`);
-  settle("found", `Found ${data.full_name}.`);
+  settle("found", `Found ${data.full_name}`, `https://github.com/${data.full_name}`);
   checkCommit(commit);
 });
 
 const checkCommit = latest(async (settle, parts) => {
-  const sha = parts.input.value.trim().toLowerCase();
-  const name = parseRepository(repository.input.value);
-  if (!COMMIT_RE.test(sha)) {
-    return settle(sha ? "missing" : "", sha ? "A commit is 40 hexadecimal characters." : DEFAULT.commit);
+  const sha = normalizeCommit(parts.input.value);
+  const name = normalizeRepository(repository.input.value);
+  if (!sha) {
+    const typed = parts.input.value.trim();
+    return settle(typed ? "missing" : "", typed ? "A commit is 40 hexadecimal characters." : DEFAULT.commit);
   }
   if (!name) return settle("", DEFAULT.commit);
   settle("checking", "Looking for that commit…");
@@ -112,13 +137,18 @@ const checkCommit = latest(async (settle, parts) => {
   if (data === "rate-limited") return settle("", DEFAULT.commit);
   if (!data?.sha) return settle("missing", `That commit is not in ${name}.`);
   const when = String(data.commit?.committer?.date ?? "").slice(0, 10);
-  settle("found", when ? `Found that commit, from ${when}.` : "Found that commit.");
+  settle(
+    "found",
+    when ? `Found that commit, from ${when}` : "Found that commit",
+    `https://github.com/${name}/commit/${sha}`,
+  );
 });
 
 const checkExistingId = latest(async (settle, parts) => {
-  const value = parts.input.value.trim();
-  if (!value) return settle("", DEFAULT.existing_id);
-  if (!PALOMAR_ID_RE.test(value)) {
+  const typed = parts.input.value.trim();
+  if (!typed) return settle("", DEFAULT.existing_id);
+  const value = normalizePalomarId(typed);
+  if (!value) {
     return settle("missing", "A Palomar ID looks like PALOMAR-2026-07-29-000123.");
   }
   settle("checking", "Looking for that record…");
@@ -134,15 +164,26 @@ const checkExistingId = latest(async (settle, parts) => {
   const versions = entries.filter((entry) => entry?.id === value);
   if (!versions.length) return settle("missing", `${value} is not in the registry.`);
   const current = Math.max(...versions.map((entry) => Number(entry.version) || 0));
-  settle("found", `Found ${value}; this would become version ${current + 1}.`);
+  settle(
+    "found",
+    `Found ${value}; this would become version ${current + 1}`,
+    `https://palomar-registry.org/entry.html?id=${value}&version=${current}`,
+  );
 });
 
-repository.input?.addEventListener("input", debounce(() => checkRepository(repository), 400));
-repository.input?.addEventListener("blur", () => checkRepository(repository));
-commit.input?.addEventListener("input", debounce(() => checkCommit(commit), 400));
-commit.input?.addEventListener("blur", () => checkCommit(commit));
-existingId.input?.addEventListener("input", debounce(() => checkExistingId(existingId), 400));
-existingId.input?.addEventListener("blur", () => checkExistingId(existingId));
+for (const [parts, check, normalize] of [
+  [repository, checkRepository, normalizeRepository],
+  [commit, checkCommit, normalizeCommit],
+  [existingId, checkExistingId, normalizePalomarId],
+]) {
+  parts.input?.addEventListener("input", debounce(() => check(parts), 400));
+  // Settled when the field is left, not while it is being typed in, which
+  // would move the caret out from under whoever is typing.
+  parts.input?.addEventListener("blur", () => {
+    settle(parts, normalize);
+    check(parts);
+  });
+}
 
 /**
  * The approval note only means anything for one of the two answers, so it is

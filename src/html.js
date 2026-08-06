@@ -71,7 +71,7 @@ export function intakeForm(env, values = {}, problems = []) {
       </p>
 
       <label for="commit">Commit</label>
-      <input id="commit" name="commit" required pattern="[0-9a-fA-F]{40}" autocomplete="off"
+      <input id="commit" name="commit" required pattern="\\s*[0-9a-fA-F]{40}\\s*" autocomplete="off"
              aria-describedby="commit-hint"
              placeholder="0000000000000000000000000000000000000000" value="${escape(values.commit)}">
       <p class="hint" id="commit-hint">
@@ -111,7 +111,7 @@ export function intakeForm(env, values = {}, problems = []) {
 
       <label for="existing_id">Existing Palomar ID <span class="optional">optional</span></label>
       <input id="existing_id" name="existing_id" autocomplete="off"
-             pattern="PALOMAR-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{6}"
+             pattern="\\s*[Pp][Aa][Ll][Oo][Mm][Aa][Rr]-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{6}\\s*"
              aria-describedby="existing_id-hint"
              placeholder="PALOMAR-2026-07-29-000123"
              value="${escape(values.existing_id)}">
@@ -134,7 +134,7 @@ export function intakeForm(env, values = {}, problems = []) {
       </p>
       <p class="visually-hidden" role="status" id="live-status"></p>
     </form>
-    <script src="/intake.js" defer></script>
+    <script type="module" src="/intake.js"></script>
   `);
 }
 

@@ -66,8 +66,28 @@ test("the button says what it does", () => {
   assert.doesNotMatch(form, /Continue with GitHub/);
 });
 
-test("a cited Palomar ID is shape-checked by the browser before it is sent", () => {
-  assert.match(form, /pattern="PALOMAR-\[0-9\]\{4\}-\[0-9\]\{2\}-\[0-9\]\{2\}-\[0-9\]\{6\}"/);
+test("the browser's own validation accepts whatever the normaliser accepts", async () => {
+  // The `pattern` attribute runs before any script and cannot be made to
+  // normalise. If it is stricter than the shared normaliser, a value is
+  // reported as found by the live check and then refused on submission.
+  const { normalizeCommit, normalizePalomarId } = await import("../public/normalize.js");
+  const patterns = [...form.matchAll(/pattern="([^"]+)"/g)].map((m) => new RegExp(`^${m[1]}$`));
+  const [commitPattern, idPattern] = patterns;
+  for (const value of [
+    " 8d9b8319a4ed2dd094655978e905512dee6394b6 ",
+    "8D9B8319A4ED2DD094655978E905512DEE6394B6",
+    "\t8d9b8319a4ed2dd094655978e905512dee6394b6\n",
+  ]) {
+    assert.ok(normalizeCommit(value), `the normaliser rejects ${JSON.stringify(value)}`);
+    assert.ok(commitPattern.test(value), `the pattern rejects ${JSON.stringify(value)}`);
+  }
+  for (const value of [" PALOMAR-2026-07-29-000123 ", "palomar-2026-07-29-000123"]) {
+    assert.ok(normalizePalomarId(value), `the normaliser rejects ${JSON.stringify(value)}`);
+    assert.ok(idPattern.test(value), `the pattern rejects ${JSON.stringify(value)}`);
+  }
+  // And still refuses what the normaliser refuses.
+  assert.ok(!commitPattern.test("8d9b83"));
+  assert.ok(!normalizeCommit("8d9b83"));
 });
 
 test("every live-checked field names the element that describes it", () => {
@@ -133,4 +153,41 @@ test("one word for one thing, in the code as well as the copy", async () => {
     const stray = [...source.matchAll(/\b\w*[Pp]ublish\w*|\b\w*[Pp]ublicat\w*/g)].map((m) => m[0]);
     assert.deepEqual(stray, [], `${file} still says ${[...new Set(stray)].join(", ")}`);
   }
+});
+
+test("the browser and the server agree on what a submitted value means", async () => {
+  // The form's live checks and this server import the same module, so they
+  // cannot drift. This asserts the property that matters rather than the
+  // sharing: for every input, one answer.
+  const shared = await import("../public/normalize.js");
+  const server = await import("../src/submission.js");
+  const inputs = [
+    " 8d9b8319a4ed2dd094655978e905512dee6394b6 ",
+    "8D9B8319A4ED2DD094655978E905512DEE6394B6",
+    "8d9b83", "", "   ", "not a commit",
+    "kim-em/erdos-unit-distance-comparator",
+    " kim-em/erdos-unit-distance-comparator ",
+    "https://github.com/kim-em/erdos-unit-distance-comparator",
+    "https://github.com/kim-em/erdos-unit-distance-comparator.git/",
+    "https://gitlab.com/kim-em/x", "kim-em",
+    "PALOMAR-2026-07-29-000123", " palomar-2026-07-29-000123 ", "PALOMAR-2026-7-29-123",
+  ];
+  for (const value of inputs) {
+    for (const name of ["normalizeCommit", "normalizeRepository", "normalizePalomarId"]) {
+      assert.equal(server[name](value), shared[name](value), `${name}(${JSON.stringify(value)})`);
+    }
+  }
+});
+
+test("the live checks link back to what they found", async () => {
+  const script = await readFile(new URL("../public/intake.js", import.meta.url), "utf8");
+  // A submitter should be able to check the repository and commit the form
+  // says it found, without losing the form to do it.
+  assert.match(script, /https:\/\/github\.com\/\$\{data\.full_name\}/);
+  assert.match(script, /https:\/\/github\.com\/\$\{name\}\/commit\/\$\{sha\}/);
+  assert.match(script, /link\.target = "_blank"/);
+  assert.match(script, /link\.rel = "noreferrer noopener"/);
+  // The link text is set as text, and the href only ever from a normalised
+  // value, which has already matched a strict pattern.
+  assert.match(script, /link\.textContent = message/);
 });

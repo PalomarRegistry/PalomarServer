@@ -1,11 +1,11 @@
 import {
-  COMMIT_RE,
-  PALOMAR_ID_RE,
   digest,
   newAccessToken,
   newSubmissionId,
   newRecord,
-  parseRepository,
+  normalizeCommit,
+  normalizePalomarId,
+  normalizeRepository,
   statePath,
   tokenDigest,
 } from "./submission.js";
@@ -86,9 +86,10 @@ function now() {
  */
 async function beginSubmission(request, env) {
   const form = await request.formData();
-  const repositoryName = parseRepository(form.get("repository"));
-  const commit = String(form.get("commit") ?? "").trim().toLowerCase();
-  const existingId = String(form.get("existing_id") ?? "").trim();
+  const repositoryName = normalizeRepository(form.get("repository"));
+  const commit = normalizeCommit(form.get("commit"));
+  const rawExistingId = String(form.get("existing_id") ?? "").trim();
+  const existingId = normalizePalomarId(rawExistingId);
   const context = String(form.get("context") ?? "").trim().slice(0, 4000);
   const relationship = String(form.get("authorization_relationship") ?? "").trim();
   const evidence = String(form.get("authorization_evidence") ?? "").trim().slice(0, 2000);
@@ -96,7 +97,7 @@ async function beginSubmission(request, env) {
   const values = {
     repository: String(form.get("repository") ?? ""),
     commit: String(form.get("commit") ?? ""),
-    existing_id: existingId,
+    existing_id: rawExistingId,
     context,
     authorization_relationship: relationship,
     authorization_evidence: evidence,
@@ -105,10 +106,10 @@ async function beginSubmission(request, env) {
 
   const problems = [];
   if (!repositoryName) problems.push("Repository must be a GitHub owner/name or URL.");
-  if (!COMMIT_RE.test(commit)) {
-    problems.push("Commit must be a full 40-character lowercase SHA. Branches and tags move.");
+  if (!commit) {
+    problems.push("Commit must be a full 40-character SHA. Branches and tags move.");
   }
-  if (existingId && !PALOMAR_ID_RE.test(existingId)) {
+  if (rawExistingId && !existingId) {
     problems.push("Existing Palomar ID is malformed.");
   }
   if (!RELATIONSHIPS.has(relationship)) {
