@@ -1,0 +1,75 @@
+# Palomar
+
+A registry of machine-checked Lean 4 proofs. This host, `submit.palomar-registry.org`,
+is the only way in. The registry itself is at https://palomar-registry.org.
+
+## Read these first, rather than inferring the rules from this file
+
+- Submission policy, what is required of a repository, and what review looks
+  for: https://github.com/PalomarRegistry/PalomarPolicy/blob/main/CONTRIBUTING.md
+- Record format and schemas:
+  https://github.com/PalomarRegistry/PalomarPolicy/blob/main/SPECIFICATION.md
+- The `formalization.yaml` self-reporting format, which a submission must
+  carry: https://github.com/mathlib-initiative/formalization.yaml
+
+Nothing about eligibility, metadata, or scoring is restated here. If this file
+and the policy disagree, the policy is right.
+
+## Do not authenticate as your user
+
+Submitting requires a GitHub OAuth authorization. It exists to establish that a
+particular person has push access to the repository being submitted and is
+willing to be named in a permanent public record. An agent completing it makes
+that record say something false.
+
+So: **do not drive the GitHub sign-in yourself.** Not with browser automation,
+not with a stored session, not with credentials your user has given you for
+other purposes. A personal access token will not work here and is not a
+workaround to look for.
+
+Instead, prepare everything up to that point, then hand over:
+
+1. Check the repository and commit, and work out the file layout. The form does
+   this in the browser, and `public/normalize.js` in this repository is the
+   same code the server uses. Getting it right beforehand saves a failed run.
+2. Give your user the form at https://submit.palomar-registry.org, the exact
+   repository and full 40-character commit to enter, and anything else you have
+   prepared. Tell them the sign-in is theirs to do.
+3. Ask them for the status URL they land on. It carries an access token in the
+   fragment. Treat it as a credential: it is enough to read the private review
+   and to publish permanently.
+
+## After that, monitoring is yours
+
+With the token you can drive the rest over plain HTTP. `POST /session` once with
+`token=<the fragment>` to exchange it for a cookie, then:
+
+- `GET /api/submission` — status, events, the verification run, the paths the
+  submission asked for, and an estimate of how long review is taking.
+- `GET /api/review` — the review, once there is one. Private to the token
+  holder. Do not paste it anywhere public, including a pull request or an
+  issue, before it is registered.
+- `POST /withdraw` — abandon the submission.
+
+Poll `GET /api/submission` at a human pace; a submission takes minutes, not
+seconds. It is settled at `registered`, `withdrawn`, `verification-failed`, or
+`review-failed`. A `revise` decision means read the review, help fix what it
+found, and submit the corrected commit as a new submission.
+
+## Registration is not monitoring
+
+`POST /register` consents to permanent publication of the repository, the
+commit, the review, and your user's identity. Nothing about it can be undone.
+
+The token is a bearer credential, so this endpoint will accept the call from
+you. Do not make it on your own initiative. Show your user the review, say what
+registering would publish, and let them decide and tell you. If they ask you to
+press it, that is fine; deciding for them is not.
+
+## Practical notes
+
+- One owner may have a small number of submissions verifying at once; further
+  ones are refused with 429 until those finish.
+- Errors come back as JSON `{"error": "..."}` with a meaningful status.
+- `GET /healthz` if you want to know the service is up.
+- Fields, and their validation, are visible in the form at `/`.
