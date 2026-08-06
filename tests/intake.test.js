@@ -208,3 +208,16 @@ test("the policy permits the sign-in the form redirects to", async () => {
   const action = /action="([^"]+)"/.exec(intakeForm(ENV))[1];
   assert.equal(action, "/submit", "the form posts somewhere form-action must allow");
 });
+
+test("the status page keeps the key it tells the submitter to bookmark", async () => {
+  // The page said the address bar was the only way back and to bookmark it,
+  // while the script removed the key from the address bar seconds later. The
+  // bookmark was useless and the submission became unreachable when the
+  // twelve-hour cookie expired.
+  const script = await readFile(new URL("../public/status.js", import.meta.url), "utf8");
+  assert.doesNotMatch(script, /replaceState/);
+  const { statusPage } = await import("../src/html.js");
+  const page = statusPage(ENV);
+  assert.match(page, /id="submission-link"/);
+  assert.match(page, /Treat it like a password/);
+});

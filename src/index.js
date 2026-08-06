@@ -45,10 +45,14 @@ function html(body, status = 200, extra = {}) {
   });
 }
 
-function json(value, status = 200) {
+function json(value, status = 200, extra = {}) {
   return new Response(JSON.stringify(value), {
     status,
-    headers: { "content-type": "application/json; charset=utf-8", ...SECURITY_HEADERS },
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      ...SECURITY_HEADERS,
+      ...extra,
+    },
   });
 }
 

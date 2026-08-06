@@ -348,3 +348,52 @@ test("a commit that does not exist is answered, not treated as a fault", async (
   globalThis.fetch = async () => new Response("boom", { status: 500 });
   await assert.rejects(() => resolveCommit("t", "owner/name", "0".repeat(40)));
 });
+
+test("the session exchange actually sets the cookie it promises", async () => {
+  // json() took two parameters, so the third argument, the cookie, was
+  // silently discarded: /session answered 200 and set nothing, and every later
+  // request was unauthenticated. The submitter saw "could not be found" on a
+  // submission that existed and was theirs.
+  stubState(await fixture());
+  const response = await worker.fetch(
+    new Request("https://submit.palomar-registry.org/session", {
+      method: "POST",
+      body: new URLSearchParams({ token: TOKEN }),
+    }),
+    ENV,
+  );
+  assert.equal(response.status, 200);
+  const cookie = response.headers.get("set-cookie");
+  assert.ok(cookie, "no cookie was set");
+  assert.match(cookie, new RegExp(`palomar_session=${TOKEN}`));
+  for (const attribute of ["HttpOnly", "Secure", "SameSite=Strict", "Path=/"]) {
+    assert.match(cookie, new RegExp(attribute), `cookie lacks ${attribute}`);
+  }
+});
+
+test("the cookie the exchange sets is the one the status page is read with", async () => {
+  // The property that matters is the round trip, not the header: exchange a
+  // token, then use nothing but what came back.
+  stubState(await fixture());
+  const exchange = await worker.fetch(
+    new Request("https://submit.palomar-registry.org/session", {
+      method: "POST",
+      body: new URLSearchParams({ token: TOKEN }),
+    }),
+    ENV,
+  );
+  const cookie = exchange.headers.get("set-cookie").split(";")[0];
+  const status = await worker.fetch(
+    new Request("https://submit.palomar-registry.org/api/submission", { headers: { cookie } }),
+    ENV,
+  );
+  assert.equal(status.status, 200, "the cookie from /session did not authenticate /api/submission");
+  assert.equal((await status.json()).id, "a1b2c3d4e5f6");
+});
+
+test("a redirect carries the fragment the submitter needs", async () => {
+  // The access token rides in the fragment. If the platform dropped it, the
+  // submitter would land on a status page with no way to identify themselves.
+  const redirect = Response.redirect("https://submit.palomar-registry.org/s#" + TOKEN, 303);
+  assert.equal(redirect.headers.get("location"), `https://submit.palomar-registry.org/s#${TOKEN}`);
+});
