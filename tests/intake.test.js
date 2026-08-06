@@ -225,3 +225,22 @@ test("the status page keeps the key it tells the submitter to bookmark", async (
   // out of the requests they make; that is not the same claim.
   assert.doesNotMatch(page, /never sent to any server/);
 });
+
+test("the sign-in is described as it will actually behave", () => {
+  // Someone already signed in to GitHub sees nothing happen, so promising
+  // they will be asked describes a step they never see.
+  assert.match(form, /You may be asked to sign in/);
+  assert.match(form, /already signed\s+in to GitHub you will not see anything/);
+  assert.doesNotMatch(form, /You will be asked to sign in/);
+});
+
+test("every status the reviewer can set has something to show for it", async () => {
+  // A status the page does not know renders as its own raw name.
+  const { STATUSES } = await import("../src/submission.js");
+  const script = await readFile(new URL("../public/status.js", import.meta.url), "utf8");
+  const labels = script.slice(script.indexOf("const LABELS"), script.indexOf("const REVIEW_EXPLANATION"));
+  for (const status of Object.keys(STATUSES)) {
+    assert.ok(labels.includes(`"${status}"`) || labels.includes(`${status}:`),
+      `the page has no label for "${status}"`);
+  }
+});

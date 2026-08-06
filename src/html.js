@@ -129,8 +129,10 @@ export function intakeForm(env, values = {}, problems = []) {
 
       <button type="submit">Authenticate via GitHub</button>
       <p class="hint">
-        You will be asked to sign in so Palomar can confirm you have write access to the
-        repository you are submitting. The sign-in is used once and not stored.
+        You may be asked to sign in, so Palomar can confirm you have write
+        access to the repository you are submitting. If you are already signed
+        in to GitHub you will not see anything. The sign-in is used once and
+        not stored.
       </p>
       <p class="visually-hidden" role="status" id="live-status"></p>
     </form>
