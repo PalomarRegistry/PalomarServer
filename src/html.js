@@ -50,9 +50,9 @@ export function intakeForm(env, values = {}, problems = []) {
       <h2>What is public, and what is not</h2>
       <p>
         The fact that this repository and commit have been submitted is
-        permanently and publicly recorded. Your identity, the review, and the
-        decision will not be public until you have seen them and decided to go
-        ahead with registration.
+        permanently and publicly recorded. Your identity, the automated review,
+        and the decision will not be public until you have seen them and decided
+        to go ahead with registration.
       </p>
       <p>
         The reviews are not completely secret prior to registration: they may be
