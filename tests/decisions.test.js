@@ -152,6 +152,13 @@ test("an obsolete review must be rerun before delivery or registration", async (
   assert.equal(written.length, 0);
 });
 
+test("the status page explains an obsolete review and keeps polling for its rerun", async () => {
+  const script = await readFile(new URL("../public/status.js", import.meta.url), "utf8");
+  assert.match(script, /response\.status === 409/);
+  assert.match(script, /earlier review contract and has to be rerun/);
+  assert.match(script, /&& !reviewNeedsRerun/);
+});
+
 test("an unknown review decision is not delivered", async () => {
   stubState(await fixture({}, { decision: "unknown" }));
   const response = await worker.fetch(request("/api/review"), ENV);
