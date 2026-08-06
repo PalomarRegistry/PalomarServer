@@ -17,7 +17,6 @@ const DECISIONS = {
   accept: "Accepted",
   revise: "Revision requested",
   reject: "Not accepted",
-  escalate: "Escalated: a specialist review is needed",
 };
 
 const SCORE_LABELS = {
@@ -93,16 +92,32 @@ function paragraphs(heading, items) {
 }
 
 let reviewShown = false;
+let reviewNeedsRerun = false;
 
 async function showReview() {
   if (reviewShown) return;
   const response = await fetch("/api/review", { credentials: "same-origin" });
+  if (response.status === 409) {
+    reviewNeedsRerun = true;
+    reviewSummary.replaceChildren();
+    reviewBody.replaceChildren(
+      el(
+        "p",
+        "This review was produced under an earlier review contract and has to be rerun. " +
+          "Keep this link; the operators can see the submission.",
+      ),
+    );
+    reviewSection.hidden = false;
+    registerButton.hidden = true;
+    return;
+  }
   if (!response.ok) return;
   const review = await response.json();
+  reviewNeedsRerun = false;
   reviewShown = true;
   reviewSummary.replaceChildren();
   reviewBody.replaceChildren();
-  row("Decision", DECISIONS[review.decision] ?? review.decision, reviewSummary);
+  row("Decision", DECISIONS[review.decision] ?? "Review unavailable", reviewSummary);
   row("Reviewed", review.reviewed_at ?? "", reviewSummary);
   row("Reviewer models", (review.reviewer_models ?? []).join(", "), reviewSummary);
   for (const [key, label] of Object.entries(SCORE_LABELS)) {
@@ -242,7 +257,8 @@ async function poll() {
   // Anything not settled is still moving, so keep asking. Stopping here is
   // what left a page saying "waiting for review" while the review arrived.
   if (!SETTLED.has(data.status)) {
-    const waitingOnAPerson = data.status === "review-ready" && !data.registration_consent;
+    const waitingOnAPerson =
+      data.status === "review-ready" && !data.registration_consent && !reviewNeedsRerun;
     if (!waitingOnAPerson) setTimeout(poll, 6000);
   }
 }

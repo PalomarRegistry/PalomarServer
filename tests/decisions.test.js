@@ -51,7 +51,7 @@ function stubState(files, workflowRuns = null) {
   return { written, store };
 }
 
-async function fixture(overrides = {}) {
+async function fixture(overrides = {}, reviewOverrides = {}) {
   const record = {
     schema_version: 1,
     id: "a1b2c3d4e5f6",
@@ -74,7 +74,7 @@ async function fixture(overrides = {}) {
     [`index/tokens/${await tokenDigest(ENV, TOKEN)}.json`]: { id: record.id },
     [statePath(record.id, "state.json")]: record,
     [statePath(record.id, "review.json")]: {
-      schema_version: 1,
+      schema_version: 2,
       submission_id: record.id,
       decision: "accept",
       summary: "An example review.",
@@ -82,6 +82,7 @@ async function fixture(overrides = {}) {
       warnings: [],
       requested_changes: [],
       passes: [],
+      ...reviewOverrides,
     },
   };
 }
@@ -109,7 +110,7 @@ test("the review is delivered only to whoever holds the access token", async () 
   assert.equal(wrongToken.status, 404);
 });
 
-test("publication consent is recorded, and only by the submitter", async () => {
+test("registration consent is recorded, and only by the submitter", async () => {
   const { written } = stubState(await fixture());
   const response = await worker.fetch(request("/register", "POST"), ENV);
   assert.equal(response.status, 200);
@@ -127,7 +128,44 @@ test("consent cannot be given before there is a review to consent to", async () 
   assert.equal(written.length, 0);
 });
 
-test("a withdrawn submission cannot then be published", async () => {
+test("only an accepted review can be registered", async () => {
+  for (const decision of ["revise", "reject"]) {
+    const { written } = stubState(await fixture({}, { decision }));
+    const response = await worker.fetch(request("/register", "POST"), ENV);
+    assert.equal(response.status, 409);
+    assert.match((await response.json()).error, /only an accepted review/);
+    assert.equal(written.length, 0);
+  }
+});
+
+test("an obsolete review must be rerun before delivery or registration", async () => {
+  const old = await fixture({}, { schema_version: 1 });
+  stubState(old);
+  const delivery = await worker.fetch(request("/api/review"), ENV);
+  assert.equal(delivery.status, 409);
+  assert.match((await delivery.json()).error, /must be rerun/);
+
+  const { written } = stubState(old);
+  const registration = await worker.fetch(request("/register", "POST"), ENV);
+  assert.equal(registration.status, 409);
+  assert.match((await registration.json()).error, /must be rerun/);
+  assert.equal(written.length, 0);
+});
+
+test("the status page explains an obsolete review and keeps polling for its rerun", async () => {
+  const script = await readFile(new URL("../public/status.js", import.meta.url), "utf8");
+  assert.match(script, /response\.status === 409/);
+  assert.match(script, /earlier review contract and has to be rerun/);
+  assert.match(script, /&& !reviewNeedsRerun/);
+});
+
+test("an unknown review decision is not delivered", async () => {
+  stubState(await fixture({}, { decision: "unknown" }));
+  const response = await worker.fetch(request("/api/review"), ENV);
+  assert.equal(response.status, 409);
+});
+
+test("a withdrawn submission cannot then be registered", async () => {
   const { written } = stubState(await fixture({ status: "withdrawn" }));
   const response = await worker.fetch(request("/register", "POST"), ENV);
   assert.equal(response.status, 409);
