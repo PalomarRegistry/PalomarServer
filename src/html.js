@@ -136,10 +136,12 @@ export function intakeForm(env, values = {}, problems = []) {
           How that approval was given <span class="optional">optional</span>
         </label>
         <textarea id="authorization_evidence" name="authorization_evidence" rows="3"
+                  maxlength="4000"
                   aria-describedby="authorization_evidence-hint">${escape(values.authorization_evidence)}</textarea>
         <p class="hint warning" id="authorization_evidence-hint">
-          Registered permanently and cannot be withdrawn. Do not name anyone who
-          has not agreed to be named.
+          Included in the public mechanical report during verification and
+          retained permanently if you register. Do not name anyone who has not
+          agreed to be named.
         </p>
       </div>
 

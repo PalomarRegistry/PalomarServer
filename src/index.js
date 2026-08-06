@@ -113,7 +113,7 @@ async function beginSubmission(request, env) {
   const existingId = normalizePalomarId(rawExistingId);
   const context = String(form.get("context") ?? "").trim().slice(0, 4000);
   const relationship = String(form.get("authorization_relationship") ?? "").trim();
-  const evidence = String(form.get("authorization_evidence") ?? "").trim().slice(0, 2000);
+  const evidence = String(form.get("authorization_evidence") ?? "").trim().slice(0, 4000);
 
   // A repository-relative path, as `{path}` or `{invalid: true}`.
   //

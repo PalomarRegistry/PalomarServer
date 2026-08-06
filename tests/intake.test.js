@@ -26,7 +26,8 @@ test("the disclosure says what is recorded and when it becomes public", () => {
 
 test("the approval note is a field of its own, so it can be turned off", () => {
   assert.match(form, /<div class="dependent" id="approval-evidence">/);
-  assert.match(form, /Registered permanently and cannot be withdrawn/);
+  assert.match(form, /Included in the public mechanical report during verification/);
+  assert.match(form, /maxlength="4000"/);
 });
 
 test("what a submitter typed survives a rejected submission", () => {
