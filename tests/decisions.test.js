@@ -941,3 +941,53 @@ test("a browser sign-in cannot be completed as an agent submission", async () =>
   const pending = stub.written.find((item) => item.path.startsWith("pending/"));
   assert.equal(pending.value.method, "oauth");
 });
+
+test("starting a submission doubles the wait, and only registering clears it", async () => {
+  const stub = stubAgent();
+  const submit = async () => {
+    const begun = await agentSubmit();
+    stub.state.tag = { exists: true, sha: "1".repeat(40) };
+    stub.state.gist = { exists: true, content: begun.challenge };
+    return agentVerify({ pending_secret: begun.pending_secret, gist_id: "abc123" });
+  };
+  const rate = () => [...stub.store.entries()].find(([path]) => path.startsWith("index/rate/"))?.[1];
+
+  assert.equal((await submit()).status, 200);
+  assert.equal(rate().interval_seconds, 60, "the first start asks for a minute");
+
+  // The second is refused, because the first has not been registered.
+  const second = await submit();
+  assert.equal(second.status, 429);
+  assert.match((await second.json()).error, /too recently/);
+
+  // Time passing lets it through, and doubles the wait again.
+  const file = [...stub.store.keys()].find((path) => path.startsWith("index/rate/"));
+  stub.store.set(file, { ...stub.store.get(file), next_allowed_at: "2020-01-01T00:00:00Z" });
+  assert.equal((await submit()).status, 200);
+  assert.equal(rate().interval_seconds, 120, "a second start did not double the wait");
+});
+
+test("a registration puts the interval back to a minute", async () => {
+  const stub = stubAgent();
+  const begun = await agentSubmit();
+  stub.state.tag = { exists: true, sha: "1".repeat(40) };
+  stub.state.gist = { exists: true, content: begun.challenge };
+  const verified = await (await agentVerify({
+    pending_secret: begun.pending_secret, gist_id: "abc123",
+  })).json();
+
+  // Wind the interval up, then register, as the reviewer would.
+  const file = [...stub.store.keys()].find((path) => path.startsWith("index/rate/"));
+  stub.store.set(file, { ...stub.store.get(file), interval_seconds: 3600 });
+  const statePathName = statePath(verified.submission_id, "state.json");
+  stub.store.set(statePathName, { ...stub.store.get(statePathName), status: "registered" });
+
+  const response = await worker.fetch(
+    new Request("https://submit.palomar-registry.org/api/submission", {
+      headers: { cookie: `palomar_session=${verified.access_token}` },
+    }),
+    ENV,
+  );
+  assert.equal(response.status, 200);
+  assert.equal(stub.store.get(file).interval_seconds, 60, "registering did not clear the wait");
+});
