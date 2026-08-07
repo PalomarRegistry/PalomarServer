@@ -422,9 +422,13 @@ test("what agents are told about this service is true of this service", async ()
     assert.match(server, new RegExp(`url\\.pathname === "${path}"`), `${path} does not exist`);
   }
 
-  // The one thing it must say, since nothing in the protocol enforces it.
-  assert.match(guide, /do not drive the GitHub sign-in yourself/i);
+  // The two things nothing in the protocol enforces: which path an agent may
+  // drive, and that registering is a decision rather than monitoring.
+  assert.match(guide, /do not drive the browser sign-in/i);
+  assert.match(guide, /you may use the `gh` path/i);
   assert.match(guide, /\/register/);
+  // And that it does not sell the agent path as equivalent to the browser one.
+  assert.match(guide, /not provably the same account/i);
 
   // It points at the policy rather than paraphrasing it, because a paraphrase
   // is a second copy that goes stale silently.
