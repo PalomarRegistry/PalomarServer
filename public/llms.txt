@@ -89,8 +89,13 @@ With the token you can drive the rest over plain HTTP. `POST /session` once with
 - `POST /withdraw` — abandon the submission.
 
 Poll `GET /api/submission` at a human pace; a submission takes minutes, not
-seconds. It is settled at `registered`, `withdrawn`, `verification-failed`, or
-`review-failed`. A `revise` decision means read the review, help fix what it
+seconds. Once a minute is fast enough while something is running, and once
+every five minutes while the status is `awaiting-review`, because the next
+thing that happens there is a scheduled reviewer pass. Every ask spends several
+calls of one GitHub budget shared by every submission there is, so a tight loop
+does not fail your submission faster, it fails everybody's. The status page
+keeps to the same schedule. It is settled at `registered`, `withdrawn`,
+`verification-failed`, or `review-failed`. A `revise` decision means read the review, help fix what it
 found, and submit the corrected commit as a new submission.
 
 ## Registration is not monitoring

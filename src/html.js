@@ -237,7 +237,7 @@ export function statusPage(env) {
         submission. Treat it like a password.
       </p>
     </section>
-    <script src="/status.js" defer></script>
+    <script type="module" src="/status.js"></script>
   `);
 }
 
