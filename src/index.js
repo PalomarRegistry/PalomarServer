@@ -12,6 +12,7 @@ import {
 import {
   dispatchVerification,
   findVerificationRun,
+  CHALLENGE_TAG_PREFIX,
   challengeGist,
   challengeTag,
   deleteState,
@@ -274,7 +275,7 @@ async function beginSubmission(request, env, { machine = false } = {}) {
         `Create a tag at the commit you are submitting. Creating a ref needs the`,
         `same write access the browser sign-in checks for, which is why it is here:`,
         `  gh api -X POST repos/${repositoryName}/git/refs \\`,
-        `    -f ref=refs/tags/${challenge} -f sha=${commit}`,
+        `    -f ref=refs/tags/${CHALLENGE_TAG_PREFIX}${challenge} -f sha=${commit}`,
         `Then a secret gist carrying the same challenge, which is what tells`,
         `Palomar who you are, since a ref records no author:`,
         `  echo '{"public":false,"files":{"palomar.txt":{"content":"${challenge}"}}}' \\`,
@@ -563,7 +564,7 @@ async function verifySubmission(request, env) {
     status_url: `${new URL(request.url).origin}/s#${admitted.token}`,
     next: [
       `Delete both artifacts now:`,
-      `  gh api -X DELETE repos/${repository}/git/refs/tags/${challenge}`,
+      `  gh api -X DELETE repos/${repository}/git/refs/tags/${CHALLENGE_TAG_PREFIX}${challenge}`,
       `  gh api -X DELETE gists/${body.gist_id}`,
       `Then POST /session with token=<access_token> and follow the status.`,
     ].join("\n"),
