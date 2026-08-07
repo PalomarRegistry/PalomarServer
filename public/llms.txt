@@ -60,9 +60,11 @@ found, and submit the corrected commit as a new submission.
 
 ## Registration is not monitoring
 
-`POST /register` consents to making the repository, commit, review, and your
-user's identity public during Palomar's pre-launch testing, and creates
-immutable source-preservation tags. Until public launch the database itself may
+`POST /register` consents to making the repository, commit and review public
+during Palomar's pre-launch testing, and creates immutable
+source-preservation tags. Your user's GitHub identity is not made public: a
+registered record carries the submission and its authorization basis, and the
+schema has no field for the person who sent it. Until public launch the database itself may
 still be reshaped; after launch its registered records are append-only.
 
 The token is a bearer credential, so this endpoint will accept the call from

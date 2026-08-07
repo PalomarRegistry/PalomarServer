@@ -143,9 +143,10 @@ registerButton?.addEventListener("click", () =>
   decide(
     registerButton,
     "/register",
-    "Palomar is pre-launch. The record, review, repository, commit, and your " +
-      "identity become public during testing, and immutable source-preservation " +
-      "tags are created. The database may still be reshaped until launch. Register?",
+    "Palomar is pre-launch. The record, review, repository, and commit become " +
+      "public during testing, and immutable source-preservation tags are " +
+      "created. Your GitHub identity is not made public. The database may still " +
+      "be reshaped until launch. Register?",
   ),
 );
 withdrawButton?.addEventListener("click", () =>
