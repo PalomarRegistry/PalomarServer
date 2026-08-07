@@ -77,6 +77,17 @@ function isCurrentReview(review, submissionId) {
     review.submission_id === submissionId && REVIEW_DECISIONS.has(review.decision);
 }
 
+function submitterReview(review) {
+  return {
+    passed: review.decision === "accept",
+    summary: review.summary,
+    comments: review.warnings ?? [],
+    requested_changes: review.requested_changes ?? [],
+    reviewed_at: review.reviewed_at,
+    reviewer_models: review.reviewer_models ?? [],
+  };
+}
+
 function obsoleteReview() {
   return json({ error: "the review uses an obsolete or invalid contract and must be rerun" }, 409);
 }
@@ -568,14 +579,14 @@ export default {
         return json({ ok: true });
       }
       if (request.method === "GET" && url.pathname === "/api/review") {
-        // The review goes to whoever holds the access token, and to nobody
-        // else. It is never rendered into a public page or a public repository.
+        // The submitter sees the outcome and useful prose, but not the internal
+        // three-way decision, scores, pass records, or finding severities.
         const entry = await loadByToken(env, sessionToken(request));
         if (!entry) return json({ error: "not found" }, 404);
         const review = await readState(env, statePath(entry.record.id, "review.json"));
         if (!review.value) return json({ error: "no review yet" }, 404);
         if (!isCurrentReview(review.value, entry.record.id)) return obsoleteReview();
-        return json(review.value);
+        return json(submitterReview(review.value));
       }
       if (request.method === "POST" && url.pathname === "/register") {
         const entry = await loadByToken(env, sessionToken(request));

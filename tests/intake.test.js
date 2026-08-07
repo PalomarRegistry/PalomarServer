@@ -464,4 +464,7 @@ test("a submitter is shown the decision and the comments, not the scores", async
   assert.match(status, /"AI review comments"/);
   assert.doesNotMatch(status, /paragraphs\("Warnings"/);
   assert.match(status, /row\("Decision"/);
+  assert.match(status, /review\.passed \? "Passed" : "Did not pass"/);
+  assert.doesNotMatch(status, /review\.decision/);
+  assert.match(status, /review\.comments/);
 });

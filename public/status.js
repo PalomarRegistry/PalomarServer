@@ -13,12 +13,6 @@ const decisionStatus = document.getElementById("decision-status");
 const registerButton = document.getElementById("register");
 const withdrawButton = document.getElementById("withdraw");
 
-const DECISIONS = {
-  accept: "Accepted",
-  revise: "Revision requested",
-  reject: "Not accepted",
-};
-
 const LABELS = {
   verifying: "Mechanically verifying your submission.",
   "verification-failed": "Mechanical verification did not pass.",
@@ -109,7 +103,7 @@ async function showReview() {
   reviewShown = true;
   reviewSummary.replaceChildren();
   reviewBody.replaceChildren();
-  row("Decision", DECISIONS[review.decision] ?? "Review unavailable", reviewSummary);
+  row("Decision", review.passed ? "Passed" : "Did not pass", reviewSummary);
   row("Reviewed", review.reviewed_at ?? "", reviewSummary);
   row("Reviewer models", (review.reviewer_models ?? []).join(", "), reviewSummary);
   // No scores. They decide the outcome and are kept with the record, and the
@@ -123,9 +117,9 @@ async function showReview() {
   // One heading for everything the review had to say. The review sorts its
   // remarks by severity for its own purposes; that sorting is not a thing a
   // submitter can act on differently, so it is not presented as one.
-  paragraphs("AI review comments", review.warnings);
+  paragraphs("AI review comments", review.comments);
   reviewSection.hidden = false;
-  registerButton.hidden = review.decision !== "accept";
+  registerButton.hidden = !review.passed;
 }
 
 async function decide(button, path, confirmation) {
