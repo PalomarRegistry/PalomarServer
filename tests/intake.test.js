@@ -425,3 +425,22 @@ test("a path that escapes the repository is refused", async () => {
     assert.match(body, /must be a path inside the repository/, `${bad} was not refused`);
   }
 });
+
+test("a submitter is shown the decision and the comments, not the scores", async () => {
+  const status = await readFile(new URL("../public/status.js", import.meta.url), "utf8");
+
+  // The scores decide the outcome and stay with the record. They are not put
+  // in front of the submitter: the same repository at the same commit has
+  // scored 5 and then 4 on the same axis across two runs, and a number that
+  // moves like that reads as a judgement it cannot carry. The decision it
+  // produced is shown instead, and that is stable.
+  assert.doesNotMatch(status, /review\.scores/);
+  assert.doesNotMatch(status, /of 5/);
+  assert.doesNotMatch(status, /Statement alignment|Definition fidelity|Notability/);
+
+  // Everything the review had to say goes under one heading. The severities
+  // it sorts by are not something a submitter can act on differently.
+  assert.match(status, /"AI review comments"/);
+  assert.doesNotMatch(status, /paragraphs\("Warnings"/);
+  assert.match(status, /row\("Decision"/);
+});

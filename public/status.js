@@ -19,14 +19,6 @@ const DECISIONS = {
   reject: "Not accepted",
 };
 
-const SCORE_LABELS = {
-  statement_alignment: "Statement alignment",
-  definition_fidelity: "Definition fidelity",
-  notability: "Notability",
-  literature: "Literature",
-  clarity: "Clarity",
-};
-
 const LABELS = {
   verifying: "Mechanically verifying your submission.",
   "verification-failed": "Mechanical verification did not pass.",
@@ -120,14 +112,18 @@ async function showReview() {
   row("Decision", DECISIONS[review.decision] ?? "Review unavailable", reviewSummary);
   row("Reviewed", review.reviewed_at ?? "", reviewSummary);
   row("Reviewer models", (review.reviewer_models ?? []).join(", "), reviewSummary);
-  for (const [key, label] of Object.entries(SCORE_LABELS)) {
-    if (review.scores?.[key] != null) row(label, `${review.scores[key]} of 5`, reviewSummary);
-  }
+  // No scores. They decide the outcome and are kept with the record, and the
+  // outcome is on the line above. Showing them invites a reading they cannot
+  // carry: the same repository at the same commit has scored 5 and then 4 on
+  // the same axis across two runs.
   const summaryText = document.createElement("p");
   summaryText.textContent = review.summary ?? "";
   reviewBody.append(summaryText);
   paragraphs("Requested changes", review.requested_changes);
-  paragraphs("Warnings", review.warnings);
+  // One heading for everything the review had to say. The review sorts its
+  // remarks by severity for its own purposes; that sorting is not a thing a
+  // submitter can act on differently, so it is not presented as one.
+  paragraphs("AI review comments", review.warnings);
   reviewSection.hidden = false;
   registerButton.hidden = review.decision !== "accept";
 }
