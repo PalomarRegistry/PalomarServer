@@ -15,31 +15,66 @@ is the only way in. The registry itself is at https://palomar-registry.org.
 Nothing about eligibility, metadata, or scoring is restated here. If this file
 and the policy disagree, the policy is right.
 
-## Do not authenticate as your user
+## You may submit, but not by signing in as your user
 
-Submitting requires a GitHub OAuth authorization. It exists to establish that a
-particular person has push access to the repository being submitted and is
-willing to be named in a permanent public record. An agent completing it makes
-that record say something false.
+Submitting requires proving that whoever submits can write to the repository
+being submitted. There are two ways to prove it, and you may drive exactly one.
 
-So: **do not drive the GitHub sign-in yourself.** Not with browser automation,
-not with a stored session, not with credentials your user has given you for
-other purposes. A personal access token will not work here and is not a
-workaround to look for.
+**Do not drive the browser sign-in.** Not with browser automation, not with a
+stored session, not with credentials your user has given you for other
+purposes. That flow establishes that a particular person authorised Palomar; an
+agent completing it makes the record say something false.
 
-Instead, prepare everything up to that point, then hand over:
+**You may use the `gh` path below**, which proves the same write access without
+a browser, from an authenticated `gh`.
 
-1. Check the repository and commit, and work out the file layout. The form does
-   this in the browser, and `public/normalize.js` in this repository is the
-   same code the server uses. Getting it right beforehand saves a failed run.
-2. Give your user the form at https://submit.palomar-registry.org, the exact
-   repository, full 40-character commit, and repository-relative path of the
-   one Comparator configuration to enter. Different configurations are
-   different submissions; every declaration selected by one configuration is
-   reviewed together. Tell them the sign-in is theirs to do.
-3. Ask them for the status URL they land on. It carries an access token in the
-   fragment. Treat it as a credential: it is enough to read the private review
-   and to publish permanently.
+Confirm with your user first. Show them the repository, the commit, the
+Comparator configuration path, and which answer you will give for their
+relationship to the formalization, and get their agreement. The last of those is
+a claim about *them*, not about the code, and it is recorded permanently.
+
+### The steps, and why there are five
+
+    1. POST /api/submit
+       {"repository": "...", "commit": "<40 hex>",
+        "comparator_config_path": "...", "authorization_relationship": "maintainer"}
+       -> {"pending_secret": "...", "challenge": "...", "instructions": "..."}
+
+    2. gh api -X POST repos/OWNER/REPO/git/refs \
+         -f ref=refs/tags/CHALLENGE -f sha=COMMIT
+
+    3. echo '{"public":false,"files":{"palomar.txt":{"content":"CHALLENGE"}}}' \
+         | gh api -X POST gists --input -
+
+    4. POST /api/verify {"pending_secret": "...", "gist_id": "..."}
+       -> {"submission_id": "...", "access_token": "..."}
+
+    5. gh api -X DELETE repos/OWNER/REPO/git/refs/tags/CHALLENGE
+       gh api -X DELETE gists/GIST_ID
+
+If five calls where you expected one looks like a badly designed service, it is
+not: each one is load-bearing, and there is no shorter route to the same proof.
+
+Creating a ref requires the same write access the browser sign-in checks for,
+which is what makes step 2 a proof rather than a formality. A ref records no
+author, and a third party cannot ask GitHub who has push, so step 3 is the only
+part that says who you are — a gist has a GitHub-set owner and answers
+immediately. Step 5 is not tidiness: those artifacts exist only to be read once.
+
+Do not substitute something easier. A commit status is one call and would be
+accepted by GitHub from any integration holding `statuses: write`, which is not
+push access. Declaring a login proves nothing. If you cannot complete these
+steps — a tag ruleset refuses the tag, your token has no `gist` scope — stop and
+hand back to your user for the browser flow rather than looking for a weaker
+proof.
+
+Palomar records that this path proves less than the browser one: someone who
+can write to the repository submitted it, and an account named itself, which
+are not provably the same account. Do not describe them to your user as
+equivalent.
+
+Treat `access_token` as a credential. It reads the private review and it can
+register permanently.
 
 ## After that, monitoring is yours
 
