@@ -126,7 +126,8 @@ test("the script never sends what the submitter typed anywhere but those origins
     .map((match) => match[1]);
   for (const destination of destinations) {
     assert.ok(
-      /api\.github\.com/.test(destination) || destination === "REGISTRY_INDEX",
+      /api\.github\.com/.test(destination) ||
+        /^`\$\{REGISTRY_VERSIONS\}\$\{value\}\.json`$/.test(destination),
       `unexpected fetch destination: ${destination}`,
     );
   }
@@ -182,6 +183,27 @@ test("the browser and the server agree on what a submitted value means", async (
       assert.equal(server[name](value), shared[name](value), `${name}(${JSON.stringify(value)})`);
     }
   }
+});
+
+test("the existing-ID check asks about one result, not the whole registry", async () => {
+  // `index.json` names every record ever accepted, so asking it which versions
+  // one identifier has meant fetching all of them, and paying more for it
+  // every time anybody else registered anything.
+  const script = await readFile(new URL("../public/intake.js", import.meta.url), "utf8");
+  const base = /REGISTRY_VERSIONS = "([^"]+)"/.exec(script)[1];
+  const value = "PALOMAR-2026-07-29-000123";
+  assert.equal(
+    `${base}${value}.json`,
+    "https://data.palomar-registry.org/versions/PALOMAR-2026-07-29-000123.json",
+  );
+  assert.doesNotMatch(script, /data\.palomar-registry\.org\/index\.json/);
+  // The answer is bound to what was typed. A misdirected or stale document
+  // would otherwise report another record's history under this identifier.
+  assert.match(script, /document\?\.id !== value/);
+  // And nothing there is an answer rather than an outage: an unknown
+  // identifier and one withdrawn entirely both mean there is no version to
+  // succeed, and only an outage may leave the field saying nothing.
+  assert.match(script, /response\.status === 404/);
 });
 
 test("the live checks link back to what they found", async () => {
