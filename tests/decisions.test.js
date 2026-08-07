@@ -98,7 +98,7 @@ test("the review is delivered only to whoever holds the access token", async () 
   stubState(await fixture());
   const held = await worker.fetch(request("/api/review"), ENV);
   assert.equal(held.status, 200);
-  assert.equal((await held.json()).decision, "accept");
+  assert.equal((await held.json()).passed, true);
 
   const anonymous = await worker.fetch(request("/api/review", "GET", ""), ENV);
   assert.equal(anonymous.status, 404);
@@ -108,6 +108,25 @@ test("the review is delivered only to whoever holds the access token", async () 
     ENV,
   );
   assert.equal(wrongToken.status, 404);
+});
+
+test("the submitter review exposes only a binary outcome and useful prose", async () => {
+  for (const [decision, passed] of [["accept", true], ["revise", false], ["reject", false]]) {
+    stubState(await fixture({}, {
+      decision,
+      scores: { notability: 4 },
+      warnings: ["Useful context.", "A substantive criticism."],
+      passes: [{ scores: { notability: 4 }, findings: [{ severity: "info" }] }],
+    }));
+    const response = await worker.fetch(request("/api/review"), ENV);
+    assert.equal(response.status, 200);
+    const delivered = await response.json();
+    assert.deepEqual(delivered.comments, ["Useful context.", "A substantive criticism."]);
+    assert.equal(delivered.passed, passed);
+    assert.equal(Object.hasOwn(delivered, "decision"), false);
+    assert.equal(Object.hasOwn(delivered, "scores"), false);
+    assert.equal(Object.hasOwn(delivered, "passes"), false);
+  }
 });
 
 test("registration consent is recorded, and only by the submitter", async () => {
