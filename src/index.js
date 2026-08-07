@@ -294,6 +294,61 @@ async function beginSubmission(request, env, { machine = false } = {}) {
 }
 
 /**
+ * How long this submitter must wait before starting another submission.
+ *
+ * Starting is the expensive act: it dispatches a verification run that takes
+ * a quarter of an hour of somebody's runners, whether or not anything comes of
+ * it. So the interval doubles every time one is started, and only a completed
+ * registration puts it back to a minute. A submission that fails verification,
+ * or is withdrawn, leaves it where it is: those are exactly the loops worth
+ * slowing down.
+ *
+ * There is no ceiling, which is deliberate and worth understanding before
+ * changing it. Twenty starts with nothing registered is already years. Nobody
+ * submitting in good faith reaches that, and an operator can clear one file to
+ * release someone who does. The failure mode is a person locked out with no way
+ * back on their own, so the file says who and when.
+ *
+ * Filed under a peppered digest rather than a login, so reading the state
+ * repository does not enumerate everyone who has ever submitted — the same
+ * reason `index/tokens/` is shaped that way.
+ */
+const RATE_FLOOR_SECONDS = 60;
+
+async function ratePath(env, principalId) {
+  return `index/rate/${await digest(`${env.TOKEN_PEPPER ?? ""}:${principalId}`)}.json`;
+}
+
+async function rateLimit(env, principal) {
+  if (!principal?.id) return { refused: false, record: null, path: null };
+  const path = await ratePath(env, principal.id);
+  const current = await readState(env, path);
+  const interval = Number(current.value?.interval_seconds ?? RATE_FLOOR_SECONDS);
+  const nextAllowed = Date.parse(current.value?.next_allowed_at ?? 0) || 0;
+  const wait = Math.ceil((nextAllowed - Date.now()) / 1000);
+  if (wait > 0) {
+    return {
+      refused: true, status: 429, wait,
+      title: "You have started a submission too recently",
+      detail: [
+        `Palomar asks for ${describeInterval(interval)} between submissions from one`,
+        `person, and doubles it each time one is started without a registration.`,
+        `Try again in ${describeInterval(wait)}.`,
+      ],
+    };
+  }
+  return { refused: false, path, sha: current.sha, interval, starts: Number(current.value?.starts ?? 0) };
+}
+
+function describeInterval(seconds) {
+  if (seconds < 90) return `${Math.max(1, Math.round(seconds))} seconds`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 90) return `${minutes} minutes`;
+  const hours = Math.round(minutes / 60);
+  return hours < 48 ? `${hours} hours` : `${Math.round(hours / 24)} days`;
+}
+
+/**
  * Decide whether one more submission may be admitted, reading the list fresh.
  *
  * The caps exist because verification is expensive and long-running, and
@@ -347,6 +402,8 @@ async function admit(env, { owner, submitter }) {
  * definitions of what a submission is.
  */
 async function admitSubmission(env, { pending, owner, submitter, proof }) {
+  const limit = await rateLimit(env, proof?.principal);
+  if (limit.refused) return limit;
   const admission = await admit(env, { owner, submitter });
   if (admission.refused) return admission;
   const { inflight, open } = admission;
@@ -389,6 +446,18 @@ async function admitSubmission(env, { pending, owner, submitter, proof }) {
     { id },
     `Index submission ${id}`,
   );
+  if (limit.path) {
+    const interval = limit.starts === 0 ? RATE_FLOOR_SECONDS : limit.interval * 2;
+    await writeState(env, limit.path, {
+      schema_version: 1,
+      login: proof.principal.login,
+      starts: limit.starts + 1,
+      interval_seconds: interval,
+      last_start_at: record.created_at,
+      next_allowed_at: new Date(Date.now() + interval * 1000).toISOString()
+        .replace(/\.\d+Z$/, "Z"),
+    }, `Record a submission start`, limit.sha).catch(() => {});
+  }
   await dispatchVerification(env, {
     repositoryName: record.repository,
     commit: record.commit,
@@ -632,6 +701,28 @@ async function typicalReviewSeconds(env) {
 /** Refresh a verifying submission from the run it dispatched. */
 async function refresh(env, entry) {
   const record = entry.record;
+  // A completed registration is the one thing that puts a submitter's interval
+  // back to a minute, and the reviewer performs registration, not this server.
+  // This is where the server sees it: the status page and an agent both poll
+  // until the status settles, and `registered` is settled, so the good news and
+  // the reset arrive on the same request. Somebody who closes the tab between
+  // consenting and that poll waits longer once; opening the link again fixes it.
+  // The alternative, letting the reviewer reset it, would need TOKEN_PEPPER in
+  // reviewer CI, and that pepper exists so a leaked state repository yields no
+  // live links.
+  if (record.status === "registered" && !record.rate_reset_at && record.push_proof?.principal?.id) {
+    const path = await ratePath(env, record.push_proof.principal.id);
+    const current = await readState(env, path);
+    await writeState(env, path, {
+      ...(current.value ?? { schema_version: 1 }),
+      interval_seconds: RATE_FLOOR_SECONDS,
+      next_allowed_at: now(),
+    }, "Reset after a registration", current.sha).catch(() => {});
+    const reset = { ...record, rate_reset_at: now() };
+    await writeState(env, statePath(record.id, "state.json"), reset,
+                     `Reset the interval for ${record.id}`, entry.sha).catch(() => {});
+    return reset;
+  }
   if (record.status !== "verifying") return record;
   const run = await findVerificationRun(env, record.id);
   if (!run) return record;
