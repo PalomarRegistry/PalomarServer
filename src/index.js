@@ -28,7 +28,7 @@ const SECURITY_HEADERS = {
   // else is. Neither answer is trusted: the server checks all three again.
   "content-security-policy":
     "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; " +
-    "connect-src 'self' https://api.github.com https://raw.githubusercontent.com; " +
+    "connect-src 'self' https://api.github.com https://data.palomar-registry.org; " +
     // form-action governs the whole redirect chain, not just the first hop.
     // Submitting posts to this origin and is answered with a redirect to
     // GitHub for sign-in, so leaving GitHub out blocks every submission that

@@ -21,7 +21,7 @@ import {
 } from "./normalize.js";
 
 const REGISTRY_INDEX =
-  "https://raw.githubusercontent.com/PalomarRegistry/PalomarDatabase/main/index.json";
+  "https://data.palomar-registry.org/index.json";
 
 const live = document.getElementById("live-status");
 

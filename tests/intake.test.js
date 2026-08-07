@@ -112,7 +112,8 @@ test("the policy reaches exactly the two origins the form looks things up on", a
     ENV,
   );
   const policy = response.headers.get("content-security-policy");
-  assert.match(policy, /connect-src 'self' https:\/\/api\.github\.com https:\/\/raw\.githubusercontent\.com;/);
+  assert.match(policy, /connect-src 'self' https:\/\/api\.github\.com https:\/\/data\.palomar-registry\.org;/);
+  assert.doesNotMatch(policy, /raw\.githubusercontent\.com/);
   assert.match(policy, /default-src 'none'/);
   assert.match(policy, /form-action 'self'/);
 });
