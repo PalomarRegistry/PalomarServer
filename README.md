@@ -55,7 +55,7 @@ and never appear in the repository:
 | --- | --- | --- |
 | `OAUTH_CLIENT_ID` | GitHub OAuth App client id, for the push-access check | — |
 | `OAUTH_CLIENT_SECRET` | its client secret | — |
-| `GITHUB_TOKEN` | writes submission state | `PalomarSubmissionState`, contents |
+| `GITHUB_TOKEN` | writes submission state and asks the reviewer to run | `PalomarSubmissionState`, contents and actions |
 | `SUBMISSION_TOKEN` | starts and reads verification runs | `PalomarSubmission`, actions |
 | `TOKEN_PEPPER` | so a leaked state repository does not yield live links | — |
 
