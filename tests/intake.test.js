@@ -407,6 +407,7 @@ test("what agents are told about this service is true of this service", async ()
   // It points at the policy rather than paraphrasing it, because a paraphrase
   // is a second copy that goes stale silently.
   assert.match(guide, /PalomarPolicy\/blob\/main\/CONTRIBUTING\.md/);
+  assert.match(guide, /PalomarPolicy\/blob\/main\/docs\/specification\.md/);
 });
 
 test("a path that escapes the repository is refused", async () => {
