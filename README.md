@@ -91,8 +91,16 @@ submissions/<id>/state.json   # the record: status, source, authorization, run, 
 submissions/<id>/review.json  # the private review, once delivered
 index/tokens/<digest>.json    # access token digest to submission id
 index/inflight.json           # admission slots, released by cron reconciliation
+index/open.json               # the reviewer's queue: added here, pruned there
 pending/<digest>.json         # a one-time intake nonce, consumed at OAuth callback
 ```
+
+`index/open.json` holds every submission the reviewer is not yet finished with.
+This server adds an id when it admits one, and the reviewer drops one when the
+record says there is nothing left to do to it, so a reviewer pass costs the
+queue rather than the size of the registry. It is derived rather than
+authoritative: an index that is missing, damaged, or too old is rebuilt from
+every record, so losing this file costs one rebuild and no submissions.
 
 ## Operating a submission
 

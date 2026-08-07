@@ -873,6 +873,48 @@ test("a tag and a gist together admit a submission", async () => {
   assert.equal(record.value.push_proof.principal.id, 4242);
 });
 
+test("an admitted submission is put where the reviewer will find it", async () => {
+  // The reviewer used to find its work by listing `submissions/`, which is an
+  // API call per submission per pass and stops at the thousand names the
+  // contents API will list. It reads `index/open.json` now, and a submission
+  // this end never indexes is one nothing reviews until that index is next
+  // rebuilt from scratch.
+  const stub = stubAgent();
+  const begun = await agentSubmit();
+  stub.state.tag = { exists: true, sha: "1".repeat(40) };
+  stub.state.gist = { exists: true, content: begun.challenge };
+  const body = await (await agentVerify({
+    pending_secret: begun.pending_secret, gist_id: "abc123",
+  })).json();
+
+  const index = stub.written.find((item) => item.path === "index/open.json");
+  assert.ok(index, "the submission was admitted without being indexed");
+  assert.deepEqual(index.value.open, [body.submission_id]);
+});
+
+test("indexing a submission keeps the entries and the rebuild clock beside it", async () => {
+  // Written by two writers: this one appends, the reviewer prunes and records
+  // when the whole file next needs rebuilding from the records. Dropping what
+  // the other end put there would make the index look permanently overdue, and
+  // an overdue index is rebuilt by cloning every record there is.
+  const stub = stubAgent();
+  stub.store.set("index/open.json", {
+    schema_version: 1,
+    rebuild_after: "2099-01-01T00:00:00Z",
+    open: ["aaaaaaaaaaaa"],
+  });
+  const begun = await agentSubmit();
+  stub.state.tag = { exists: true, sha: "1".repeat(40) };
+  stub.state.gist = { exists: true, content: begun.challenge };
+  const body = await (await agentVerify({
+    pending_secret: begun.pending_secret, gist_id: "abc123",
+  })).json();
+
+  const index = stub.written.find((item) => item.path === "index/open.json");
+  assert.deepEqual(index.value.open, ["aaaaaaaaaaaa", body.submission_id]);
+  assert.equal(index.value.rebuild_after, "2099-01-01T00:00:00Z");
+});
+
 test("a proof that does not hold admits nothing", async () => {
   // Each of these is a way the tag or the gist could be present and still not
   // be evidence that this submitter can write to this repository.

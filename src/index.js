@@ -76,6 +76,12 @@ const REVIEW_DECISIONS = new Set(["accept", "revise", "reject"]);
 
 const TERMINAL = new Set(["registered", "withdrawn", "verification-failed"]);
 
+// The reviewer's queue: every submission it is not yet finished with. This end
+// adds one when it admits a submission; the reviewer drops one when the record
+// says there is nothing left to do to it, and rebuilds the whole file from the
+// records if it is missing, damaged, or too old to trust.
+const OPEN_INDEX_PATH = "index/open.json";
+
 function isCurrentReview(review, submissionId) {
   return review !== null && typeof review === "object" && !Array.isArray(review) &&
     review.schema_version === CURRENT_REVIEW_SCHEMA_VERSION &&
@@ -441,6 +447,7 @@ async function admitSubmission(env, { pending, owner, submitter, proof }) {
     `Admit ${id}`,
     inflight.sha,
   );
+  await openSubmission(env, id);
   await writeState(
     env,
     `index/tokens/${record.token_sha256}.json`,
@@ -756,6 +763,34 @@ async function refresh(env, entry) {
     );
   }
   return next;
+}
+
+/**
+ * Say that a submission has work outstanding.
+ *
+ * The reviewer's pass used to find its work by listing `submissions/`, which is
+ * an API call per submission per pass however few of them are moving, and which
+ * stops working altogether at the thousand names the contents API will list.
+ * It reads `index/open.json` instead, so a pass costs the queue rather than the
+ * size of the registry.
+ *
+ * Only the reviewer removes entries, once the record says it is finished with
+ * one. Adding has to happen here, because a submission the index never hears
+ * about is a submission nothing reviews until the index is next rebuilt from
+ * scratch. Written under the sha it was read at, like every other index: two
+ * admissions landing together must not lose one of themselves.
+ */
+async function openSubmission(env, id) {
+  const index = await readState(env, OPEN_INDEX_PATH);
+  const open = Array.isArray(index.value?.open) ? index.value.open : [];
+  if (open.includes(id)) return;
+  await writeState(
+    env,
+    OPEN_INDEX_PATH,
+    { schema_version: 1, ...(index.value ?? {}), open: [...open, id] },
+    `Open ${id}`,
+    index.sha,
+  );
 }
 
 async function release(env, id) {
