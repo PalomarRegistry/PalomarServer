@@ -105,6 +105,7 @@ export function locateProject(entries) {
     return {
       found: true,
       project,
+      config: project ? `${project}/comparator.json` : "comparator.json",
       // Metadata may sit outside a nested project, but only one candidate is
       // an answer; several is a guess, and a guess here is silently wrong.
       metadata: metadata.includes(beside) ? "" : (metadata.length === 1 ? metadata[0] : ""),
@@ -115,6 +116,7 @@ export function locateProject(entries) {
   return {
     found: false,
     project: "",
+    config: "",
     metadata: "",
     ambiguous: candidates.length > 1,
     candidates,

@@ -168,6 +168,11 @@ async function beginSubmission(request, env) {
   if (!RELATIONSHIPS.has(relationship)) {
     problems.push("Say whether you maintain this formalization or have approval to submit it.");
   }
+  if (!configPath.path) {
+    problems.push(
+      "Comparator configuration is required. Give the repository-relative path to the one configuration this entry records.",
+    );
+  }
   for (const [name, value] of [
     ["Project directory", projectPath],
     ["Comparator configuration", configPath],

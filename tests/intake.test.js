@@ -264,6 +264,24 @@ test("a project that is not at the repository root can be submitted", async () =
   for (const name of ["project_path", "comparator_config_path", "formalization_metadata_path"]) {
     assert.match(form, new RegExp(`name="${name}"`), `the form cannot say ${name}`);
   }
+  assert.match(form, /name="comparator_config_path" required/);
+  assert.match(form, /One\s+Palomar entry records this configuration/);
+});
+
+test("a submission must select one Comparator configuration explicitly", async () => {
+  const response = await worker.fetch(
+    new Request("https://submit.palomar-registry.org/submit", {
+      method: "POST",
+      body: new URLSearchParams({
+        repository: "owner/name",
+        commit: "nonsense",
+        authorization_relationship: "maintainer",
+      }),
+    }),
+    ENV,
+  );
+  assert.equal(response.status, 400);
+  assert.match(await response.text(), /Comparator configuration is required/);
 });
 
 test("the layout is worked out from the repository rather than asked for", async () => {
@@ -271,10 +289,12 @@ test("the layout is worked out from the repository rather than asked for", async
   const found = locateProject(["lean-toolchain", "comparator.json", "lakefile.toml"]);
   assert.equal(found.found, true);
   assert.equal(found.project, "");
+  assert.equal(found.config, "comparator.json");
   const nested = locateProject([
     "formalization.yaml", "examples/p/comparator.json", "examples/p/lakefile.lean",
   ]);
   assert.equal(nested.project, "examples/p");
+  assert.equal(nested.config, "examples/p/comparator.json");
   // Metadata at the repository root is normal even for a nested project.
   assert.equal(nested.metadata, "formalization.yaml");
   // Two projects is a question for the submitter, not a guess.

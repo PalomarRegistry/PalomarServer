@@ -38,7 +38,7 @@ export function intakeForm(env, values = {}, problems = []) {
     : "";
   // A layout that was spelled out by hand must be visible when the form comes
   // back, or a submitter corrects one field and unknowingly reverts the rest.
-  const layoutOpen = ["project_path", "comparator_config_path", "formalization_metadata_path"]
+  const layoutOpen = ["project_path", "formalization_metadata_path"]
     .some((name) => String(values[name] ?? "") !== "");
   return page(env, "Submit a result", `
     <h1>Submit a Lean-verified result</h1>
@@ -54,8 +54,8 @@ export function intakeForm(env, values = {}, problems = []) {
     <section class="disclosure">
       <h2>What is public, and what is not</h2>
       <p>
-        The fact that this repository and commit have been submitted is
-        permanently and publicly recorded. Your identity, the automated review,
+        The fact that this repository, commit, and Comparator configuration path
+        have been submitted is permanently and publicly recorded. Your identity, the automated review,
         and the decision will not be public until you have seen them and decided
         to go ahead with registration.
       </p>
@@ -84,6 +84,16 @@ export function intakeForm(env, values = {}, problems = []) {
         <span id="commit-message">A full 40-character SHA. Branches and tags move; a record must not.</span>
       </p>
 
+      <label for="comparator_config_path">Comparator configuration</label>
+      <input id="comparator_config_path" name="comparator_config_path" required
+             autocomplete="off" aria-describedby="comparator-config-hint"
+             placeholder="comparator.json" value="${escape(values.comparator_config_path)}">
+      <p class="hint" id="comparator-config-hint">
+        A repository-relative path to exactly one Comparator JSON file. One
+        Palomar entry records this configuration and every declaration it
+        selects. Submit another configuration separately.
+      </p>
+
       <details id="layout" class="disclosure"${layoutOpen ? " open" : ""}
                data-layout="${layoutOpen ? "custom" : "unchecked"}">
         <summary id="layout-summary">${
@@ -99,12 +109,7 @@ export function intakeForm(env, values = {}, problems = []) {
         <input id="project_path" name="project_path" autocomplete="off"
                placeholder="left blank for the repository root"
                value="${escape(values.project_path)}">
-        <p class="hint">The directory holding the Lakefile and comparator.json.</p>
-
-        <label for="comparator_config_path">Comparator configuration</label>
-        <input id="comparator_config_path" name="comparator_config_path" autocomplete="off"
-               placeholder="left blank for comparator.json in the project"
-               value="${escape(values.comparator_config_path)}">
+        <p class="hint">The directory holding the Lakefile and selected Comparator configuration.</p>
 
         <label for="formalization_metadata_path">Formalization metadata</label>
         <input id="formalization_metadata_path" name="formalization_metadata_path"

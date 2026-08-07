@@ -33,8 +33,10 @@ Instead, prepare everything up to that point, then hand over:
    this in the browser, and `public/normalize.js` in this repository is the
    same code the server uses. Getting it right beforehand saves a failed run.
 2. Give your user the form at https://submit.palomar-registry.org, the exact
-   repository and full 40-character commit to enter, and anything else you have
-   prepared. Tell them the sign-in is theirs to do.
+   repository, full 40-character commit, and repository-relative path of the
+   one Comparator configuration to enter. Different configurations are
+   different submissions; every declaration selected by one configuration is
+   reviewed together. Tell them the sign-in is theirs to do.
 3. Ask them for the status URL they land on. It carries an access token in the
    fragment. Treat it as a credential: it is enough to read the private review
    and to publish permanently.
