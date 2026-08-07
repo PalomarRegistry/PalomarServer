@@ -202,10 +202,12 @@ export function statusPage(env) {
         <button type="button" id="withdraw" class="secondary">Withdraw the submission</button>
       </div>
       <p class="hint warning" id="register-warning">
-        Registration is permanent. It puts the record, the review, and the
-        repository and commit into the public registry, and Palomar records are
-        append-only: a registered record is never removed. Withdrawing leaves no
-        public trace of the review or the decision.
+        Palomar is still pre-launch. Registration makes the record, review,
+        repository, commit, and your identity public during testing and creates
+        immutable source-preservation tags. The public database may still be
+        reshaped until launch; after launch its registered records are
+        append-only. Withdrawing leaves no public trace of the review or the
+        decision.
       </p>
       <p class="hint" id="decision-status" role="status"></p>
     </section>

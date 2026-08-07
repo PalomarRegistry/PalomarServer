@@ -7,8 +7,8 @@ is the only way in. The registry itself is at https://palomar-registry.org.
 
 - Submission policy, what is required of a repository, and what review looks
   for: https://github.com/PalomarRegistry/PalomarPolicy/blob/main/CONTRIBUTING.md
-- Record format and schemas:
-  https://github.com/PalomarRegistry/PalomarPolicy/blob/main/SPECIFICATION.md
+- Repository, review, registration, and publication contract:
+  https://github.com/PalomarRegistry/PalomarPolicy/blob/main/docs/specification.md
 - The `formalization.yaml` self-reporting format, which a submission must
   carry: https://github.com/mathlib-initiative/formalization.yaml
 
@@ -58,8 +58,10 @@ found, and submit the corrected commit as a new submission.
 
 ## Registration is not monitoring
 
-`POST /register` consents to permanent publication of the repository, the
-commit, the review, and your user's identity. Nothing about it can be undone.
+`POST /register` consents to making the repository, commit, review, and your
+user's identity public during Palomar's pre-launch testing, and creates
+immutable source-preservation tags. Until public launch the database itself may
+still be reshaped; after launch its registered records are append-only.
 
 The token is a bearer credential, so this endpoint will accept the call from
 you. Do not make it on your own initiative. Show your user the review, say what

@@ -95,6 +95,10 @@ pending/<digest>.json         # a one-time intake nonce, consumed at OAuth callb
 
 ## Operating a submission
 
+The scheduled workflow in the private PalomarSubmissionState repository
+normally runs these steps. The commands below are the manual and recovery
+interface for the same pipeline.
+
 ```bash
 palomar-review list                                  # what is awaiting review
 palomar-review run --submission <id> --engine codex  # dry run; nothing changes

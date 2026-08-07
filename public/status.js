@@ -149,8 +149,9 @@ registerButton?.addEventListener("click", () =>
   decide(
     registerButton,
     "/register",
-    "Registration is permanent. The record, the review, and your repository " +
-      "and commit become public, and Palomar records are never removed. Register?",
+    "Palomar is pre-launch. The record, review, repository, commit, and your " +
+      "identity become public during testing, and immutable source-preservation " +
+      "tags are created. The database may still be reshaped until launch. Register?",
   ),
 );
 withdrawButton?.addEventListener("click", () =>
