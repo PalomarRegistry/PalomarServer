@@ -535,3 +535,69 @@ test("a submission that is not ready does not ask for a review", async () => {
   await worker.fetch(request("/api/submission"), env);
   assert.deepEqual(dispatched, []);
 });
+
+/**
+ * Drive the verification-just-finished transition, which is the one that asks
+ * for a review, and hand back what the dispatch was called with.
+ */
+async function dispatchOnVerificationSuccess(dispatchResponse) {
+  const bodies = [];
+  const files = await fixture({ status: "verifying" });
+  const store = new Map(
+    Object.entries(files).map(([k, v]) => [`/repos/${ENV.STATE_REPO}/contents/${k}`, v]),
+  );
+  globalThis.fetch = async (url, init = {}) => {
+    const path = new URL(url).pathname;
+    if (path.includes("/actions/workflows/reviewer.yml/dispatches")) {
+      bodies.push(init.body);
+      return dispatchResponse();
+    }
+    if (path.includes("/actions/workflows/")) {
+      return Response.json({
+        workflow_runs: [{
+          id: 12345, name: "Verify submission a1b2c3d4e5f6", status: "completed",
+          conclusion: "success", html_url: "https://example.test/run",
+          run_started_at: "2026-08-01T00:00:00Z",
+        }],
+      });
+    }
+    if ((init.method ?? "GET") !== "GET") return Response.json({ content: {} });
+    if (!store.has(path)) return new Response("", { status: 404 });
+    return Response.json({ content: encode(store.get(path)), sha: "sha" });
+  };
+  const env = { ...ENV, SUBMISSION_REPO: "PalomarRegistry/PalomarSubmission",
+                VERIFY_WORKFLOW: "submission.yml", REVIEW_WORKFLOW: "reviewer.yml" };
+  const response = await worker.fetch(request("/api/submission"), env);
+  return { bodies, response };
+}
+
+test("a rejected dispatch is logged and does not fail the submitter's request", async () => {
+  // Every caller swallows the result, because the backstop schedule picks the
+  // submission up anyway. That is exactly what would make a dispatch that
+  // always fails — an expired or under-scoped token — invisible: without this
+  // log the backstop silently becomes the whole drive train.
+  const warned = [];
+  const warn = console.warn;
+  console.warn = (...args) => warned.push(args);
+  let outcome;
+  try {
+    outcome = await dispatchOnVerificationSuccess(() => new Response("", { status: 403 }));
+  } finally {
+    console.warn = warn;
+  }
+  assert.equal(outcome.response.status, 200, "a failed dispatch must not fail the poll");
+  assert.equal(warned.length, 1, "a rejected dispatch was not logged");
+  assert.ok(warned[0].includes(403), `the status is the whole point: ${warned[0]}`);
+});
+
+test("the dispatch carries only a ref, so every reviewer input needs a default", async () => {
+  // GitHub fills omitted workflow_dispatch inputs from the defaults declared in
+  // the workflow file. reviewer.yml may therefore add inputs freely, but one
+  // without a default would be unreachable from here, and the server could not
+  // tell: it swallows the result.
+  const { bodies } = await dispatchOnVerificationSuccess(
+    () => new Response("", { status: 204 }),
+  );
+  assert.equal(bodies.length, 1, "verification finishing did not ask for a review");
+  assert.deepEqual(JSON.parse(bodies[0]), { ref: "main" });
+});

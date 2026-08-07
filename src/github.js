@@ -165,6 +165,13 @@ export async function dispatchReviewer(env) {
       body: JSON.stringify({ ref: "main" }),
     },
   );
+  if (!response.ok) {
+    // Every caller swallows this, because a submission the reviewer cannot be
+    // told about now is still picked up by the backstop schedule. That makes a
+    // dispatch that always fails — an expired or under-scoped token — invisible:
+    // the backstop silently becomes the whole drive train instead of a backstop.
+    console.warn("reviewer dispatch rejected", response.status, env.REVIEW_WORKFLOW);
+  }
   return response.ok;
 }
 
