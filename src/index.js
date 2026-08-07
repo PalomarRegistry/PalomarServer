@@ -66,6 +66,7 @@ const RELATIONSHIP_LABELS = {
 };
 const MAX_INFLIGHT_TOTAL = 12;
 const MAX_INFLIGHT_PER_OWNER = 2;
+const MAX_INFLIGHT_PER_SUBMITTER = 2;
 const CURRENT_REVIEW_SCHEMA_VERSION = 2;
 const REVIEW_DECISIONS = new Set(["accept", "revise", "reject"]);
 
@@ -249,6 +250,51 @@ async function beginSubmission(request, env) {
 }
 
 /**
+ * Decide whether one more submission may be admitted, reading the list fresh.
+ *
+ * The caps exist because verification is expensive and long-running, and
+ * anyone who can prove push access to any public repository reaches this
+ * point — including on a repository they made a minute ago.
+ *
+ * The two caps count different things and both are wanted. The repository cap
+ * stops one project's repositories monopolising the runners; the submitter cap
+ * stops one person doing it across many repositories, which the repository cap
+ * alone never noticed, because a fresh organisation buys fresh slots.
+ */
+async function admit(env, { owner, submitter }) {
+  const inflight = await readState(env, "index/inflight.json");
+  const open = Array.isArray(inflight.value?.open) ? inflight.value.open : [];
+  if (open.length >= MAX_INFLIGHT_TOTAL) {
+    return {
+      refused: true, status: 503, title: "Palomar is at capacity",
+      detail: ["Too many submissions are being verified right now. Please try again later."],
+    };
+  }
+  if (owner && open.filter((item) => item.owner === owner).length >= MAX_INFLIGHT_PER_OWNER) {
+    return {
+      refused: true, status: 429, title: "That repository already has submissions in flight",
+      detail: [
+        `Palomar verifies at most ${MAX_INFLIGHT_PER_OWNER} submissions at a time from one owner.`,
+        "Wait for those to finish before submitting another.",
+      ],
+    };
+  }
+  // `item.submitter ?? item.owner` so entries written before this shipped are
+  // still counted as something rather than silently as nobody.
+  const mine = open.filter((item) => (item.submitter ?? item.owner) === submitter).length;
+  if (mine >= MAX_INFLIGHT_PER_SUBMITTER) {
+    return {
+      refused: true, status: 429, title: "You already have submissions in flight",
+      detail: [
+        `Palomar verifies at most ${MAX_INFLIGHT_PER_SUBMITTER} submissions at a time from one submitter.`,
+        "Wait for those to finish before submitting another.",
+      ],
+    };
+  }
+  return { refused: false, inflight, open };
+}
+
+/**
  * Prove the submitter can push to the repository they are submitting.
  *
  * The token is used once, here, and never stored. Push access is not the same
@@ -268,22 +314,6 @@ async function completeSubmission(request, env) {
       "Start again from the submission form.",
     ]), 400);
   }
-  // Consume the nonce before doing anything else, so a replayed callback
-  // cannot produce a second submission.
-  await fetch(
-    `https://api.github.com/repos/${env.STATE_REPO}/contents/${encodeURI(pendingPath)}`,
-    {
-      method: "DELETE",
-      headers: {
-        authorization: `Bearer ${env.GITHUB_TOKEN}`,
-        accept: "application/vnd.github+json",
-        "user-agent": "palomar-server",
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({ message: "Consume pending intake", sha: pending.sha }),
-    },
-  );
-
   const tokenResponse = await fetch("https://github.com/login/oauth/access_token", {
     method: "POST",
     headers: { accept: "application/json", "content-type": "application/json" },
@@ -310,10 +340,36 @@ async function completeSubmission(request, env) {
   ).json();
 
   if (!viewer?.permissions?.push) {
+    // Deliberately before the pending record is consumed. Consuming first
+    // meant a refused submitter lost everything they had typed, undoing the
+    // care `beginSubmission` takes to hand it back to them.
     return html(errorPage(env, "You cannot push to that repository", [
       `Palomar asks submitters to prove write access to ${pending.value.repository}.`,
       "If you are submitting someone else's formalization, ask a maintainer to submit it.",
     ]), 403);
+  }
+
+  // Consume the nonce once the proof has passed, and only then. A replayed
+  // callback must not produce a second submission, and the delete is the only
+  // thing standing between one nonce and two records, so its failure is fatal
+  // rather than advisory. It used to be issued and ignored; that was survivable
+  // only because an OAuth code is itself single-use, which is not a property
+  // any other intake path has.
+  if (!(await deleteState(env, pendingPath, pending.sha, "Consume pending intake"))) {
+    return html(errorPage(env, "That sign-in could not be completed", [
+      "Palomar could not record that this sign-in was used, and will not risk",
+      "admitting it twice. Start again from the submission form.",
+    ]), 409);
+  }
+
+  const submitter = user?.login;
+  if (!submitter) {
+    // Every quota keys on this. Without it the old code bucketed submissions
+    // under the empty string, where they throttled each other.
+    return html(errorPage(env, "GitHub did not say who you are", [
+      "Palomar could not read your GitHub login, and admits nothing it cannot",
+      "attribute. Please try again.",
+    ]), 502);
   }
 
   // Anyone who can prove push access to any public repository can reach this
@@ -321,20 +377,10 @@ async function completeSubmission(request, env) {
   // is expensive and long-running, so admission is capped until real quotas
   // exist. This is deliberately blunt: refusing a genuine submitter with a
   // clear message is recoverable, exhausting the runners is not.
-  const inflight = await readState(env, "index/inflight.json");
-  const open = Array.isArray(inflight.value?.open) ? inflight.value.open : [];
-  const owner = viewer.owner?.login ?? "";
-  if (open.length >= MAX_INFLIGHT_TOTAL) {
-    return html(errorPage(env, "Palomar is at capacity", [
-      "Too many submissions are being verified right now. Please try again later.",
-    ]), 503);
-  }
-  if (open.filter((item) => item.owner === owner).length >= MAX_INFLIGHT_PER_OWNER) {
-    return html(errorPage(env, "You already have submissions in flight", [
-      `Palomar verifies at most ${MAX_INFLIGHT_PER_OWNER} submissions at a time from one owner.`,
-      "Wait for those to finish before submitting another.",
-    ]), 429);
-  }
+  const owner = viewer.owner?.login ?? null;
+  const admission = await admit(env, { owner, submitter });
+  if (admission.refused) return html(errorPage(env, admission.title, admission.detail), admission.status);
+  const { inflight, open } = admission;
 
   const id = newSubmissionId();
   const token = newAccessToken();
@@ -343,8 +389,8 @@ async function completeSubmission(request, env) {
       id,
       repositoryName: pending.value.repository,
       commit: pending.value.commit,
-      owner: viewer.owner?.login ?? null,
-      submitter: user?.login ?? null,
+      owner,
+      submitter,
       existingId: pending.value.existing_id,
       context: pending.value.context,
       requestedPaths: pending.value.requested_paths ?? {},
@@ -363,7 +409,7 @@ async function completeSubmission(request, env) {
   await writeState(
     env,
     "index/inflight.json",
-    { open: [...open, { id, owner, at: record.created_at }] },
+    { open: [...open, { id, owner, submitter, at: record.created_at }] },
     `Admit ${id}`,
     inflight.sha,
   );

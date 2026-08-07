@@ -14,6 +14,8 @@ const form = intakeForm(ENV);
 test("the disclosure says what is recorded and when it becomes public", () => {
   assert.match(form, /permanently and publicly recorded/);
   assert.match(form, /will not be public until you have seen them/);
+  // The identity is not on that list: it never becomes public at all.
+  assert.match(form, /identity\s+is not made public/);
   // "The review" invites the reading that a person did it. Say what it is.
   assert.match(form, /the automated review/);
   assert.match(form, /not completely secret prior to registration/);
@@ -467,4 +469,18 @@ test("a submitter is shown the decision and the comments, not the scores", async
   assert.match(status, /review\.passed \? "Passed" : "Did not pass"/);
   assert.doesNotMatch(status, /review\.decision/);
   assert.match(status, /review\.comments/);
+});
+
+test("nothing promises to publish an identity the record cannot hold", async () => {
+  // registry_record emits only the submission id and its authorization, and
+  // all four schemas close the block against a submitter field. Three places
+  // told submitters the opposite at the moment they were deciding.
+  const status = await readFile(new URL("../public/status.js", import.meta.url), "utf8");
+  const guide = await readFile(new URL("../public/llms.txt", import.meta.url), "utf8");
+  const pages = await readFile(new URL("../src/html.js", import.meta.url), "utf8");
+  for (const [name, text] of [["the pages", pages], ["the status page", status], ["llms.txt", guide]]) {
+    assert.doesNotMatch(text, /identity becomes? public/i, `${name} still discloses an identity`);
+    assert.doesNotMatch(text, /and your identity public/i, `${name} still discloses an identity`);
+    assert.match(text, /identity is not made public/i, `${name} does not say identity is withheld`);
+  }
 });

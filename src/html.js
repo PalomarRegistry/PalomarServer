@@ -55,9 +55,11 @@ export function intakeForm(env, values = {}, problems = []) {
       <h2>What is public, and what is not</h2>
       <p>
         The fact that this repository, commit, and Comparator configuration path
-        have been submitted is permanently and publicly recorded. Your identity, the automated review,
-        and the decision will not be public until you have seen them and decided
-        to go ahead with registration.
+        have been submitted is permanently and publicly recorded. Your identity
+        is not made public at all: a registered record has no field for the
+        person who sent it. Nor are the automated review and the decision, which
+        will not be public until you have seen them and decided to go ahead with
+        registration.
       </p>
       <p>
         The reviews are not completely secret prior to registration: they may be
@@ -208,9 +210,11 @@ export function statusPage(env) {
       </div>
       <p class="hint warning" id="register-warning">
         Palomar is still pre-launch. Registration makes the record, review,
-        repository, commit, and your identity public during testing and creates
-        immutable source-preservation tags. The public database may still be
-        reshaped until launch; after launch its registered records are
+        repository, and commit public during testing and creates immutable
+        source-preservation tags. Your GitHub identity is not made public: a
+        registered record names the submission and its authorization basis, and
+        has no field for the person who sent it. The public database may still
+        be reshaped until launch; after launch its registered records are
         append-only. Withdrawing leaves no public trace of the review or the
         decision.
       </p>

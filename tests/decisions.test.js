@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readFile } from "node:fs/promises";
 import worker from "../src/index.js";
-import { statePath, tokenDigest } from "../src/submission.js";
+import { digest, statePath, tokenDigest } from "../src/submission.js";
 
 const ENV = {
   STATE_REPO: "PalomarRegistry/PalomarSubmissionState",
@@ -619,4 +619,143 @@ test("the dispatch carries only a ref, so every reviewer input needs a default",
   );
   assert.equal(bodies.length, 1, "verification finishing did not ask for a review");
   assert.deepEqual(JSON.parse(bodies[0]), { ref: "main" });
+});
+
+/**
+ * The push check, which had no test at all.
+ *
+ * `permissions.push` on the repository, read with the submitter's own token,
+ * is the entire proof that a submitter may submit a repository. Everything
+ * downstream rests on it: the reviewer refuses to register anything whose
+ * record does not carry `push_verified`. It was never exercised, so nothing
+ * would have noticed it being inverted, skipped, or refactored away.
+ */
+function stubOAuth({ push, files = {}, login = "someone" }) {
+  const written = [];
+  const store = new Map(Object.entries(files));
+  const deleted = [];
+  globalThis.fetch = async (url, init = {}) => {
+    const target = new URL(url);
+    const method = init.method ?? "GET";
+    if (target.hostname === "github.com" && target.pathname.endsWith("/access_token")) {
+      return Response.json({ access_token: "the-submitter-token" });
+    }
+    if (target.pathname === "/user") {
+      return Response.json({ login, id: 4242 });
+    }
+    if (target.pathname === "/repos/example/project") {
+      return Response.json({
+        full_name: "example/project",
+        private: false,
+        owner: { login: "example" },
+        permissions: { push },
+      });
+    }
+    if (target.pathname.includes("/actions/workflows/")) return Response.json({ ok: true });
+    const path = decodeURI(
+      target.pathname.replace(`/repos/${ENV.STATE_REPO}/contents/`, ""),
+    );
+    if (method === "GET") {
+      if (!store.has(path)) return new Response("", { status: 404 });
+      return Response.json({ content: encode(store.get(path)), sha: `sha-${path}` });
+    }
+    if (method === "DELETE") {
+      deleted.push(path);
+      store.delete(path);
+      return Response.json({ ok: true });
+    }
+    const body = JSON.parse(init.body);
+    written.push({ path, value: JSON.parse(Buffer.from(body.content, "base64").toString("utf-8")) });
+    store.set(path, JSON.parse(Buffer.from(body.content, "base64").toString("utf-8")));
+    return Response.json({ content: {} });
+  };
+  return { written, deleted, store };
+}
+
+const PENDING = {
+  schema_version: 1,
+  repository: "example/project",
+  commit: "1".repeat(40),
+  existing_id: null,
+  context: null,
+  requested_paths: {},
+  authorization_relationship: "maintainer",
+  authorization_evidence: null,
+  created_at: "2026-08-01T00:00:00Z",
+};
+
+async function callback(nonce) {
+  return worker.fetch(
+    new Request(`https://submit.palomar-registry.org/oauth/callback?code=c&state=${nonce}`),
+    ENV,
+  );
+}
+
+test("a submitter who cannot push writes no submission", async () => {
+  const nonce = "b".repeat(64);
+  const { written } = stubOAuth({
+    push: false,
+    files: { [`pending/${await digest(nonce)}.json`]: PENDING },
+  });
+  const response = await callback(nonce);
+
+  assert.equal(response.status, 403);
+  assert.match(await response.text(), /cannot push to that repository/);
+  // Nothing may be admitted, indexed, or dispatched on a failed proof.
+  assert.deepEqual(written.map((item) => item.path), []);
+});
+
+test("a submitter who can push is recorded as having proved it", async () => {
+  const nonce = "c".repeat(64);
+  const { written } = stubOAuth({
+    push: true,
+    files: { [`pending/${await digest(nonce)}.json`]: PENDING },
+  });
+  const response = await callback(nonce);
+
+  assert.equal(response.status, 303);
+  const record = written.find((item) => item.path.endsWith("state.json"));
+  assert.ok(record, "no submission record was written");
+  assert.equal(record.value.push_verified, true);
+  assert.equal(record.value.submitter, "someone");
+});
+
+test("a refused submitter keeps what they typed, and the nonce", async () => {
+  // Consuming the pending record first meant a failed proof destroyed the
+  // whole submission, undoing the care the form takes to hand it back.
+  const nonce = "d".repeat(64);
+  const path = `pending/${await digest(nonce)}.json`;
+  const { deleted, store } = stubOAuth({ push: false, files: { [path]: PENDING } });
+  await callback(nonce);
+  assert.deepEqual(deleted, []);
+  assert.ok(store.has(path), "the intake was consumed by a submission that never happened");
+});
+
+test("a nonce that cannot be consumed admits nothing", async () => {
+  // The delete is the only thing between one sign-in and two submissions, so
+  // its failure is fatal rather than advisory.
+  const nonce = "e".repeat(64);
+  const path = `pending/${await digest(nonce)}.json`;
+  const { written } = stubOAuth({ push: true, files: { [path]: PENDING } });
+  const inner = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) =>
+    (init.method ?? "GET") === "DELETE"
+      ? new Response("", { status: 409 })
+      : inner(url, init);
+
+  const response = await callback(nonce);
+  assert.equal(response.status, 409);
+  assert.deepEqual(written.map((item) => item.path), []);
+});
+
+test("an unattributable sign-in is refused rather than bucketed", async () => {
+  // `?? ""` put every such submission in one bucket, where they throttled
+  // each other and counted as one submitter.
+  const nonce = "f".repeat(64);
+  const { written } = stubOAuth({
+    push: true, login: null, files: { [`pending/${await digest(nonce)}.json`]: PENDING },
+  });
+  const response = await callback(nonce);
+  assert.equal(response.status, 502);
+  assert.deepEqual(written.map((item) => item.path), []);
 });
