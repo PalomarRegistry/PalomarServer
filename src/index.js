@@ -867,9 +867,26 @@ export async function sweepPending(env, now = Date.now()) {
 }
 
 export default {
+  /**
+   * The two things nothing else does, and what happens when one of them throws.
+   *
+   * A cron handler has no submitter waiting on it and no response anyone reads,
+   * so a throw here was an unreported failure: admission slots stopped being
+   * freed and abandoned intake stopped being discarded, and the only sign of it
+   * was intake wedging some hours later. Both are attempted whatever the other
+   * does, and the run is failed at the end so the platform records it.
+   */
   async scheduled(event, env) {
-    await reconcile(env);
-    await sweepPending(env);
+    const failures = [];
+    for (const [what, task] of [["reconcile", reconcile], ["sweepPending", sweepPending]]) {
+      try {
+        await task(env);
+      } catch (error) {
+        console.error("scheduled", what, String(error?.stack ?? error));
+        failures.push(`${what}: ${error}`);
+      }
+    }
+    if (failures.length) throw new Error(`the scheduled pass failed: ${failures.join("; ")}`);
   },
 
   async fetch(request, env) {

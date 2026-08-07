@@ -395,6 +395,48 @@ test("an abandoned sign-in is discarded, and a fresh one is left alone", async (
   assert.equal(removed, 2);
 });
 
+test("a pending directory too long to list is refused, not half-swept", async () => {
+  // The contents API answers at most a thousand entries for one directory, and
+  // a listing of exactly that length cannot be told apart from a truncated one.
+  // Swept quietly, the sweep would report having tidied up while the part it
+  // never saw grew without bound, and every record it holds is something
+  // somebody typed.
+  const deleted = [];
+  globalThis.fetch = async (url, init = {}) => {
+    if ((init.method ?? "GET") === "DELETE") {
+      deleted.push(new URL(url).pathname);
+      return Response.json({ ok: true });
+    }
+    return Response.json(
+      Array.from({ length: 1000 }, (_, index) => ({
+        name: `${index}.json`, type: "file", sha: `sha-${index}`,
+      })),
+    );
+  };
+  const { sweepPending } = await import("../src/index.js");
+  await assert.rejects(() => sweepPending(ENV), /at or past the 1000/);
+  assert.deepEqual(deleted, []);
+});
+
+test("a scheduled pass that could not do its work does not report success", async () => {
+  // Nobody is waiting on a cron and nothing reads its response, so a throw here
+  // was invisible: admission slots stopped being freed and abandoned intake
+  // stopped being discarded, and the first sign of it was intake wedging some
+  // hours later.
+  const swept = [];
+  globalThis.fetch = async (url) => {
+    const path = new URL(url).pathname;
+    if (path.endsWith("/contents/index/inflight.json")) throw new TypeError("network down");
+    swept.push(path);
+    return new Response("", { status: 404 });
+  };
+  await assert.rejects(() => worker.scheduled({}, ENV), /reconcile/);
+  // And the other half of the pass still ran: one failing task must not take
+  // the tasks that would have succeeded down with it.
+  assert.ok(swept.some((path) => path.endsWith("/contents/pending")),
+            "the pending sweep never ran");
+});
+
 test("a commit that does not exist is answered, not treated as a fault", async () => {
   // GitHub answers 422 for a well-formed SHA it does not have, and 404 for a
   // malformed one. Both mean the same thing to a submitter.
