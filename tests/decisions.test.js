@@ -759,3 +759,185 @@ test("an unattributable sign-in is refused rather than bucketed", async () => {
   assert.equal(response.status, 502);
   assert.deepEqual(written.map((item) => item.path), []);
 });
+
+/**
+ * The agent path: what an agent must prove, and what it must not be able to
+ * skip.
+ *
+ * A browser proves push access by signing in; an agent proves it by creating a
+ * tag, which needs the same write access, and a gist, which is the only half
+ * that carries an identity. Neither alone is enough and the record says so.
+ */
+function stubAgent(config = {}) {
+  const state = { tag: {}, gist: {}, repoId: 987654321, ...config };
+  const written = [];
+  const store = new Map();
+  const deleted = [];
+  globalThis.fetch = async (url, init = {}) => {
+    const target = new URL(url);
+    const method = init.method ?? "GET";
+    if (target.pathname.startsWith("/repos/example/project/git/ref/tags/")) {
+      if (!state.tag.exists) return new Response("", { status: 404 });
+      return Response.json({ object: { type: state.tag.type ?? "commit", sha: state.tag.sha } });
+    }
+    if (target.pathname.startsWith("/gists/")) {
+      if (!state.gist.exists) return new Response("", { status: 404 });
+      return Response.json({
+        owner: state.gist.owner ?? { type: "User", login: "someone", id: 4242 },
+        files: { "palomar.txt": { content: state.gist.content } },
+      });
+    }
+    if (target.pathname === "/repos/example/project") {
+      return Response.json({
+        id: state.repoId, full_name: "example/project", private: false,
+        owner: { login: "example" }, permissions: { push: true },
+      });
+    }
+    if (target.pathname.includes("/commits/")) return Response.json({ sha: "1".repeat(40) });
+    if (target.pathname.includes("/actions/workflows/")) return Response.json({ ok: true });
+    const path = decodeURI(target.pathname.replace(`/repos/${ENV.STATE_REPO}/contents/`, ""));
+    if (method === "GET") {
+      if (!store.has(path)) return new Response("", { status: 404 });
+      return Response.json({ content: encode(store.get(path)), sha: `sha-${path}` });
+    }
+    if (method === "DELETE") { deleted.push(path); store.delete(path); return Response.json({ ok: true }); }
+    const body = JSON.parse(init.body);
+    const value = JSON.parse(Buffer.from(body.content, "base64").toString("utf-8"));
+    written.push({ path, value });
+    store.set(path, value);
+    return Response.json({ content: {} });
+  };
+  return { written, deleted, store, state };
+}
+
+const AGENT_SUBMISSION = {
+  repository: "example/project",
+  commit: "1".repeat(40),
+  comparator_config_path: "comparator.json",
+  authorization_relationship: "maintainer",
+};
+
+async function agentSubmit() {
+  const response = await worker.fetch(
+    new Request("https://submit.palomar-registry.org/api/submit", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(AGENT_SUBMISSION),
+    }),
+    ENV,
+  );
+  return response.json();
+}
+
+async function agentVerify(body) {
+  return worker.fetch(
+    new Request("https://submit.palomar-registry.org/api/verify", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+    ENV,
+  );
+}
+
+test("an agent is told what to create, and the challenge is not the key", async () => {
+  stubAgent();
+  const begun = await agentSubmit();
+  assert.match(begun.pending_secret, /^[0-9a-f]{64}$/);
+  assert.match(begun.challenge, /^[0-9a-f]{64}$/);
+  // The challenge goes into a public tag name. If the pending record were
+  // filed under its digest, anyone reading that tag could compute the lookup
+  // key and take the access token with it.
+  assert.notEqual(begun.pending_secret, begun.challenge);
+  assert.match(begun.instructions, /git\/refs/);
+  assert.match(begun.instructions, /gists/);
+});
+
+test("a tag and a gist together admit a submission", async () => {
+  const stub = stubAgent();
+  const begun = await agentSubmit();
+  stub.state.tag = { exists: true, sha: "1".repeat(40) };
+  stub.state.gist = { exists: true, content: begun.challenge };
+  const response = await agentVerify({ pending_secret: begun.pending_secret, gist_id: "abc123" });
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.match(body.submission_id, /^[0-9a-z]{12}$/);
+  assert.match(body.access_token, /^[0-9a-f]{64}$/);
+  const record = stub.written.find((item) => item.path.endsWith("state.json"));
+  assert.equal(record.value.push_verified, true);
+  assert.equal(record.value.submitter, "someone");
+  // The record must not claim the binding OAuth gets.
+  assert.equal(record.value.push_proof.method, "tag-and-gist");
+  assert.equal(record.value.push_proof.binding, "separately-attested");
+  assert.equal(record.value.push_proof.principal.id, 4242);
+});
+
+test("a proof that does not hold admits nothing", async () => {
+  // Each of these is a way the tag or the gist could be present and still not
+  // be evidence that this submitter can write to this repository.
+  const cases = [
+    ["no tag", { tag: { exists: false }, gist: true }, /no tag by that name/],
+    ["a tag on another commit", { tag: { exists: true, sha: "9".repeat(40) }, gist: true },
+     /different commit/],
+    ["an annotated tag", { tag: { exists: true, type: "tag", sha: "1".repeat(40) }, gist: true },
+     /annotated/],
+    ["no gist", { tag: { exists: true, sha: "1".repeat(40) }, gist: { exists: false } },
+     /no such gist/],
+    ["a gist with the wrong content",
+     { tag: { exists: true, sha: "1".repeat(40) }, gist: { exists: true, content: "not it" } },
+     /does not carry the challenge/],
+    ["a gist owned by a bot",
+     { tag: { exists: true, sha: "1".repeat(40) }, gist: { exists: true, bot: true } },
+     /not owned by a GitHub user/],
+  ];
+
+  for (const [name, setup, expected] of cases) {
+    const stub = stubAgent();
+    const begun = await agentSubmit();
+    stub.state.tag = setup.tag;
+    stub.state.gist = setup.gist === true
+      ? { exists: true, content: begun.challenge }
+      : setup.gist.bot
+        ? { exists: true, content: begun.challenge, owner: { type: "Bot", login: "ci[bot]", id: 1 } }
+        : setup.gist;
+
+    const response = await agentVerify({
+      pending_secret: begun.pending_secret, gist_id: "abc123",
+    });
+    const body = await response.json();
+    assert.equal(response.status, 403, `${name} was admitted`);
+    assert.match(`${body.tag} ${body.gist}`, expected, name);
+    assert.equal(
+      stub.written.filter((item) => item.path.includes("submissions/")).length, 0,
+      `${name} wrote a submission record`,
+    );
+  }
+});
+
+test("a challenge cannot be spent twice", async () => {
+  const stub = stubAgent();
+  const begun = await agentSubmit();
+  stub.state.tag = { exists: true, sha: "1".repeat(40) };
+  stub.state.gist = { exists: true, content: begun.challenge };
+
+  const first = await agentVerify({ pending_secret: begun.pending_secret, gist_id: "abc123" });
+  assert.equal(first.status, 200);
+  const second = await agentVerify({ pending_secret: begun.pending_secret, gist_id: "abc123" });
+  assert.equal(second.status, 404, "a spent challenge admitted a second submission");
+});
+
+test("a browser sign-in cannot be completed as an agent submission", async () => {
+  // The two intakes prove different things and record different bindings.
+  // A pending record must be redeemed by the path that created it.
+  const stub = stubAgent();
+  await worker.fetch(
+    new Request("https://submit.palomar-registry.org/submit", {
+      method: "POST",
+      body: new URLSearchParams(AGENT_SUBMISSION),
+    }),
+    ENV,
+  );
+  const pending = stub.written.find((item) => item.path.startsWith("pending/"));
+  assert.equal(pending.value.method, "oauth");
+});

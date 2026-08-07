@@ -12,6 +12,8 @@ import {
 import {
   dispatchVerification,
   findVerificationRun,
+  challengeGist,
+  challengeTag,
   deleteState,
   dispatchReviewer,
   listState,
@@ -67,6 +69,7 @@ const RELATIONSHIP_LABELS = {
 const MAX_INFLIGHT_TOTAL = 12;
 const MAX_INFLIGHT_PER_OWNER = 2;
 const MAX_INFLIGHT_PER_SUBMITTER = 2;
+const MAX_VERIFY_ATTEMPTS = 10;
 const CURRENT_REVIEW_SCHEMA_VERSION = 2;
 const REVIEW_DECISIONS = new Set(["accept", "revise", "reject"]);
 
@@ -117,8 +120,12 @@ function now() {
  * Everything checkable without the submitter's identity is checked here, so a
  * malformed submission never reaches the OAuth round trip.
  */
-async function beginSubmission(request, env) {
-  const form = await request.formData();
+async function beginSubmission(request, env, { machine = false } = {}) {
+  // A browser sends a form; an agent sends JSON. Both are read through one
+  // `get`, so every check below sees the same values whichever arrived.
+  const form = machine
+    ? new Map(Object.entries(await request.json().catch(() => ({}))))
+    : await request.formData();
   const repositoryName = normalizeRepository(form.get("repository"));
   const commit = normalizeCommit(form.get("commit"));
   const rawExistingId = String(form.get("existing_id") ?? "").trim();
@@ -167,7 +174,12 @@ async function beginSubmission(request, env) {
     comparator_config_path: String(form.get("comparator_config_path") ?? ""),
     formalization_metadata_path: String(form.get("formalization_metadata_path") ?? ""),
   };
-  const rejected = (...problems) => html(intakeForm(env, values, problems), 400);
+  // A browser gets its form back with everything still in it; an agent gets
+  // the same problems as a list it can act on.
+  const rejected = (...problems) =>
+    machine
+      ? json({ error: "that submission was refused", problems }, 400)
+      : html(intakeForm(env, values, problems), 400);
 
   const problems = [];
   if (!repositoryName) problems.push("Repository must be a GitHub owner/name or URL.");
@@ -211,9 +223,20 @@ async function beginSubmission(request, env) {
 
   // A pending intake, so the callback can recover exactly what was asked for
   // without trusting anything the browser carries back except an opaque nonce.
+  // Two independent secrets, and they must stay independent. `nonce` locates
+  // the pending record and never leaves Palomar; `challenge` is written into a
+  // tag name and a gist by the agent path, so it is public by construction.
+  // Deriving one from the other would mean anyone who read the public tag
+  // could compute the private lookup key and take the access token with it —
+  // which reads the review, consents to registration, and withdraws.
   const nonce = newAccessToken();
+  const challenge = newAccessToken();
   const pending = {
-    schema_version: 1,
+    schema_version: 2,
+    method: machine ? "tag-and-gist" : "oauth",
+    challenge,
+    repository_id: repo.id ?? null,
+    attempts: 0,
     repository: repositoryName,
     commit,
     existing_id: existingId || null,
@@ -239,6 +262,27 @@ async function beginSubmission(request, env) {
     return rejected(
       "Palomar could not record that submission just now. Nothing was lost; try again.",
     );
+  }
+
+  if (machine) {
+    return json({
+      pending_secret: nonce,
+      challenge,
+      repository: repositoryName,
+      commit,
+      instructions: [
+        `Create a tag at the commit you are submitting. Creating a ref needs the`,
+        `same write access the browser sign-in checks for, which is why it is here:`,
+        `  gh api -X POST repos/${repositoryName}/git/refs \\`,
+        `    -f ref=refs/tags/${challenge} -f sha=${commit}`,
+        `Then a secret gist carrying the same challenge, which is what tells`,
+        `Palomar who you are, since a ref records no author:`,
+        `  echo '{"public":false,"files":{"palomar.txt":{"content":"${challenge}"}}}' \\`,
+        `    | gh api -X POST gists --input -`,
+        `Then POST /api/verify with {"pending_secret": "...", "gist_id": "..."},`,
+        `and delete both once it answers.`,
+      ].join("\n"),
+    });
   }
 
   const authorize = new URL("https://github.com/login/oauth/authorize");
@@ -292,6 +336,169 @@ async function admit(env, { owner, submitter }) {
     };
   }
   return { refused: false, inflight, open };
+}
+
+/**
+ * Everything after the proof, shared so the two intakes cannot drift apart.
+ *
+ * A browser sign-in and an agent's tag prove the same thing by different
+ * means. What follows must not depend on which: the same admission, the same
+ * record, the same indexes, the same dispatch. Two copies of this would be two
+ * definitions of what a submission is.
+ */
+async function admitSubmission(env, { pending, owner, submitter, proof }) {
+  const admission = await admit(env, { owner, submitter });
+  if (admission.refused) return admission;
+  const { inflight, open } = admission;
+
+  const id = newSubmissionId();
+  const token = newAccessToken();
+  const record = {
+    ...newRecord({
+      id,
+      repositoryName: pending.repository,
+      commit: pending.commit,
+      owner,
+      submitter,
+      existingId: pending.existing_id,
+      context: pending.context,
+      requestedPaths: pending.requested_paths ?? {},
+      authorization: {
+        relationship: pending.authorization_relationship,
+        ...(pending.authorization_evidence
+          ? { evidence: pending.authorization_evidence }
+          : {}),
+      },
+    }),
+    push_proof: proof,
+    created_at: now(),
+    token_sha256: await tokenDigest(env, token),
+    events: [{ at: now(), status: "verifying", note: "Mechanical verification dispatched" }],
+  };
+  await writeState(env, statePath(id, "state.json"), record, `Open submission ${id}`);
+  await writeState(
+    env,
+    "index/inflight.json",
+    { open: [...open, { id, owner, submitter, at: record.created_at }] },
+    `Admit ${id}`,
+    inflight.sha,
+  );
+  await writeState(
+    env,
+    `index/tokens/${record.token_sha256}.json`,
+    { id },
+    `Index submission ${id}`,
+  );
+  await dispatchVerification(env, {
+    repositoryName: record.repository,
+    commit: record.commit,
+    requestId: id,
+    options: {
+      authorization_relationship: RELATIONSHIP_LABELS[record.authorization.relationship],
+      ...Object.fromEntries(
+        Object.entries(record.requested_paths ?? {}).filter(([, value]) => value),
+      ),
+      ...(record.authorization.evidence
+        ? { authorization_evidence: record.authorization.evidence }
+        : {}),
+      ...(record.existing_id ? { existing_id: record.existing_id } : {}),
+      ...(record.context ? { context: record.context } : {}),
+    },
+  });
+  return { refused: false, id, token };
+}
+
+/**
+ * The agent path's proof: a tag that needed write access, and a gist that says
+ * who wrote it.
+ *
+ * Neither half is sufficient. A ref proves `contents: write` — the capability
+ * the browser path reads as `permissions.push` — but records no author. A gist
+ * names a verified account but says nothing about the repository. Together they
+ * establish that someone who can write to this repository submitted it, and
+ * that an account claimed it; not, as OAuth does, that those are one account.
+ * The record says which of the two it is, and the reviewer refuses a record
+ * that claims otherwise.
+ */
+async function verifySubmission(request, env) {
+  const body = await request.json().catch(() => ({}));
+  const secret = String(body.pending_secret ?? "");
+  if (!/^[0-9a-f]{64}$/.test(secret)) return json({ error: "no pending_secret" }, 400);
+
+  const pendingPath = `pending/${await digest(secret)}.json`;
+  const pending = await readState(env, pendingPath);
+  if (!pending.value) return json({ error: "that submission has already been verified" }, 404);
+  if (pending.value.method !== "tag-and-gist") {
+    return json({ error: "that intake is a browser sign-in, not an agent submission" }, 409);
+  }
+
+  // Bounded, so /api/verify cannot be used to make Palomar's token hammer a
+  // repository the caller names.
+  const attempts = Number(pending.value.attempts ?? 0) + 1;
+  if (attempts > MAX_VERIFY_ATTEMPTS) {
+    await deleteState(env, pendingPath, pending.sha, "Discard an intake that could not be proved");
+    return json({ error: "too many attempts; start again" }, 429);
+  }
+
+  const { repository, commit, challenge } = pending.value;
+  const tag = await challengeTag(env.SUBMISSION_TOKEN, repository, challenge, commit);
+  const gist = tag.ok
+    ? await challengeGist(env.SUBMISSION_TOKEN, body.gist_id, challenge)
+    : { ok: false };
+  if (!tag.ok || !gist.ok) {
+    await writeState(
+      env, pendingPath, { ...pending.value, attempts }, "Record a failed proof", pending.sha,
+    ).catch(() => {});
+    return json({
+      error: "that proof was refused",
+      tag: tag.ok ? "accepted" : tag.reason,
+      gist: gist.ok ? "accepted" : (gist.reason ?? "not checked: the tag was refused"),
+      attempts_remaining: MAX_VERIFY_ATTEMPTS - attempts,
+    }, 403);
+  }
+
+  // The repository must be the one the challenge was issued for. GitHub follows
+  // renames and transfers silently, so the name alone would not notice.
+  const repo = await fetchRepository(env.GITHUB_TOKEN, repository);
+  if (pending.value.repository_id && repo?.id !== pending.value.repository_id) {
+    return json({ error: "that repository is not the one this submission began for" }, 409);
+  }
+
+  // Consumed only once the proof holds, and its failure is fatal: this is the
+  // only thing between one challenge and two submissions.
+  if (!(await deleteState(env, pendingPath, pending.sha, "Consume pending intake"))) {
+    return json({ error: "that submission could not be claimed; try again" }, 409);
+  }
+
+  const admitted = await admitSubmission(env, {
+    pending: pending.value,
+    owner: repo?.owner?.login ?? null,
+    submitter: gist.principal.login,
+    proof: {
+      schema_version: 1,
+      method: "tag-and-gist",
+      binding: "separately-attested",
+      verified_at: now(),
+      repository_id: pending.value.repository_id,
+      commit,
+      challenge_sha256: await digest(challenge),
+      principal: gist.principal,
+    },
+  });
+  if (admitted.refused) {
+    return json({ error: admitted.title, detail: admitted.detail }, admitted.status);
+  }
+  return json({
+    submission_id: admitted.id,
+    access_token: admitted.token,
+    status_url: `${new URL(request.url).origin}/s#${admitted.token}`,
+    next: [
+      `Delete both artifacts now:`,
+      `  gh api -X DELETE repos/${repository}/git/refs/tags/${challenge}`,
+      `  gh api -X DELETE gists/${body.gist_id}`,
+      `Then POST /session with token=<access_token> and follow the status.`,
+    ].join("\n"),
+  });
 }
 
 /**
@@ -378,69 +585,24 @@ async function completeSubmission(request, env) {
   // exist. This is deliberately blunt: refusing a genuine submitter with a
   // clear message is recoverable, exhausting the runners is not.
   const owner = viewer.owner?.login ?? null;
-  const admission = await admit(env, { owner, submitter });
-  if (admission.refused) return html(errorPage(env, admission.title, admission.detail), admission.status);
-  const { inflight, open } = admission;
-
-  const id = newSubmissionId();
-  const token = newAccessToken();
-  const record = {
-    ...newRecord({
-      id,
-      repositoryName: pending.value.repository,
+  const admitted = await admitSubmission(env, {
+    pending: pending.value,
+    owner,
+    submitter,
+    proof: {
+      schema_version: 1,
+      method: "oauth",
+      binding: "same-account",
+      verified_at: now(),
+      repository_id: viewer.id ?? null,
       commit: pending.value.commit,
-      owner,
-      submitter,
-      existingId: pending.value.existing_id,
-      context: pending.value.context,
-      requestedPaths: pending.value.requested_paths ?? {},
-      authorization: {
-        relationship: pending.value.authorization_relationship,
-        ...(pending.value.authorization_evidence
-          ? { evidence: pending.value.authorization_evidence }
-          : {}),
-      },
-    }),
-    created_at: now(),
-    token_sha256: await tokenDigest(env, token),
-    events: [{ at: now(), status: "verifying", note: "Mechanical verification dispatched" }],
-  };
-  await writeState(env, statePath(id, "state.json"), record, `Open submission ${id}`);
-  await writeState(
-    env,
-    "index/inflight.json",
-    { open: [...open, { id, owner, submitter, at: record.created_at }] },
-    `Admit ${id}`,
-    inflight.sha,
-  );
-  await writeState(
-    env,
-    `index/tokens/${record.token_sha256}.json`,
-    { id },
-    `Index submission ${id}`,
-  );
-  await dispatchVerification(env, {
-    repositoryName: record.repository,
-    commit: record.commit,
-    requestId: id,
-    options: {
-      authorization_relationship: RELATIONSHIP_LABELS[record.authorization.relationship],
-      // A project that is not at the repository root is acceptable and has to
-      // be able to say so; the verifier has always taken these.
-      ...Object.fromEntries(
-        Object.entries(record.requested_paths ?? {}).filter(([, value]) => value),
-      ),
-      ...(record.authorization.evidence
-        ? { authorization_evidence: record.authorization.evidence }
-        : {}),
-      ...(record.existing_id ? { existing_id: record.existing_id } : {}),
-      ...(record.context ? { context: record.context } : {}),
+      principal: { login: submitter, id: user?.id ?? null },
     },
   });
-
-  // The token goes in the fragment, which browsers never send to a server, so
-  // it stays out of request logs and Referer headers. The page exchanges it
-  // for a short-lived cookie.
+  if (admitted.refused) {
+    return html(errorPage(env, admitted.title, admitted.detail), admitted.status);
+  }
+  const { token } = admitted;
   return Response.redirect(`${new URL(request.url).origin}/s#${token}`, 303);
 }
 
@@ -589,6 +751,12 @@ export default {
     try {
       if (request.method === "GET" && url.pathname === "/") {
         return html(intakeForm(env));
+      }
+      if (request.method === "POST" && url.pathname === "/api/submit") {
+        return await beginSubmission(request, env, { machine: true });
+      }
+      if (request.method === "POST" && url.pathname === "/api/verify") {
+        return await verifySubmission(request, env);
       }
       if (request.method === "POST" && url.pathname === "/submit") {
         return await beginSubmission(request, env);

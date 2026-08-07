@@ -256,3 +256,49 @@ export async function findVerificationRun(env, requestId) {
     started_at: run.run_started_at,
   };
 }
+
+/**
+ * The tag an agent created to prove it can write to the repository.
+ *
+ * Creating a ref requires `contents: write`, which is the capability the
+ * browser path reads as `permissions.push`. Resolved rather than trusted: the
+ * ref has to exist, in this repository, and point at the very commit being
+ * submitted. An annotated tag is refused rather than dereferenced, so the
+ * object the proof is about is never one step removed from the object it names.
+ */
+export async function challengeTag(token, name, challenge, commit) {
+  const ref = await call(token, `/repos/${name}/git/ref/tags/${challenge}`);
+  if (!ref) return { ok: false, reason: "no tag by that name exists in the repository" };
+  if (ref.object?.type !== "commit") {
+    return { ok: false, reason: "the tag is annotated; Palomar reads lightweight tags" };
+  }
+  if (ref.object?.sha !== commit) {
+    return { ok: false, reason: "the tag points at a different commit" };
+  }
+  return { ok: true };
+}
+
+/**
+ * The gist an agent created to say who it is.
+ *
+ * A ref records no author, so this is the half that carries identity. GitHub
+ * sets `owner`, and answers immediately, which is why this and not the events
+ * feed: that is documented at anything up to six hours.
+ */
+export async function challengeGist(token, id, challenge) {
+  if (!/^[0-9a-f]{1,64}$/i.test(String(id ?? ""))) {
+    return { ok: false, reason: "that is not a gist id" };
+  }
+  const gist = await call(token, `/gists/${id}`);
+  if (!gist) return { ok: false, reason: "no such gist" };
+  const files = Object.values(gist.files ?? {});
+  if (!files.some((file) => String(file?.content ?? "").trim() === challenge)) {
+    return { ok: false, reason: "the gist does not carry the challenge" };
+  }
+  const owner = gist.owner;
+  if (owner?.type !== "User" || !owner?.login || !owner?.id) {
+    // A bot can hold a token and a gist. The record is meant to name a person.
+    return { ok: false, reason: "the gist is not owned by a GitHub user account" };
+  }
+  return { ok: true, principal: { login: owner.login, id: owner.id } };
+}
