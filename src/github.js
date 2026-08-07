@@ -175,13 +175,32 @@ export async function dispatchReviewer(env) {
   return response.ok;
 }
 
-/** Everything under one directory of the state repository. */
+// The contents API answers at most this many entries for one directory, and
+// says to use the git trees API past it.
+const CONTENTS_DIRECTORY_LIMIT = 1000;
+
+/**
+ * Everything under one directory of the state repository.
+ *
+ * A listing of exactly the API's limit cannot be told apart from one that was
+ * cut off at it, so both are refused. The caller is a sweep, and a sweep that
+ * silently sees a prefix of a directory is a sweep that reports having tidied
+ * up while the part it never saw grows without bound.
+ */
 export async function listState(env, directory) {
   const data = await call(
     env.GITHUB_TOKEN,
     `/repos/${env.STATE_REPO}/contents/${encodeURI(directory)}`,
   );
-  return Array.isArray(data) ? data : [];
+  if (!Array.isArray(data)) return [];
+  if (data.length >= CONTENTS_DIRECTORY_LIMIT) {
+    throw new Error(
+      `${directory} holds ${data.length} entries, at or past the ` +
+        `${CONTENTS_DIRECTORY_LIMIT} the contents API will list; it cannot be enumerated ` +
+        "this way any more",
+    );
+  }
+  return data;
 }
 
 export async function deleteState(env, path, sha, message) {
