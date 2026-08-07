@@ -41,7 +41,7 @@ a claim about *them*, not about the code, and it is recorded permanently.
        -> {"pending_secret": "...", "challenge": "...", "instructions": "..."}
 
     2. gh api -X POST repos/OWNER/REPO/git/refs \
-         -f ref=refs/tags/CHALLENGE -f sha=COMMIT
+         -f ref=refs/tags/palomar-verify-CHALLENGE -f sha=COMMIT
 
     3. echo '{"public":false,"files":{"palomar.txt":{"content":"CHALLENGE"}}}' \
          | gh api -X POST gists --input -
@@ -49,7 +49,7 @@ a claim about *them*, not about the code, and it is recorded permanently.
     4. POST /api/verify {"pending_secret": "...", "gist_id": "..."}
        -> {"submission_id": "...", "access_token": "..."}
 
-    5. gh api -X DELETE repos/OWNER/REPO/git/refs/tags/CHALLENGE
+    5. gh api -X DELETE repos/OWNER/REPO/git/refs/tags/palomar-verify-CHALLENGE
        gh api -X DELETE gists/GIST_ID
 
 If five calls where you expected one looks like a badly designed service, it is

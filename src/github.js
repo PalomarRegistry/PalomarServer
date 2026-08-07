@@ -266,8 +266,17 @@ export async function findVerificationRun(env, requestId) {
  * submitted. An annotated tag is refused rather than dereferenced, so the
  * object the proof is about is never one step removed from the object it names.
  */
+export const CHALLENGE_TAG_PREFIX = "palomar-verify-";
+
 export async function challengeTag(token, name, challenge, commit) {
-  const ref = await call(token, `/repos/${name}/git/ref/tags/${challenge}`);
+  // Prefixed, and not only for tidiness: GitHub refuses a branch or tag whose
+  // name is 40 or 64 hex characters, because it could not be told apart from a
+  // SHA, and the challenge is 64 hex. The prefix also means a maintainer who
+  // notices the tag can tell what it was, rather than finding an unexplained
+  // hex string appear and vanish on their repository.
+  const ref = await call(
+    token, `/repos/${name}/git/ref/tags/${CHALLENGE_TAG_PREFIX}${challenge}`,
+  );
   if (!ref) return { ok: false, reason: "no tag by that name exists in the repository" };
   if (ref.object?.type !== "commit") {
     return { ok: false, reason: "the tag is annotated; Palomar reads lightweight tags" };

@@ -776,7 +776,7 @@ function stubAgent(config = {}) {
   globalThis.fetch = async (url, init = {}) => {
     const target = new URL(url);
     const method = init.method ?? "GET";
-    if (target.pathname.startsWith("/repos/example/project/git/ref/tags/")) {
+    if (target.pathname.startsWith("/repos/example/project/git/ref/tags/palomar-verify-")) {
       if (!state.tag.exists) return new Response("", { status: 404 });
       return Response.json({ object: { type: state.tag.type ?? "commit", sha: state.tag.sha } });
     }
@@ -990,4 +990,17 @@ test("a registration puts the interval back to a minute", async () => {
   );
   assert.equal(response.status, 200);
   assert.equal(stub.store.get(file).interval_seconds, 60, "registering did not clear the wait");
+});
+
+test("the tag name is one GitHub will actually accept", async () => {
+  // GitHub refuses a branch or tag whose name is 40 or 64 hex characters,
+  // because it could not be told apart from a SHA. The challenge is 64 hex, so
+  // an unprefixed name could never be created and the whole path was
+  // unusable — which only a live attempt revealed.
+  stubAgent();
+  const begun = await agentSubmit();
+  const tagName = begun.instructions.match(/refs\/tags\/(\S+)/)[1];
+  assert.doesNotMatch(tagName, /^[0-9a-f]{40}$/);
+  assert.doesNotMatch(tagName, /^[0-9a-f]{64}$/);
+  assert.ok(tagName.endsWith(begun.challenge), "the tag no longer carries the challenge");
 });
