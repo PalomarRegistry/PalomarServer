@@ -212,7 +212,7 @@ function clearSuggestions() {
   say(DEFAULT_LAYOUT);
   // Something typed by hand is a non-standard layout whatever the tree says,
   // and clearing the suggestions does not clear that.
-  summarize([projectPath, configPath, metadataPath].some((input) => input?.value)
+  summarize([projectPath, metadataPath].some((input) => input?.value)
     ? "custom"
     : "unchecked");
 }
@@ -258,6 +258,7 @@ async function describeLayout(name, sha) {
     return say("This repository is too large for GitHub to list in one request, so the layout was not checked. Fill these in if the project is not at the root.");
   }
   const where = locateProject(tree.tree);
+  if (where.found) autofill(configPath, where.config);
 
   if (where.found && !where.project && !where.metadata) {
     summarize("ok");
@@ -285,7 +286,7 @@ async function describeLayout(name, sha) {
 
 // Filling one of these in by hand makes the layout non-standard whatever the
 // tree looked like, and the summary should not go on saying otherwise.
-for (const input of [projectPath, configPath, metadataPath]) {
+for (const input of [projectPath, metadataPath]) {
   input?.addEventListener("input", () => {
     if (input.value) summarize("custom");
   });

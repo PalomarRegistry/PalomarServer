@@ -19,7 +19,8 @@ cannot leave.
 Stated on the intake form, in these words, because it is not what people
 assume:
 
-- **Public from the moment you submit:** the repository and commit.
+- **Public from the moment you submit:** the repository, commit, and selected
+  Comparator configuration path.
   Verification runs in a public Actions workflow whose logs are public.
 - **Never public unless the author registers:** the review, the decision, and
   the submitter's identity.
