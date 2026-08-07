@@ -459,14 +459,55 @@ test("a redirect carries the fragment the submitter needs", async () => {
 test("the page keeps asking while anything is still moving", async () => {
   // It only re-polled while verifying, so once verification passed the page
   // sat on "waiting for the automated review" and never showed the review.
-  const script = await readFile(new URL("../public/status.js", import.meta.url), "utf8");
-  const settled = /const SETTLED = new Set\(\[([^\]]*)\]\)/.exec(script)[1];
+  const { nextPollDelay } = await import("../public/polling.js");
   for (const moving of ["verifying", "awaiting-review", "reviewing"]) {
-    assert.ok(!settled.includes(moving), `${moving} must not be treated as settled`);
+    assert.ok(nextPollDelay({ status: moving }) > 0, `${moving} must not be treated as settled`);
   }
-  for (const done of ["registered", "withdrawn", "verification-failed"]) {
-    assert.ok(settled.includes(done), `${done} should stop the polling`);
+  for (const done of ["registered", "withdrawn", "verification-failed", "review-failed"]) {
+    assert.equal(nextPollDelay({ status: done }), null, `${done} should stop the polling`);
   }
+});
+
+test("a status page left open cannot spend the server's hourly budget", async () => {
+  // Six seconds, for as long as the tab was open, at three or four GitHub
+  // calls an ask against a budget of five thousand an hour: three tabs
+  // exhausted it, and an exhausted budget is not a slow status page. It is
+  // every submission's verification, review and registration failing at once.
+  const { nextPollDelay } = await import("../public/polling.js");
+  const CALLS_PER_ASK = 4;
+  const BUDGET_PER_HOUR = 5000;
+
+  /** How many times one tab asks in an hour, sitting in this status. */
+  function asksPerHour(status, hidden = false) {
+    let asks = 0;
+    for (let elapsed = 0, previous = 0; ; asks += 1) {
+      const delay = nextPollDelay({ status, previous, hidden });
+      if (delay === null) break;
+      elapsed += delay;
+      if (elapsed > 3600_000) break;
+      previous = delay;
+    }
+    return asks;
+  }
+
+  for (const status of ["verifying", "reviewing", "awaiting-review"]) {
+    const tabs = Math.floor(BUDGET_PER_HOUR / (asksPerHour(status) * CALLS_PER_ASK));
+    // Twelve submissions may be verified at once, so the budget has to hold
+    // more open tabs than that before anyone has left one on a second screen.
+    assert.ok(tabs >= 20, `${status} leaves room for only ${tabs} open tabs`);
+  }
+
+  // And a tab nobody is looking at costs nothing at all.
+  assert.equal(asksPerHour("verifying", true), 0);
+});
+
+test("the status page stops asking when nobody is looking at it", async () => {
+  const script = await readFile(new URL("../public/status.js", import.meta.url), "utf8");
+  assert.match(script, /visibilitychange/);
+  assert.match(script, /document\.visibilityState === "hidden"/);
+  // And coming back to the tab asks straight away, rather than showing the
+  // answer it stopped on until the backoff it had reached elapses again.
+  assert.match(script, /pollDelay = 0;\s*\n\s*poll\(\);/);
 });
 
 test("a duration is only claimed once one has been measured", async () => {

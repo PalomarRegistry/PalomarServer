@@ -1,3 +1,5 @@
+import { SETTLED, nextPollDelay } from "/polling.js";
+
 // The access token lives in the URL fragment, which browsers never send to a
 // server. It is posted once in exchange for a short-lived cookie, then removed
 // from the address bar, so it never appears in a request path or a log.
@@ -33,14 +35,6 @@ const REVIEW_EXPLANATION =
   "account of them, wherever you have written it: module documentation or docstrings " +
   "in the Challenge, the README, or formalization.yaml. It also judges whether the " +
   "result is plausibly interesting to some mathematician.";
-
-// Nothing is running for a submission in these states, so the page stops
-// asking. Everything else is in motion and the page keeps itself current.
-const SETTLED = new Set([
-  "verification-failed", "registered", "withdrawn",
-  // Nothing further happens without an operator, so the page stops asking.
-  "review-failed",
-]);
 
 function duration(seconds) {
   const inMinutes = seconds >= 90;
@@ -179,13 +173,61 @@ async function establishSession() {
   return response.ok;
 }
 
+let pollTimer = null;
+let pollDelay = 0;
+let lastStatus = null;
+
+/**
+ * Ask again later, or stop asking.
+ *
+ * The delay doubles for as long as the answer keeps being the same one, and
+ * starts over the moment the status changes: something that has just moved is
+ * likely to move again, and something that has said the same thing for ten
+ * minutes is not.
+ */
+function askAgain(status, waitingOnAPerson = false) {
+  clearTimeout(pollTimer);
+  pollTimer = null;
+  if (status !== lastStatus) pollDelay = 0;
+  lastStatus = status;
+  const delay = nextPollDelay({
+    status,
+    previous: pollDelay,
+    hidden: document.visibilityState === "hidden",
+    waitingOnAPerson,
+  });
+  if (delay === null) return;
+  pollDelay = delay;
+  pollTimer = setTimeout(poll, delay);
+}
+
+// A tab nobody is looking at asks nothing, and one that comes back gets the
+// current answer rather than the one it stopped on. A page left open in a
+// background tab for a week is the whole of why this page had a budget problem.
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState !== "visible") {
+    clearTimeout(pollTimer);
+    pollTimer = null;
+    return;
+  }
+  if (SETTLED.has(lastStatus)) return;
+  pollDelay = 0;
+  poll();
+});
+
 async function poll() {
   let data;
   try {
     const response = await fetch("/api/submission", { credentials: "same-origin" });
     if (!response.ok) { summary.textContent = "This submission could not be found."; return; }
     data = await response.json();
-  } catch { summary.textContent = "Could not reach the server. Retrying."; setTimeout(poll, 8000); return; }
+  } catch {
+    // An unreachable server is a reason to ask less often, not a reason to
+    // keep asking at the same rate: it is usually the budget already spent.
+    summary.textContent = "Could not reach the server. Retrying.";
+    askAgain(lastStatus);
+    return;
+  }
 
   summary.textContent = LABELS[data.status] ?? data.status;
   progress.replaceChildren();
@@ -248,11 +290,10 @@ async function poll() {
 
   // Anything not settled is still moving, so keep asking. Stopping here is
   // what left a page saying "waiting for review" while the review arrived.
-  if (!SETTLED.has(data.status)) {
-    const waitingOnAPerson =
-      data.status === "review-ready" && !data.registration_consent && !reviewNeedsRerun;
-    if (!waitingOnAPerson) setTimeout(poll, 6000);
-  }
+  askAgain(
+    data.status,
+    data.status === "review-ready" && !data.registration_consent && !reviewNeedsRerun,
+  );
 }
 
 const linkField = document.getElementById("submission-link");
