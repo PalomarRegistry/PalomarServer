@@ -20,8 +20,11 @@ import {
   normalizeRepository,
 } from "./normalize.js";
 
-const REGISTRY_INDEX =
-  "https://data.palomar-registry.org/index.json";
+// The versions of one result, at a key named after it. The registry index
+// names every record ever accepted, so asking it which versions one identifier
+// has meant fetching all of them, and paying more for it every time anybody
+// else registered anything. This form is the answer and nothing else.
+const REGISTRY_VERSIONS = "https://data.palomar-registry.org/versions/";
 
 const live = document.getElementById("live-status");
 
@@ -300,18 +303,28 @@ const checkExistingId = latest(async (settle, parts) => {
     return settle("missing", "A Palomar ID looks like PALOMAR-2026-07-29-000123.");
   }
   settle("checking", "Looking for that record…");
-  let entries;
+  let document;
   try {
-    const response = await fetch(REGISTRY_INDEX, { cache: "no-store" });
+    // `value` has already matched the strict identifier pattern, which is what
+    // makes it safe to put in a path.
+    const response = await fetch(`${REGISTRY_VERSIONS}${value}.json`, { cache: "no-store" });
+    // Nothing there means no active version: an unknown identifier, or one
+    // withdrawn entirely. Either way there is nothing to register a version of.
+    if (response.status === 404) {
+      return settle("missing", `${value} is not in the registry.`);
+    }
     if (!response.ok) return settle("", DEFAULT.existing_id);
-    entries = (await response.json())?.entries;
+    document = await response.json();
   } catch {
     return settle("", DEFAULT.existing_id);
   }
-  if (!Array.isArray(entries)) return settle("", DEFAULT.existing_id);
-  const versions = entries.filter((entry) => entry?.id === value);
-  if (!versions.length) return settle("missing", `${value} is not in the registry.`);
-  const current = Math.max(...versions.map((entry) => Number(entry.version) || 0));
+  // The document says which result it is about. Without that check a
+  // misdirected or stale response would let this field report another
+  // record's version history under the identifier that was typed.
+  if (document?.id !== value || !Array.isArray(document.entries) || !document.entries.length) {
+    return settle("", DEFAULT.existing_id);
+  }
+  const current = Math.max(...document.entries.map((entry) => Number(entry.version) || 0));
   settle(
     "found",
     `Found ${value}; this would become version ${current + 1}`,
