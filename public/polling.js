@@ -11,6 +11,8 @@
  * and the schedule the budget arithmetic is checked against are the same one.
  */
 
+import { SETTLED } from "./statuses.js";
+
 // The first answer arrives as quickly as it always did. Backing off from there
 // is what bounds the cost; making somebody wait for the first answer buys
 // nothing, and the page is opened at the moment a submission is dispatched.
@@ -31,11 +33,13 @@ export const SLOW_POLL_CAP_MS = 300_000;
 
 // Nothing is running for a submission in these states, so the page stops
 // asking. Everything else is in motion and the page keeps itself current.
-export const SETTLED = new Set([
-  "verification-failed", "registered", "withdrawn",
-  // Nothing further happens without an operator, so the page stops asking.
-  "review-failed",
-]);
+//
+// Re-exported rather than written out again, so the status page keeps importing
+// it from here and there is still only one list. The server has its own,
+// shorter, list of the statuses it will not act on, and the two differ on
+// purpose; statuses.js says why, and had the two spellings not been in two
+// files nobody would have needed to be told.
+export { SETTLED };
 
 const SLOW = new Set(["awaiting-review", "review-ready"]);
 

@@ -89,10 +89,9 @@ With the token you can drive the rest over plain HTTP. `POST /session` once with
   issue, before it is registered.
 - `POST /withdraw` — abandon the submission.
 
-`POST /session` reads a form, not JSON. A JSON body gets you an HTML error page
-rather than a useful one, which is the wrong way to learn this. The cookie lasts
-twelve hours, so a long-running agent exchanges the token again rather than
-assuming it still holds.
+`POST /session` reads a form, not JSON. A JSON body is refused with 400 and a
+JSON `error` saying so. The cookie lasts twelve hours, so a long-running agent
+exchanges the token again rather than assuming it still holds.
 
 Poll `GET /api/submission` at a human pace; a submission takes minutes, not
 seconds. Once a minute is fast enough while something is running, and once
