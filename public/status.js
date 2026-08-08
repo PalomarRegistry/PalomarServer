@@ -25,6 +25,13 @@ const LABELS = {
     "Palomar could not complete the automated review. This is a fault at our end, " +
     "not with your submission. Keep this link; the operators can see it and will " +
     "look into it.",
+  // Deliberately not phrased as a verification result. Palomar lost the run; it
+  // did not watch the proof fail, and saying so would be a claim it cannot make.
+  "dispatch-lost":
+    "Palomar could not find the verification run it started for your submission, " +
+    "and has released its place in the queue. This is a fault at our end, not with " +
+    "your submission, and nothing about your proof was decided. Submitting the same " +
+    "commit again is the fastest way forward; the operators can see this too.",
   registered: "Registered in the registry.",
   withdrawn: "Withdrawn.",
 };

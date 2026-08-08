@@ -75,6 +75,11 @@ const MAX_INFLIGHT_TOTAL = 12;
 const MAX_INFLIGHT_PER_OWNER = 2;
 const MAX_INFLIGHT_PER_SUBMITTER = 2;
 const MAX_VERIFY_ATTEMPTS = 10;
+// How old a `verifying` submission must be before a run nobody can find is
+// treated as lost. Generous by three orders of magnitude: a dispatched run is
+// listed within seconds, and this only ever applies to one that cannot be found
+// at all.
+const LOST_RUN_MS = 3600_000;
 const CURRENT_REVIEW_SCHEMA_VERSION = 2;
 const REVIEW_DECISIONS = new Set(["accept", "revise", "reject"]);
 
@@ -1018,7 +1023,10 @@ async function refresh(env, entry) {
     return reset;
   }
   if (record.status !== "verifying") return record;
-  const run = await findVerificationRun(env, record.id);
+  const run = await findVerificationRun(env, record.id, {
+    pinnedRunId: record.run?.id ?? null,
+    since: record.created_at,
+  });
   if (!run) return record;
   // The run is pinned the first time it is seen. A second run carrying the
   // same public submission id must not be able to take its place.
@@ -1096,7 +1104,10 @@ async function release(env, id) {
  * intake. This runs on a schedule instead, so nothing depends on a browser
  * staying open.
  */
-async function reconcile(env) {
+// Exported for the tests, like `sweepPending`. Nothing else calls it: it is the
+// cron path, and driving it directly is the only way to test the case where
+// nobody is watching.
+export async function reconcile(env) {
   const inflight = await readState(env, "index/inflight.json");
   const open = Array.isArray(inflight.value?.open) ? inflight.value.open : [];
   const still = [];
@@ -1104,7 +1115,21 @@ async function reconcile(env) {
     const record = await readState(env, statePath(item.id, "state.json"));
     if (!record.value) continue;               // vanished: do not hold its slot
     if (record.value.status !== "verifying") continue;
-    const run = await findVerificationRun(env, item.id);
+    const pinned = record.value.run?.id ?? null;
+    const run = await findVerificationRun(env, item.id, {
+      pinnedRunId: pinned,
+      since: record.value.created_at,
+    });
+
+    // The same pinning `refresh` documents, and for the same reason: the
+    // submission id is in a public run name, so a second run carrying it must
+    // not settle this record. Missing here before, and this is the path that
+    // runs with nobody watching.
+    if (pinned && run && run.id !== pinned) {
+      still.push(item);
+      continue;
+    }
+
     if (run?.status === "completed") {
       const settled =
         run.conclusion === "success" ? "awaiting-review" : "verification-failed";
@@ -1115,8 +1140,48 @@ async function reconcile(env) {
         events: [...record.value.events,
                  { at: now(), status: settled, note: `Verification ${run.conclusion}` }],
       }, `Reconcile ${item.id}`, record.sha);
-      if (settled === "awaiting-review") await dispatchReviewer(env).catch(() => false);
+      if (settled === "awaiting-review") {
+        // Idempotent and cheap. A submission that settles without an entry here
+        // is one the reviewer's pass never looks at, and nothing rebuilds this
+        // file for a single missing id: it is rebuilt when it is absent,
+        // damaged, or stale, and one short is none of those.
+        await openSubmission(env, item.id).catch(() => {});
+        await dispatchReviewer(env).catch(() => false);
+      }
       continue;
+    }
+
+    // A run nothing can find is not a run this record is waiting for. With the
+    // search bounded by time rather than by count this should not happen, which
+    // is exactly why it needs a floor: a submission stuck in `verifying` holds
+    // three separate quotas and nothing else releases it, so a bug here used to
+    // mean a registry that quietly stopped accepting submissions and an
+    // operator editing private state by hand.
+    //
+    // Two consecutive misses rather than one, because a single empty answer is
+    // as likely to be GitHub having a moment as a genuinely lost run, and this
+    // ends a submission somebody is waiting on. A run that is merely queued is
+    // found, and is left alone however long it waits.
+    if (!run) {
+      const missed = (record.value.run_misses ?? 0) + 1;
+      const age = Date.now() - (Date.parse(record.value.created_at) || Date.now());
+      if (missed >= 2 && age > LOST_RUN_MS) {
+        await writeState(env, statePath(item.id, "state.json"), {
+          ...record.value,
+          status: "dispatch-lost",
+          run_misses: missed,
+          events: [...record.value.events, {
+            at: now(), status: "dispatch-lost",
+            note: "Palomar could not find the verification run it started, and released the slot",
+          }],
+        }, `Release ${item.id}: its run was never found`, record.sha);
+        continue;                              // dropped from `still`: slot back
+      }
+      if (missed !== (record.value.run_misses ?? 0)) {
+        await writeState(env, statePath(item.id, "state.json"),
+                         { ...record.value, run_misses: missed },
+                         `Note a missing run for ${item.id}`, record.sha).catch(() => {});
+      }
     }
     still.push(item);
   }

@@ -41,6 +41,12 @@ function stubState(files, workflowRuns = null) {
     if (target.pathname.includes("/actions/workflows/")) {
       return Response.json({ workflow_runs: workflowRuns ?? [] });
     }
+    // A pinned run is asked for by id rather than searched for by name.
+    const byId = /\/actions\/runs\/(\d+)$/.exec(target.pathname);
+    if (byId) {
+      const run = (workflowRuns ?? []).find((item) => String(item.id) === byId[1]);
+      return run ? Response.json(run) : new Response("", { status: 404 });
+    }
     const path = decodeURI(
       target.pathname.replace(`/repos/${ENV.STATE_REPO}/contents/`, ""),
     );
@@ -604,16 +610,20 @@ test("the page keeps asking while anything is still moving", async () => {
 test("the page stops asking about exactly one status more than the server calls closed", async () => {
   // Two nearly identical sets, one in the server and one in the browser, with
   // names that read as synonyms. Every status the server will not act on is one
-  // there is no point asking about, and `review-failed` is the single status
-  // that is the other way round: nothing moves it on its own, so the page stops
-  // asking, but the submitter may still withdraw it. Written as one derivation
+  // there is no point asking about, and `review-failed` and `dispatch-lost` are
+  // the two that are the other way round: nothing moves them on their own, so
+  // the page stops asking, but the submission is still the submitter's to
+  // withdraw. Written as one derivation
   // from one list so that nobody can quietly make the two equal, in either
   // direction, without saying so here.
   const { CLOSED, SETTLED } = await import("../public/statuses.js");
   for (const status of CLOSED) {
     assert.ok(SETTLED.has(status), `${status} is closed but the page would keep asking about it`);
   }
-  assert.deepEqual([...SETTLED].filter((status) => !CLOSED.has(status)), ["review-failed"]);
+  assert.deepEqual(
+    [...SETTLED].filter((status) => !CLOSED.has(status)).sort(),
+    ["dispatch-lost", "review-failed"],
+  );
   // And the page's own list is that same set, not a copy of it.
   const { SETTLED: fromPolling } = await import("../public/polling.js");
   assert.equal(fromPolling, SETTLED);
@@ -712,15 +722,15 @@ test("the reviewer is asked to run the moment there is work", async () => {
       dispatched.push(path);
       return new Response("", { status: 204 });
     }
+    const run = {
+      id: 12345, name: "Verify submission a1b2c3d4e5f6", status: "completed",
+      conclusion: "success", html_url: "https://example.test/run",
+      run_started_at: "2026-08-01T00:00:00Z",
+    };
     if (path.includes("/actions/workflows/")) {
-      return Response.json({
-        workflow_runs: [{
-          id: 12345, name: "Verify submission a1b2c3d4e5f6", status: "completed",
-          conclusion: "success", html_url: "https://example.test/run",
-          run_started_at: "2026-08-01T00:00:00Z",
-        }],
-      });
+      return Response.json({ workflow_runs: [run] });
     }
+    if (/\/actions\/runs\/\d+$/.test(path)) return Response.json(run);
     if ((init.method ?? "GET") !== "GET") return Response.json({ content: {} });
     if (!store.has(path)) return new Response("", { status: 404 });
     return Response.json({ content: encode(store.get(path)), sha: "sha" });
@@ -763,15 +773,15 @@ async function dispatchOnVerificationSuccess(dispatchResponse) {
       bodies.push(init.body);
       return dispatchResponse();
     }
+    const run = {
+      id: 12345, name: "Verify submission a1b2c3d4e5f6", status: "completed",
+      conclusion: "success", html_url: "https://example.test/run",
+      run_started_at: "2026-08-01T00:00:00Z",
+    };
     if (path.includes("/actions/workflows/")) {
-      return Response.json({
-        workflow_runs: [{
-          id: 12345, name: "Verify submission a1b2c3d4e5f6", status: "completed",
-          conclusion: "success", html_url: "https://example.test/run",
-          run_started_at: "2026-08-01T00:00:00Z",
-        }],
-      });
+      return Response.json({ workflow_runs: [run] });
     }
+    if (/\/actions\/runs\/\d+$/.test(path)) return Response.json(run);
     if ((init.method ?? "GET") !== "GET") return Response.json({ content: {} });
     if (!store.has(path)) return new Response("", { status: 404 });
     return Response.json({ content: encode(store.get(path)), sha: "sha" });
@@ -1390,4 +1400,161 @@ test("the status read is guarded too, because it is not really a read", async ()
   );
   assert.equal(forged.status, 403);
   assert.equal(written.length, 0, "a forged status read still moved the submission");
+});
+
+test("a pinned run is asked for by id, not searched for by name", async () => {
+  // Searching by name and then refusing whatever came back would wedge a record
+  // whose own run had simply fallen further down the list than the search
+  // reached, which is how a lost run used to hold three quotas for ever.
+  const asked = [];
+  const store = new Map(Object.entries(await fixture({ status: "verifying" })));
+  globalThis.fetch = async (url, init = {}) => {
+    const path = new URL(url).pathname;
+    asked.push(path);
+    if (/\/actions\/runs\/12345$/.test(path)) {
+      return Response.json({
+        id: 12345, name: "Verify submission a1b2c3d4e5f6", status: "completed",
+        conclusion: "success", html_url: "https://example.test/run",
+        run_started_at: "2026-08-01T00:00:00Z",
+      });
+    }
+    if (path.includes("/actions/")) return Response.json({ workflow_runs: [] });
+    const key = decodeURI(path.replace(`/repos/${ENV.STATE_REPO}/contents/`, ""));
+    if ((init.method ?? "GET") === "GET") {
+      if (!store.has(key)) return new Response("", { status: 404 });
+      return Response.json({ content: encode(store.get(key)), sha: `sha-${key}` });
+    }
+    return Response.json({ content: {} });
+  };
+  const response = await worker.fetch(request("/api/submission"), ENV);
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).status, "awaiting-review");
+  assert.ok(
+    asked.some((path) => /\/actions\/runs\/12345$/.test(path)),
+    "the pinned run was not asked for by id",
+  );
+  assert.ok(
+    !asked.some((path) => path.includes("/actions/workflows/")),
+    "a pinned run was still searched for by name",
+  );
+});
+
+test("a run that nobody can find eventually gives its slot back", async () => {
+  // A submission stuck in `verifying` holds one of twelve global slots, one of
+  // two for its owner and one of two for its submitter, and nothing else
+  // releases it. Two misses rather than one, because a single empty answer is
+  // as likely to be GitHub having a moment as a genuinely lost run.
+  const { reconcile } = await import("../src/index.js");
+  const old = "2026-01-01T00:00:00Z";
+  const files = {
+    ...(await fixture({ status: "verifying", created_at: old, run: undefined })),
+    "index/inflight.json": { open: [{ id: "a1b2c3d4e5f6", owner: "example", at: old }] },
+  };
+  const { written, store } = stubState(files, []);
+
+  // First pass: noticed, not acted on.
+  await reconcile(ENV);
+  assert.equal(store.get(statePath("a1b2c3d4e5f6", "state.json")).status, "verifying");
+  assert.equal(store.get(statePath("a1b2c3d4e5f6", "state.json")).run_misses, 1);
+  assert.deepEqual(store.get("index/inflight.json").open.length, 1);
+
+  // Second pass: released.
+  await reconcile(ENV);
+  const record = store.get(statePath("a1b2c3d4e5f6", "state.json"));
+  assert.equal(record.status, "dispatch-lost");
+  assert.deepEqual(store.get("index/inflight.json").open, []);
+  // And it says what happened, rather than blaming the proof.
+  assert.match(record.events.at(-1).note, /could not find the verification run/);
+  assert.ok(written.length > 0);
+});
+
+test("a run that is merely queued is left alone however long it waits", async () => {
+  // Verification runs for up to six hours. Ageing out anything that is simply
+  // slow would fail submissions that were going to succeed.
+  const { reconcile } = await import("../src/index.js");
+  const old = "2026-01-01T00:00:00Z";
+  const queued = {
+    id: 999, name: "Verify submission a1b2c3d4e5f6", status: "queued",
+    conclusion: null, html_url: "https://example.test/run", run_started_at: old,
+  };
+  const files = {
+    ...(await fixture({ status: "verifying", created_at: old, run: { id: 999 } })),
+    "index/inflight.json": { open: [{ id: "a1b2c3d4e5f6", owner: "example", at: old }] },
+  };
+  const { store } = stubState(files, [queued]);
+  await reconcile(ENV);
+  await reconcile(ENV);
+  assert.equal(store.get(statePath("a1b2c3d4e5f6", "state.json")).status, "verifying");
+  assert.equal(store.get("index/inflight.json").open.length, 1);
+});
+
+test("a second run carrying the same submission id cannot settle the record", async () => {
+  // The submission id is in a public run name, so anyone who can dispatch the
+  // workflow can produce a run carrying it. `refresh` has always pinned; the
+  // cron path did not, and it is the one that runs with nobody watching.
+  const { reconcile } = await import("../src/index.js");
+  const impostor = {
+    id: 777, name: "Verify submission a1b2c3d4e5f6", status: "completed",
+    conclusion: "success", html_url: "https://example.test/other",
+    run_started_at: "2026-08-01T00:00:00Z",
+  };
+  const files = {
+    ...(await fixture({ status: "verifying", run: { id: 12345 } })),
+    "index/inflight.json": { open: [{ id: "a1b2c3d4e5f6", owner: "example", at: "2026-08-01T00:00:00Z" }] },
+  };
+  const { store } = stubState(files, [impostor]);
+  await reconcile(ENV);
+  const record = store.get(statePath("a1b2c3d4e5f6", "state.json"));
+  assert.equal(record.status, "verifying", "an impostor run settled the record");
+  assert.equal(record.run.id, 12345);
+});
+
+test("a submission that settles is put where the reviewer will find it", async () => {
+  // The reviewer reads `index/open.json` rather than listing every submission.
+  // Only admission added to it, and nothing rebuilds it for a single missing
+  // id, so a submission that settled here was one the reviewer never saw.
+  const { reconcile } = await import("../src/index.js");
+  const done = {
+    id: 12345, name: "Verify submission a1b2c3d4e5f6", status: "completed",
+    conclusion: "success", html_url: "https://example.test/run",
+    run_started_at: "2026-08-01T00:00:00Z",
+  };
+  const files = {
+    ...(await fixture({ status: "verifying", run: { id: 12345 } })),
+    "index/inflight.json": { open: [{ id: "a1b2c3d4e5f6", owner: "example", at: "2026-08-01T00:00:00Z" }] },
+    "index/open.json": { schema_version: 1, open: [] },
+  };
+  const { store } = stubState(files, [done]);
+  await reconcile(ENV);
+  assert.equal(store.get(statePath("a1b2c3d4e5f6", "state.json")).status, "awaiting-review");
+  assert.deepEqual(store.get("index/open.json").open, ["a1b2c3d4e5f6"]);
+});
+
+test("a run past the first page is still found", async () => {
+  // `per_page=40` made this a window rather than a search: forty runs between
+  // the dispatch and the next look and the run was never seen again.
+  const { findVerificationRun } = await import("../src/github.js");
+  const filler = Array.from({ length: 100 }, (_, i) => ({
+    id: i, name: `Verify submission other${i}`, status: "completed",
+    conclusion: "success", html_url: "", run_started_at: "",
+  }));
+  const wanted = {
+    id: 4242, name: "Verify submission a1b2c3d4e5f6", status: "completed",
+    conclusion: "success", html_url: "https://example.test/run",
+    run_started_at: "2026-08-01T00:00:00Z",
+  };
+  const queries = [];
+  globalThis.fetch = async (url) => {
+    const target = new URL(url);
+    queries.push(target.search);
+    const page = target.searchParams.get("page");
+    return Response.json({ workflow_runs: page === "1" ? filler : [wanted] });
+  };
+  const run = await findVerificationRun(ENV, "a1b2c3d4e5f6", { since: "2026-08-01T00:00:00Z" });
+  assert.equal(run.id, 4242);
+  // Bounded by when the submission was admitted, and to dispatched runs, so a
+  // scheduled or push-triggered run never has to be looked at.
+  assert.match(queries[0], /event=workflow_dispatch/);
+  assert.match(queries[0], /created=%3E%3D2026-08-01/);
+  assert.match(queries[0], /per_page=100/);
 });

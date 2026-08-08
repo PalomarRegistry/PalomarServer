@@ -257,16 +257,7 @@ export async function dispatchVerification(env, { repositoryName, commit, reques
  * inputs. A dispatch does not return a run id, so this is how a dispatched run
  * is recovered after a crash between dispatching and recording.
  */
-export async function findVerificationRun(env, requestId) {
-  const data = await call(
-    env.SUBMISSION_TOKEN,
-    `/repos/${env.SUBMISSION_REPO}/actions/workflows/${env.VERIFY_WORKFLOW}/runs?per_page=40`,
-  );
-  // Exact name, not a substring: the submission id appears in a public run
-  // name, so anything that merely quotes it is not this submission's run.
-  const expected = `Verify submission ${requestId}`;
-  const run = (data?.workflow_runs ?? []).find((item) => item.name === expected);
-  if (!run) return null;
+function describeRun(run) {
   return {
     id: run.id,
     status: run.status,
@@ -274,6 +265,54 @@ export async function findVerificationRun(env, requestId) {
     url: run.html_url,
     started_at: run.run_started_at,
   };
+}
+
+/**
+ * The verification run a submission dispatched.
+ *
+ * A dispatch answers with no run id, so a run has to be recovered by name the
+ * first time. `per_page=40` made that a window rather than a search: forty runs
+ * between the dispatch and the next reconcile and this submission's run was
+ * never seen again, and its record went on holding one of twelve global slots,
+ * one of two for its owner and one of two for its submitter, until somebody
+ * edited private state by hand. Bounded by when the submission was admitted
+ * instead, since nothing started before it can be its run, and by `event`,
+ * because a scheduled or push-triggered run never carries this name.
+ *
+ * Once a run is pinned it is asked for by id. Searching by name and then
+ * refusing whatever came back would wedge a record whose own run had simply
+ * fallen further down the list than the search reached.
+ */
+export async function findVerificationRun(env, requestId, { pinnedRunId = null, since = null } = {}) {
+  if (pinnedRunId) {
+    const run = await call(
+      env.SUBMISSION_TOKEN,
+      `/repos/${env.SUBMISSION_REPO}/actions/runs/${pinnedRunId}`,
+    );
+    // Checked rather than trusted: an id is only meaningful alongside the
+    // workflow and the name it was pinned for.
+    if (!run || run.name !== `Verify submission ${requestId}`) return null;
+    return describeRun(run);
+  }
+
+  // Exact name, not a substring: the submission id appears in a public run
+  // name, so anything that merely quotes it is not this submission's run.
+  const expected = `Verify submission ${requestId}`;
+  const query = new URLSearchParams({ event: "workflow_dispatch", per_page: "100" });
+  if (since) query.set("created", `>=${since}`);
+  for (let page = 1; page <= 3; page += 1) {
+    query.set("page", String(page));
+    const data = await call(
+      env.SUBMISSION_TOKEN,
+      `/repos/${env.SUBMISSION_REPO}/actions/workflows/${env.VERIFY_WORKFLOW}/runs?${query}`,
+    );
+    const runs = data?.workflow_runs ?? [];
+    const run = runs.find((item) => item.name === expected);
+    if (run) return describeRun(run);
+    // A short page is the last page, so there is nothing further to ask for.
+    if (runs.length < 100) return null;
+  }
+  return null;
 }
 
 /**
