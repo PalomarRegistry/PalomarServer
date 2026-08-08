@@ -49,6 +49,18 @@ a claim about *them*, not about the code, and it is recorded permanently.
     4. POST /api/verify {"pending_secret": "...", "gist_id": "..."}
        -> {"submission_id": "...", "access_token": "..."}
 
+       The gist must be secret, and must not predate the intake by more than a
+       minute. A public one is refused: the challenge is a tag name on a public
+       repository, so anybody watching can read it, and a gist anybody could
+       have found says nothing about who you are. Step 3 above already creates
+       the right kind.
+
+       Each call that takes an attempt spends one of ten, whether or not the
+       proof then holds, and it is taken before anything is checked. Two calls
+       racing on the same state cannot both take one, and the loser is told to
+       try again; a call arriving after an attempt has been taken gets the next
+       one. Ten is the total either way.
+
     5. gh api -X DELETE repos/OWNER/REPO/git/refs/tags/palomar-verify-CHALLENGE
        gh api -X DELETE gists/GIST_ID
 
