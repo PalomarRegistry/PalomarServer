@@ -200,6 +200,15 @@ GitHub repository must provide `CLOUDFLARE_ACCOUNT_ID` and
 `CLOUDFLARE_API_TOKEN` as Actions secrets. CI uploads and promotes a version;
 it does not change the existing route or cron trigger.
 
+The Worker imports no package from npm at runtime. The locked npm graph is
+development tooling: Wrangler and the Miniflare/workerd stack it uses to develop,
+bundle and deploy the Worker. That still handles source code and, during the
+deployment steps, runs next to production credentials, so CI rejects every
+low-or-higher advisory in the complete development graph. A least-permission
+weekly workflow repeats that registry audit directly from the lockfile, without
+running dependency install hooks, so an advisory published after the last code
+change does not wait for another pull request; it can also be run manually.
+
 Before the first deployment against a State repository, commit both files from
 `state-bootstrap/index/` as described above. Admission and scheduled
 reconciliation validate the contracts before using them; `/healthz` stays a
@@ -209,7 +218,10 @@ GitHub API budget.
 To deploy manually:
 
 ```bash
+npm ci
+npm run audit:dependencies
 npm test
+npx wrangler deploy --dry-run
 npx wrangler deploy
 curl -s https://submit.palomar-registry.org/healthz
 ```
@@ -219,6 +231,7 @@ The separate, secret-free `palomar-domain-redirect` Worker owns
 every path and query string to the same URL at `palomar-registry.org`:
 
 ```bash
+npx wrangler deploy --config redirect/wrangler.jsonc --dry-run
 npm run deploy:redirect
 curl -sSI https://palomarregistry.org/about.html
 ```
