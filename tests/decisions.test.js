@@ -1638,7 +1638,22 @@ test("consent names the review it was given for", async () => {
     ENV,
   );
   assert.equal(empty.status, 409);
+  assert.match((await empty.json()).error, /say which review this registers/);
   assert.equal(silent.length, 0);
+});
+
+test("a review whose digest is not recorded yet is not handed over", async () => {
+  // The reviewer writes the review and the digest in separate steps. Handing
+  // over a review with a null digest would leave the page holding one it can
+  // never register, because it stops asking once it has been shown one.
+  stubState(await fixture({ review_sha256: undefined }));
+  const response = await worker.fetch(request("/api/review"), ENV);
+  assert.equal(response.status, 404);
+  assert.match((await response.json()).error, /no review yet/);
+
+  // And the page keeps asking on anything that is not a 409.
+  const script = await readFile(new URL("../public/status.js", import.meta.url), "utf8");
+  assert.match(script, /if \(!response\.ok\) return;/);
 });
 
 test("the page sends back the digest it was shown", async () => {

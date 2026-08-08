@@ -1414,13 +1414,20 @@ export default {
         const review = await readState(env, statePath(entry.record.id, "review.json"));
         if (!review.value) return json({ error: "no review yet" }, 404);
         if (!isCurrentReview(review.value, entry.record.id)) return obsoleteReview();
-        // The digest travels out with the bytes it names, so consent can be
-        // given for a review somebody actually read rather than for whatever
-        // was current at the instant they clicked.
-        return json({
-          ...submitterReview(review.value),
-          review_sha256: entry.record.review_sha256 ?? null,
-        });
+        // The digest goes out with the bytes it names, so consent can be given
+        // for a review somebody actually read rather than for whatever was
+        // current at the instant they clicked.
+        //
+        // A review whose digest the record does not carry yet is not ready to
+        // be handed over. The reviewer writes the review and the digest in
+        // separate steps, so there is a window where one exists without the
+        // other, and answering with a null digest would leave the page holding
+        // a review it can never register: it stops asking once it has been
+        // shown one. Answering `no review yet` keeps it asking, which is what
+        // the window needs.
+        const reviewed = entry.record.review_sha256;
+        if (!reviewed) return json({ error: "no review yet" }, 404);
+        return json({ ...submitterReview(review.value), review_sha256: reviewed });
       }
       if (request.method === "POST" && url.pathname === "/register") {
         const entry = await caller(env, request, { mutating: true });
@@ -1457,6 +1464,14 @@ export default {
         // same identity seen from both ends: this one is what makes the digest
         // it compares against mean what it says.
         const asked = String((await request.json().catch(() => ({})))?.review_sha256 ?? "");
+        if (!asked) {
+          // Says what to do rather than what went wrong. Nothing has been
+          // replaced here; the caller simply did not say which review it meant.
+          return json({
+            error: "say which review this registers: post the review_sha256 " +
+              "that GET /api/review returned",
+          }, 409);
+        }
         if (asked !== reviewed) {
           return json({
             error: "that review has been replaced; read the new one before registering",

@@ -126,7 +126,11 @@ source-preservation tags. Send the digest of the review you were shown:
 A registration that names a different review, or names none, is refused with
 409. Consent is to the review your user read, not to whichever one is current
 when the call arrives: a review can be replaced between the two, and the
-comments in it become public on registration. Your user's GitHub identity is not made public: a
+comments in it become public on registration.
+
+`GET /api/review` answers 404 until the digest is recorded alongside the review,
+which is a moment later than the review itself exists. Keep polling; there is
+nothing to do about it and nothing has gone wrong. Your user's GitHub identity is not made public: a
 registered record carries the submission and its authorization basis, and the
 schema has no field for the person who sent it. Until public launch the database itself may
 still be reshaped; after launch its registered records are append-only.
