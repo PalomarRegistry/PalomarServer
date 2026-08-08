@@ -151,6 +151,28 @@ test("the submitter review exposes only a binary outcome and useful prose", asyn
   }
 });
 
+test("the review route composes the public projection with its reviewed digest", async () => {
+  stubState(await fixture({ review_sha256: "e".repeat(64) }, {
+    summary: "Ready to register.",
+    warnings: undefined,
+    requested_changes: undefined,
+    reviewed_at: "2026-08-01T00:00:00Z",
+    reviewer_models: undefined,
+  }));
+
+  const response = await worker.fetch(request("/api/review"), ENV);
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {
+    passed: true,
+    summary: "Ready to register.",
+    comments: [],
+    requested_changes: [],
+    reviewed_at: "2026-08-01T00:00:00Z",
+    reviewer_models: [],
+    review_sha256: "e".repeat(64),
+  });
+});
+
 test("registration consent is recorded, and only by the submitter", async () => {
   const { written } = stubState(await fixture());
   const response = await worker.fetch(request("/register", "POST"), ENV);

@@ -25,6 +25,15 @@ import {
   writeState,
 } from "./github.js";
 import { page, intakeForm, statusPage, errorPage } from "./html.js";
+import {
+  INFLIGHT_INDEX_PATH,
+  inflightOpen,
+  isCurrentReview,
+  OPEN_INDEX_PATH,
+  reviewerOpen,
+  StateContractError,
+  submitterReview,
+} from "./state-contract.js";
 // One vocabulary for "this submission has stopped moving", shared with the
 // status page, which asks a slightly different question of the same words.
 import { CLOSED } from "../public/statuses.js";
@@ -80,8 +89,6 @@ const MAX_VERIFY_ATTEMPTS = 10;
 // listed within seconds, and this only ever applies to one that cannot be found
 // at all.
 const LOST_RUN_MS = 3600_000;
-const CURRENT_REVIEW_SCHEMA_VERSION = 2;
-const REVIEW_DECISIONS = new Set(["accept", "revise", "reject"]);
 
 // Without any one of these the server cannot do the thing it claims to do, and
 // two of them fail silently rather than loudly if they are missing: TOKEN_PEPPER
@@ -95,109 +102,6 @@ const REQUIRED_SECRETS = [
   "OAUTH_CLIENT_SECRET",
 ];
 
-// The reviewer's queue: every submission it is not yet finished with. This end
-// adds one when it admits a submission; the reviewer drops one when the record
-// says there is nothing left to do to it. The reviewer can rebuild the derived
-// file from records; this server treats absence or damage as unavailable state.
-const OPEN_INDEX_PATH = "index/open.json";
-
-const SUBMISSION_ID_RE = /^[0-9a-z]{12}$/;
-// GitHub.com logins are at most 39 characters. Accept the provider's safe
-// alphanumeric/hyphen/underscore envelope rather than reimplementing its
-// evolving ordinary and managed-user naming rules after proof has succeeded.
-const GITHUB_LOGIN_RE = /^[A-Za-z0-9_-]{1,39}$/;
-const UTC_SECONDS_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
-
-class StateContractError extends Error {}
-
-function plainObject(value) {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-function hasExactlyKeys(value, expected) {
-  const actual = Object.keys(value).sort();
-  const wanted = [...expected].sort();
-  return actual.length === wanted.length && actual.every((key, index) => key === wanted[index]);
-}
-
-function canonicalUtcSeconds(value) {
-  if (typeof value !== "string" || !UTC_SECONDS_RE.test(value)) return false;
-  const parsed = new Date(value);
-  return !Number.isNaN(parsed.valueOf()) &&
-    parsed.toISOString().replace(/\.\d+Z$/, "Z") === value;
-}
-
-/**
- * The one inflight-index shape this pre-launch server writes and reads.
- *
- * Treating an absent or malformed `open` as an empty list silently disables
- * admission limits. Treating an entry without `submitter` as though its owner
- * were the submitter invents an identity the record never established. State
- * that predates this contract must be migrated explicitly instead.
- */
-function inflightOpen(value) {
-  if (!plainObject(value) || !hasExactlyKeys(value, ["open"]) || !Array.isArray(value.open)) {
-    throw new StateContractError(
-      "index/inflight.json must contain exactly one top-level open array",
-    );
-  }
-
-  const ids = new Set();
-  for (const [index, item] of value.open.entries()) {
-    const prefix = `index/inflight.json open[${index}]`;
-    if (!plainObject(item) ||
-        !hasExactlyKeys(item, ["id", "owner", "submitter", "at"])) {
-      throw new StateContractError(
-        `${prefix} must contain exactly id, owner, submitter, and at`,
-      );
-    }
-    if (typeof item.id !== "string" || !SUBMISSION_ID_RE.test(item.id)) {
-      throw new StateContractError(`${prefix}.id must be a 12-character submission id`);
-    }
-    if (ids.has(item.id)) {
-      throw new StateContractError(`${prefix}.id duplicates another inflight submission`);
-    }
-    ids.add(item.id);
-    if (item.owner !== null &&
-        (typeof item.owner !== "string" || !GITHUB_LOGIN_RE.test(item.owner))) {
-      throw new StateContractError(`${prefix}.owner must be a GitHub login or null`);
-    }
-    if (typeof item.submitter !== "string" || !GITHUB_LOGIN_RE.test(item.submitter)) {
-      throw new StateContractError(`${prefix}.submitter must be a GitHub login`);
-    }
-    if (!canonicalUtcSeconds(item.at)) {
-      throw new StateContractError(`${prefix}.at must be a canonical UTC-seconds timestamp`);
-    }
-  }
-  return value.open;
-}
-
-/**
- * The reviewer owns the rebuild timestamps beside this queue. The server owns
- * appending ids. Both must refuse a missing or malformed queue instead of
- * replacing it with the one id they happen to know about.
- */
-function reviewerOpen(value) {
-  if (!plainObject(value) || value.schema_version !== 1 || !Array.isArray(value.open)) {
-    throw new StateContractError(
-      `${OPEN_INDEX_PATH} must be a schema-version 1 object with an open array`,
-    );
-  }
-  // The reviewer owns every other top-level field. Preserve those bytes on
-  // append, but do not validate data this server neither reads nor writes.
-  const ids = new Set();
-  for (const [index, id] of value.open.entries()) {
-    if (typeof id !== "string" || !SUBMISSION_ID_RE.test(id)) {
-      throw new StateContractError(`${OPEN_INDEX_PATH} open[${index}] is not a submission id`);
-    }
-    if (ids.has(id)) {
-      throw new StateContractError(`${OPEN_INDEX_PATH} open[${index}] is duplicated`);
-    }
-    ids.add(id);
-  }
-  return value.open;
-}
-
 async function readContractIndex(env, path, validate) {
   let index;
   try {
@@ -210,28 +114,11 @@ async function readContractIndex(env, path, validate) {
 }
 
 function readInflightIndex(env) {
-  return readContractIndex(env, "index/inflight.json", inflightOpen);
+  return readContractIndex(env, INFLIGHT_INDEX_PATH, inflightOpen);
 }
 
 function readReviewerIndex(env) {
   return readContractIndex(env, OPEN_INDEX_PATH, reviewerOpen);
-}
-
-function isCurrentReview(review, submissionId) {
-  return review !== null && typeof review === "object" && !Array.isArray(review) &&
-    review.schema_version === CURRENT_REVIEW_SCHEMA_VERSION &&
-    review.submission_id === submissionId && REVIEW_DECISIONS.has(review.decision);
-}
-
-function submitterReview(review) {
-  return {
-    passed: review.decision === "accept",
-    summary: review.summary,
-    comments: review.warnings ?? [],
-    requested_changes: review.requested_changes ?? [],
-    reviewed_at: review.reviewed_at,
-    reviewer_models: review.reviewer_models ?? [],
-  };
 }
 
 function obsoleteReview() {
@@ -809,7 +696,7 @@ async function admitSubmission(env, { pending, owner, submitter, proof }) {
   await writeState(env, statePath(id, "state.json"), record, `Open submission ${id}`);
   await writeState(
     env,
-    "index/inflight.json",
+    INFLIGHT_INDEX_PATH,
     { open: nextInflight },
     `Admit ${id}`,
     inflight.sha,
@@ -1346,7 +1233,7 @@ async function release(env, id) {
   const open = inflight.open;
   const changed = open.some((item) => item.id === id);
   if (!changed) return;
-  await writeState(env, "index/inflight.json",
+  await writeState(env, INFLIGHT_INDEX_PATH,
                    { open: open.filter((item) => item.id !== id) },
                    `Release ${id}`, inflight.sha);
 }
@@ -1488,7 +1375,7 @@ export async function reconcile(env) {
     still.push(item);
   }
   if (still.length !== open.length) {
-    await writeState(env, "index/inflight.json", { open: still },
+    await writeState(env, INFLIGHT_INDEX_PATH, { open: still },
                      "Reconcile admissions", inflight.sha);
   }
   if (reviewerQueueUnavailable) {
