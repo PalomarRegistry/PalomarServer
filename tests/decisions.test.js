@@ -219,12 +219,34 @@ test("a submission whose review could not be completed is still the submitter's 
   // somebody might reasonably decide it belongs in the set the server refuses
   // to act on. It does not: the submitter is left with a submission that is
   // going nowhere and no way to take it back.
-  const { written } = stubState(await fixture({ status: "review-failed" }));
+  const files = await fixture({ status: "review-failed" });
+  files["index/inflight.json"] = { open: [{
+    id: "a1b2c3d4e5f6",
+    owner: "example",
+    submitter: "someone",
+    at: "2026-08-01T00:00:00Z",
+  }] };
+  const { written } = stubState(files);
+  const inner = globalThis.fetch;
+  let inflightReads = 0;
+  globalThis.fetch = async (url, init = {}) => {
+    const target = new URL(url);
+    if ((init.method ?? "GET") === "GET" && target.pathname.endsWith("/index/inflight.json")) {
+      inflightReads += 1;
+    }
+    return inner(url, init);
+  };
   const response = await worker.fetch(request("/withdraw", "POST"), ENV);
   assert.equal(response.status, 200);
   const state = written.find((item) => item.path.endsWith("state.json"));
   assert.equal(state.value.status, "withdrawn");
   assert.equal(state.value.events.at(-1).note, "Withdrawn by the submitter");
+  assert.equal(inflightReads, 2, "release reused the pre-validation read and its older SHA");
+  assert.deepEqual(
+    written.map((item) => item.path),
+    [statePath("a1b2c3d4e5f6", "state.json"), "index/inflight.json"],
+    "withdrawal did not commit the record before releasing its slot",
+  );
 });
 
 test("withdrawal validates the inflight reservation before changing the record", async () => {
@@ -776,11 +798,16 @@ test("the status page stops asking when nobody is looking at it", async () => {
 test("a temporary status failure retries instead of pretending the record is missing", async () => {
   const { pollFailureAction } = await import("../public/polling.js");
   assert.equal(pollFailureAction(404), "missing");
+  for (const status of [401, 403]) {
+    assert.equal(pollFailureAction(status), "unauthorized", `${status} would retry forever`);
+  }
   for (const status of [409, 429, 500, 503]) {
     assert.equal(pollFailureAction(status), "retry", `${status} would stop status polling`);
   }
   const script = await readFile(new URL("../public/status.js", import.meta.url), "utf8");
-  assert.match(script, /pollFailureAction\(response\.status\) === "missing"/);
+  assert.match(script, /const failure = pollFailureAction\(response\.status\)/);
+  assert.match(script, /failure === "missing"/);
+  assert.match(script, /failure === "unauthorized"[\s\S]*session has expired or is not authorized/);
   assert.match(script, /Could not refresh this submission\. Retrying\.[\s\S]*askAgain\(lastStatus\)/);
 });
 
@@ -1075,7 +1102,10 @@ test("browser intake fails closed and visibly when inflight state is unusable", 
     assert.match(response.headers.get("content-type"), /text\/html/);
     const body = await response.text();
     assert.match(body, /Submission intake is temporarily unavailable/);
+    assert.match(body, /sign-in was spent/);
+    assert.match(body, /Start a new submission from the submission form/);
     assert.doesNotMatch(body, /inflight|open array|state-contract/);
+    assert.match(response.headers.get("set-cookie"), /Max-Age=0/);
     assert.deepEqual(stub.deleted, [pendingPath], "the proved nonce was not consumed once");
     assert.deepEqual(
       stub.written.filter((item) => !item.path.startsWith("pending/")),
@@ -1084,6 +1114,34 @@ test("browser intake fails closed and visibly when inflight state is unusable", 
     );
     assert.deepEqual(stub.dispatched, [], "a browser proof dispatched work after admission failed");
   }
+});
+
+test("a browser capacity refusal says the completed sign-in was spent", async () => {
+  const nonce = "3".repeat(64);
+  const inflight = { open: Array.from({ length: 12 }, (_, index) => ({
+    id: index.toString(36).padStart(12, "0"),
+    owner: `owner${index}`,
+    submitter: `user${index}`,
+    at: "2026-08-01T00:00:00Z",
+  })) };
+  const stub = stubOAuth({
+    push: true,
+    inflight,
+    files: { [`pending/${await digest(nonce)}.json`]: PENDING },
+  });
+
+  const response = await callback(nonce);
+  assert.equal(response.status, 503);
+  const body = await response.text();
+  assert.match(body, /Palomar is at capacity/);
+  assert.match(body, /sign-in was spent/);
+  assert.match(body, /Start a new submission from the submission form/);
+  assert.match(response.headers.get("set-cookie"), /Max-Age=0/);
+  assert.deepEqual(
+    stub.written.filter((item) => !item.path.startsWith("pending/")),
+    [],
+  );
+  assert.deepEqual(stub.dispatched, []);
 });
 
 test("a refused submitter keeps what they typed, and the nonce", async () => {
@@ -1278,7 +1336,8 @@ test("agent intake fails closed and in JSON when admission indexes are unusable"
     const body = await response.json();
     assert.deepEqual(body, {
       error: "submission intake is temporarily unavailable",
-      detail: "This proof was consumed. Start a new submission and create a new proof.",
+      proof_consumed: true,
+      restart: "This proof was consumed. Start a new submission and create a new proof.",
     });
     assert.ok(stub.deleted.some((path) => path.startsWith("pending/")),
               `${name} did not consume the proved challenge exactly once`);
@@ -1289,6 +1348,35 @@ test("agent intake fails closed and in JSON when admission indexes are unusable"
     );
     assert.deepEqual(stub.dispatched, [], `${name} dispatched verification`);
   }
+});
+
+test("an agent capacity refusal says its accepted proof was consumed", async () => {
+  const inflight = { open: Array.from({ length: 12 }, (_, index) => ({
+    id: index.toString(36).padStart(12, "0"),
+    owner: `owner${index}`,
+    submitter: `user${index}`,
+    at: "2026-08-01T00:00:00Z",
+  })) };
+  const stub = stubAgent({ inflight });
+  const begun = await agentSubmit();
+  stub.state.tag = { exists: true, sha: "1".repeat(40) };
+  stub.state.gist = { exists: true, content: begun.challenge };
+  const before = stub.written.length;
+
+  const response = await agentVerify({
+    pending_secret: begun.pending_secret,
+    gist_id: "abc123",
+  });
+  assert.equal(response.status, 503);
+  const body = await response.json();
+  assert.equal(body.error, "Palomar is at capacity");
+  assert.equal(body.proof_consumed, true);
+  assert.match(body.restart, /Start a new submission and create a new proof/);
+  assert.deepEqual(
+    stub.written.slice(before).filter((item) => item.path.includes("submissions/")),
+    [],
+  );
+  assert.deepEqual(stub.dispatched, []);
 });
 
 test("an admitted submission is put where the reviewer will find it", async () => {
@@ -1423,7 +1511,10 @@ test("starting a submission doubles the wait, and only registering clears it", a
   // The second is refused, because the first has not been registered.
   const second = await submit();
   assert.equal(second.status, 429);
-  assert.match((await second.json()).error, /rate limit/);
+  const refused = await second.json();
+  assert.match(refused.error, /rate limit/);
+  assert.equal(refused.proof_consumed, true);
+  assert.match(refused.restart, /Start a new submission and create a new proof/);
 
   // Time passing lets it through, and doubles the wait again.
   const file = [...stub.store.keys()].find((path) => path.startsWith("index/rate/"));
@@ -1614,7 +1705,7 @@ test("the status read is guarded too, because it is not really a read", async ()
   assert.equal(written.length, 0, "a forged status read still moved the submission");
 });
 
-test("status refresh reports admission-index contract failures as typed retryable 503s", async () => {
+test("status refresh reports inflight contract failures as typed retryable 503s", async () => {
   const run = {
     id: 12345,
     name: "Verify submission a1b2c3d4e5f6",
@@ -1623,20 +1714,81 @@ test("status refresh reports admission-index contract failures as typed retryabl
     html_url: "https://example.test/run",
     run_started_at: "2026-08-01T00:00:00Z",
   };
-  for (const [name, broken] of [
-    ["release", { "index/inflight.json": { open: "damaged" } }],
-    ["review queue", { "index/open.json": { schema_version: 1, open: "damaged" } }],
-  ]) {
-    const files = { ...(await fixture({ status: "verifying" })), ...broken };
-    const { written } = stubState(files, [run]);
-    const response = await worker.fetch(request("/api/submission"), ENV);
-    assert.equal(response.status, 503, `${name} failure was not typed`);
-    assert.match(response.headers.get("content-type"), /application\/json/);
-    assert.deepEqual(await response.json(), {
-      error: "submission status is temporarily unavailable",
-    });
-    assert.deepEqual(written, [], `${name} failure partially changed the record in this case`);
-  }
+  const files = {
+    ...(await fixture({ status: "verifying" })),
+    "index/inflight.json": { open: "damaged" },
+  };
+  const { written } = stubState(files, [run]);
+  const response = await worker.fetch(request("/api/submission"), ENV);
+  assert.equal(response.status, 503);
+  assert.match(response.headers.get("content-type"), /application\/json/);
+  assert.deepEqual(await response.json(), {
+    error: "submission status is temporarily unavailable",
+  });
+  assert.deepEqual(written, [], "the malformed inflight index partially changed the record");
+});
+
+test("a broken reviewer queue leaves a completed verification held for a repaired retry", async () => {
+  const run = {
+    id: 12345,
+    name: "Verify submission a1b2c3d4e5f6",
+    status: "completed",
+    conclusion: "success",
+    html_url: "https://example.test/run",
+    run_started_at: "2026-08-01T00:00:00Z",
+  };
+  const held = {
+    id: "a1b2c3d4e5f6",
+    owner: "example",
+    submitter: "someone",
+    at: "2026-08-01T00:00:00Z",
+  };
+  const files = {
+    ...(await fixture({ status: "verifying" })),
+    "index/inflight.json": { open: [held] },
+    "index/open.json": { schema_version: 1, open: "damaged" },
+  };
+  const { written, store } = stubState(files, [run]);
+  const inner = globalThis.fetch;
+  const activity = [];
+  globalThis.fetch = async (url, init = {}) => {
+    const target = new URL(url);
+    const method = init.method ?? "GET";
+    if (method === "PUT" && target.pathname.endsWith("/index/open.json")) {
+      activity.push("open queue");
+    } else if (method === "POST" && target.pathname.includes("/actions/workflows/")) {
+      activity.push("dispatch reviewer");
+    } else if (method === "PUT" && target.pathname.endsWith("/index/inflight.json")) {
+      activity.push("release slot");
+    } else if (method === "PUT" && target.pathname.endsWith("/state.json")) {
+      activity.push("update record");
+    }
+    return inner(url, init);
+  };
+
+  const refreshEnv = { ...ENV, REVIEW_WORKFLOW: "reviewer.yml" };
+  const failed = await worker.fetch(request("/api/submission"), refreshEnv);
+  assert.equal(failed.status, 503);
+  assert.deepEqual(await failed.json(), {
+    error: "submission status is temporarily unavailable",
+  });
+  assert.deepEqual(store.get("index/inflight.json"), { open: [held] });
+  assert.deepEqual(written, [], "queue failure released capacity or changed the record");
+  assert.deepEqual(activity, [], "queue failure performed a partial transition");
+
+  store.set("index/open.json", { schema_version: 1, open: [] });
+  const retried = await worker.fetch(request("/api/submission"), refreshEnv);
+  assert.equal(retried.status, 200);
+  assert.equal((await retried.json()).status, "awaiting-review");
+  assert.deepEqual(store.get("index/open.json").open, ["a1b2c3d4e5f6"]);
+  assert.deepEqual(store.get("index/inflight.json"), { open: [] });
+  assert.equal(store.get(statePath("a1b2c3d4e5f6", "state.json")).status, "awaiting-review");
+  assert.deepEqual(activity, [
+    "open queue",
+    "dispatch reviewer",
+    "release slot",
+    "update record",
+  ]);
 });
 
 test("a pinned run is asked for by id, not searched for by name", async () => {

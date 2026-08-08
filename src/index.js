@@ -313,6 +313,24 @@ function intakeUnavailable(env, machine) {
       );
 }
 
+const CONSUMED_PROOF_RESTART =
+  "This proof was consumed. Start a new submission and create a new proof.";
+
+function consumedProofResponse(body, status) {
+  return json({
+    ...body,
+    proof_consumed: true,
+    restart: CONSUMED_PROOF_RESTART,
+  }, status);
+}
+
+function spentSignInProblems(problems = []) {
+  return [
+    ...problems,
+    "That GitHub sign-in was spent. Start a new submission from the submission form.",
+  ];
+}
+
 function reportStateContract(error) {
   console.error("state-contract", error.message);
 }
@@ -945,19 +963,27 @@ async function verifySubmission(request, env) {
       },
     });
   } catch (error) {
-    if (!(error instanceof StateContractError)) throw error;
-    reportStateContract(error);
-    return json({
-      error: "submission intake is temporarily unavailable",
-      detail: "This proof was consumed. Start a new submission and create a new proof.",
-    }, 503);
+    if (error instanceof StateContractError) {
+      reportStateContract(error);
+      return consumedProofResponse({
+        error: "submission intake is temporarily unavailable",
+      }, 503);
+    }
+    console.error("agent-admission", error?.stack ?? String(error));
+    return consumedProofResponse({
+      error: "submission intake could not be completed",
+    }, 500);
   }
   if (admitted.refused) {
-    return json({ error: admitted.title, detail: admitted.detail }, admitted.status);
+    return consumedProofResponse(
+      { error: admitted.title, detail: admitted.detail },
+      admitted.status,
+    );
   }
   return json({
     submission_id: admitted.id,
     access_token: admitted.token,
+    proof_consumed: true,
     status_url: `${new URL(request.url).origin}/s#${admitted.token}`,
     next: [
       `Delete both artifacts now:`,
@@ -1104,10 +1130,22 @@ async function completeSubmission(request, env) {
   } catch (error) {
     if (!(error instanceof StateContractError)) throw error;
     reportStateContract(error);
-    return intakeUnavailable(env, false);
+    return html(
+      errorPage(
+        env,
+        "Submission intake is temporarily unavailable",
+        spentSignInProblems(["This is ours to fix, not yours."]),
+      ),
+      503,
+      { "set-cookie": await intakeCookie(nonce, null, { clear: true }) },
+    );
   }
   if (admitted.refused) {
-    return html(errorPage(env, admitted.title, admitted.detail), admitted.status);
+    return html(
+      errorPage(env, admitted.title, spentSignInProblems(admitted.detail)),
+      admitted.status,
+      { "set-cookie": await intakeCookie(nonce, null, { clear: true }) },
+    );
   }
   const { token } = admitted;
   return new Response(null, {
@@ -1221,7 +1259,10 @@ async function refresh(env, entry) {
     ];
   }
   if (next.status !== "verifying" && record.status === "verifying") {
-    await release(env, record.id);
+    // Validate the capacity contract before another index can be changed. The
+    // release itself deliberately re-reads after queueing, so it does not carry
+    // this older optimistic SHA across the intervening work.
+    await releaseReservation(env, record.id);
   }
   if (next.status === "awaiting-review") {
     // Before the record says `awaiting-review`, and not caught. A submission
@@ -1231,8 +1272,17 @@ async function refresh(env, entry) {
     // looks like it needs anything. Failing leaves it `verifying`, which the
     // next pass retries.
     await openSubmission(env, record.id);
-    // Failing to ask only costs the schedule's latency, so it is not fatal.
+    // `openSubmission` is idempotent, so a failed pass can safely retry it.
+    // Dispatch itself may be repeated on a retry, but each reviewer invocation
+    // reads the same queue with this id present and converges on the same
+    // record; the schedule is also a backstop. Failing to ask only costs that
+    // schedule's latency, so it is not fatal. Crucially, the slot remains held
+    // until both steps have been attempted, so a malformed queue cannot strand
+    // a verifying record outside reconciliation.
     await dispatchReviewer(env).catch(() => false);
+  }
+  if (next.status !== "verifying" && record.status === "verifying") {
+    await release(env, record.id);
   }
   if (JSON.stringify(next) !== JSON.stringify(record)) {
     await writeState(
@@ -1282,8 +1332,8 @@ async function releaseReservation(env, id) {
   return { inflight, open, changed: open.some((item) => item.id === id) };
 }
 
-async function release(env, id, prepared = null) {
-  const { inflight, open, changed } = prepared ?? await releaseReservation(env, id);
+async function release(env, id) {
+  const { inflight, open, changed } = await releaseReservation(env, id);
   if (!changed) return;
   await writeState(env, "index/inflight.json",
                    { open: open.filter((item) => item.id !== id) },
@@ -1578,14 +1628,14 @@ export default {
         if (CLOSED.has(entry.record.status)) {
           return json({ error: `already ${entry.record.status}` }, 409);
         }
-        // Validate and reserve the exact inflight version before recording the
-        // decision, so an index that is already malformed stops before the
-        // status write. The files are not atomic: a concurrent inflight change
-        // after this read can still make release fail after `withdrawn` lands;
-        // the scheduled reconciliation then removes that terminal record.
-        let reservation;
+        // Validate the inflight contract before recording the decision, so an
+        // index that is already malformed stops before the status write. This
+        // read is only a precondition: release re-reads after the record commit
+        // rather than carrying an older optimistic SHA across it. The files are
+        // still not atomic; a conflict after `withdrawn` lands can leave the
+        // slot for scheduled reconciliation or an operator to remove.
         try {
-          reservation = await releaseReservation(env, entry.record.id);
+          await releaseReservation(env, entry.record.id);
         } catch (error) {
           if (!(error instanceof StateContractError)) throw error;
           reportStateContract(error);
@@ -1599,7 +1649,7 @@ export default {
         };
         await writeState(env, statePath(next.id, "state.json"), next,
                          `Withdraw ${next.id}`, entry.sha);
-        await release(env, next.id, reservation);
+        await release(env, next.id);
         return json({ ok: true });
       }
       if (request.method === "GET" && url.pathname === "/api/review") {

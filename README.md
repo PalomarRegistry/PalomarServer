@@ -141,9 +141,11 @@ partial admission or decision for reconciliation or an operator to repair.
 `index/open.json` holds every submission the reviewer is not yet finished with.
 This server adds an id when it admits one, and the reviewer drops one when the
 record says there is nothing left to do to it, so a reviewer pass costs the
-queue rather than the size of the registry. It is derived rather than
-authoritative: an index that is missing, damaged, or too old is rebuilt from
-every record, so losing this file costs one rebuild and no submissions.
+queue rather than the size of the registry. The reviewer can rebuild this
+derived queue from the records on its maintenance path, but the server does not
+silently reconstruct or overwrite it. A missing or malformed queue makes intake
+and affected status transitions unavailable until the reviewer or an operator
+restores it.
 
 `index/rate/<digest>.json` slows down a submitter who keeps starting and never
 finishes. Starting is the expensive act: it dispatches a verification run that

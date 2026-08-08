@@ -240,8 +240,14 @@ async function poll() {
   try {
     const response = await fetch("/api/submission", { credentials: "same-origin" });
     if (!response.ok) {
-      if (pollFailureAction(response.status) === "missing") {
+      const failure = pollFailureAction(response.status);
+      if (failure === "missing") {
         summary.textContent = "This submission could not be found.";
+        return;
+      }
+      if (failure === "unauthorized") {
+        summary.textContent =
+          "This session has expired or is not authorized. Open the original submission link again.";
         return;
       }
       summary.textContent = "Could not refresh this submission. Retrying.";
