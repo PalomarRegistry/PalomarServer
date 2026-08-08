@@ -18,6 +18,8 @@ const ENV = {
   GITHUB_TOKEN: "state-token",
   SUBMISSION_TOKEN: "dispatch-token",
   TOKEN_PEPPER: "test-pepper",
+  OAUTH_CLIENT_ID: "client-id",
+  OAUTH_CLIENT_SECRET: "client-secret",
 };
 
 const TOKEN = "a".repeat(64);

@@ -27,9 +27,23 @@ export async function digest(value) {
   return [...new Uint8Array(bytes)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+/**
+ * The pepper, which every peppered digest must go through.
+ *
+ * `?? ""` meant a deployment that lost this secret kept working, and kept
+ * working consistently: tokens still hashed, still matched, still found their
+ * records. Nothing downstream could tell, and the property the pepper exists
+ * for would have been gone with no symptom at all. Losing a secret is a
+ * configuration error and now fails like one.
+ */
+export function pepper(env) {
+  if (!env.TOKEN_PEPPER) throw new Error("TOKEN_PEPPER is unset");
+  return env.TOKEN_PEPPER;
+}
+
 /** Tokens are peppered so a leaked state repository does not yield live links. */
 export async function tokenDigest(env, token) {
-  return digest(`${env.TOKEN_PEPPER ?? ""}:${token}`);
+  return digest(`${pepper(env)}:${token}`);
 }
 
 // Defined in one place and shared with the browser, so the form, its live
