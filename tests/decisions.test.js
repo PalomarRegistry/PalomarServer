@@ -1306,7 +1306,7 @@ function stubAgent(config = {}) {
     }
     if (target.pathname.includes("/commits/")) return Response.json({ sha: "1".repeat(40) });
     if (target.pathname.includes("/actions/workflows/")) {
-      dispatched.push(target.pathname);
+      dispatched.push({ path: target.pathname, body: JSON.parse(init.body) });
       return Response.json({ ok: true });
     }
     const path = decodeURI(target.pathname.replace(`/repos/${ENV.STATE_REPO}/contents/`, ""));
@@ -1331,12 +1331,12 @@ const AGENT_SUBMISSION = {
   authorization_relationship: "maintainer",
 };
 
-async function agentSubmit() {
+async function agentSubmit(overrides = {}) {
   const response = await worker.fetch(
     new Request("https://submit.palomar-registry.org/api/submit", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify(AGENT_SUBMISSION),
+      body: JSON.stringify({ ...AGENT_SUBMISSION, ...overrides }),
     }),
     ENV,
   );
@@ -1367,6 +1367,29 @@ test("an agent is told what to create, and the challenge is not the key", async 
   assert.match(begun.instructions, /gists/);
 });
 
+test("agent intake writes every normalized optional field to the pending record", async () => {
+  const stub = stubAgent();
+  await agentSubmit({
+    existing_id: "palomar-2026-07-29-000123",
+    context: "  Reviewer context.  ",
+    authorization_evidence: "  Maintainer evidence.  ",
+    project_path: " proof ",
+    comparator_config_path: " proof/comparator.json ",
+    formalization_metadata_path: " docs/formalization.yaml ",
+  });
+
+  const pending = stub.written.find((item) => item.path.startsWith("pending/"));
+  assert.ok(pending, "agent intake did not write a pending record");
+  assert.equal(pending.value.existing_id, "PALOMAR-2026-07-29-000123");
+  assert.equal(pending.value.context, "Reviewer context.");
+  assert.equal(pending.value.authorization_evidence, "Maintainer evidence.");
+  assert.deepEqual(pending.value.requested_paths, {
+    project_path: "proof",
+    comparator_config_path: "proof/comparator.json",
+    formalization_metadata_path: "docs/formalization.yaml",
+  });
+});
+
 test("a tag and a gist together admit a submission", async () => {
   const stub = stubAgent();
   const begun = await agentSubmit();
@@ -1385,6 +1408,11 @@ test("a tag and a gist together admit a submission", async () => {
   assert.equal(record.value.push_proof.method, "tag-and-gist");
   assert.equal(record.value.push_proof.binding, "separately-attested");
   assert.equal(record.value.push_proof.principal.id, 4242);
+  assert.equal(stub.dispatched.length, 1);
+  assert.equal(
+    JSON.parse(stub.dispatched[0].body.inputs.options).authorization_relationship,
+    "I am a responsible author or maintainer",
+  );
 });
 
 test("agent intake fails closed and in JSON when admission indexes are unusable", async () => {

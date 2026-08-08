@@ -3,9 +3,6 @@ import {
   newAccessToken,
   newSubmissionId,
   newRecord,
-  normalizeCommit,
-  normalizePalomarId,
-  normalizeRepository,
   pepper,
   statePath,
   tokenDigest,
@@ -25,6 +22,7 @@ import {
   writeState,
 } from "./github.js";
 import { page, intakeForm, statusPage, errorPage } from "./html.js";
+import { authorizationRelationshipLabel, validateIntake } from "./intake-contract.js";
 import {
   INFLIGHT_INDEX_PATH,
   inflightOpen,
@@ -74,12 +72,6 @@ function json(value, status = 200, extra = {}) {
 }
 
 // Admission limits, until per-submitter quotas and backoff exist.
-const RELATIONSHIPS = new Set(["maintainer", "approved"]);
-// The verifier speaks the long form; the form and the record speak the short.
-const RELATIONSHIP_LABELS = {
-  maintainer: "I am a responsible author or maintainer",
-  approved: "I have approval from a responsible author or maintainer",
-};
 const MAX_INFLIGHT_TOTAL = 12;
 const MAX_INFLIGHT_PER_OWNER = 2;
 const MAX_INFLIGHT_PER_SUBMITTER = 2;
@@ -307,54 +299,7 @@ async function beginSubmission(request, env, { machine = false } = {}) {
         : "that request body could not be read as a form",
     }, 400);
   }
-  const repositoryName = normalizeRepository(form.get("repository"));
-  const commit = normalizeCommit(form.get("commit"));
-  const rawExistingId = String(form.get("existing_id") ?? "").trim();
-  const existingId = normalizePalomarId(rawExistingId);
-  const context = String(form.get("context") ?? "").trim().slice(0, 4000);
-  const relationship = String(form.get("authorization_relationship") ?? "").trim();
-  const evidence = String(form.get("authorization_evidence") ?? "").trim().slice(0, 4000);
-
-  // A repository-relative path, as `{path}` or `{invalid: true}`.
-  //
-  // The rules are the verifier's, character for character. Anywhere the two
-  // disagree the submitter loses: a path this accepts and the verifier refuses
-  // costs a dispatched run that was always going to fail, and one this refuses
-  // and the verifier would have accepted is a submission turned away for no
-  // reason. A tagged result rather than a sentinel string, so a directory
-  // genuinely called `invalid` is a path and not an error.
-  const path = (name) => {
-    const raw = String(form.get(name) ?? "").trim();
-    if (!raw) return { path: null };
-    // Nothing here is rewritten. A trailing slash and a leading slash are both
-    // refused rather than trimmed: quietly turning what somebody typed into a
-    // different path is worse than telling them.
-    const segments = raw.split("/");
-    const bad =
-      raw.startsWith("/") ||
-      raw.length > 400 ||
-      segments.some((part) => !part || part === "." || part === "..") ||
-      /[\\?#]/.test(raw) ||
-      segments[0].includes(":") ||
-      // eslint-disable-next-line no-control-regex
-      /[\x00-\x1f\x7f]/.test(raw);
-    return bad ? { invalid: true } : { path: raw };
-  };
-  const projectPath = path("project_path");
-  const configPath = path("comparator_config_path");
-  const metadataPath = path("formalization_metadata_path");
-
-  const values = {
-    repository: String(form.get("repository") ?? ""),
-    commit: String(form.get("commit") ?? ""),
-    existing_id: rawExistingId,
-    context,
-    authorization_relationship: relationship,
-    authorization_evidence: evidence,
-    project_path: String(form.get("project_path") ?? ""),
-    comparator_config_path: String(form.get("comparator_config_path") ?? ""),
-    formalization_metadata_path: String(form.get("formalization_metadata_path") ?? ""),
-  };
+  const { values, problems, submission } = validateIntake(form);
   // A browser gets its form back with everything still in it; an agent gets
   // the same problems as a list it can act on.
   const rejected = (...problems) =>
@@ -362,32 +307,17 @@ async function beginSubmission(request, env, { machine = false } = {}) {
       ? json({ error: "that submission was refused", problems }, 400)
       : html(intakeForm(env, values, problems), 400);
 
-  const problems = [];
-  if (!repositoryName) problems.push("Repository must be a GitHub owner/name or URL.");
-  if (!commit) {
-    problems.push("Commit must be a full 40-character SHA. Branches and tags move.");
-  }
-  if (rawExistingId && !existingId) {
-    problems.push("Existing Palomar ID is malformed.");
-  }
-  if (!RELATIONSHIPS.has(relationship)) {
-    problems.push("Say whether you maintain this formalization or have approval to submit it.");
-  }
-  if (!configPath.path) {
-    problems.push(
-      "Comparator configuration is required. Give the repository-relative path to the one configuration this entry records.",
-    );
-  }
-  for (const [name, value] of [
-    ["Project directory", projectPath],
-    ["Comparator configuration", configPath],
-    ["Formalization metadata", metadataPath],
-  ]) {
-    if (value.invalid) {
-      problems.push(`${name} must be a path inside the repository, written with forward slashes.`);
-    }
-  }
   if (problems.length) return rejected(...problems);
+
+  const {
+    repository: repositoryName,
+    commit,
+    existing_id: existingId,
+    context,
+    requested_paths: requestedPaths,
+    authorization_relationship: relationship,
+    authorization_evidence: evidence,
+  } = submission;
 
   // Ahead of the two reads below and ahead of the write, so an intake refused
   // here costs one call rather than three. For one that is allowed it adds a
@@ -453,14 +383,10 @@ async function beginSubmission(request, env, { machine = false } = {}) {
     repository: repositoryName,
     commit,
     existing_id: existingId || null,
-    context: context || null,
-    requested_paths: {
-      project_path: projectPath.path,
-      comparator_config_path: configPath.path,
-      formalization_metadata_path: metadataPath.path,
-    },
+    context,
+    requested_paths: requestedPaths,
     authorization_relationship: relationship,
-    authorization_evidence: evidence || null,
+    authorization_evidence: evidence,
     created_at: now(),
   };
   try {
@@ -728,7 +654,7 @@ async function admitSubmission(env, { pending, owner, submitter, proof }) {
     commit: record.commit,
     requestId: id,
     options: {
-      authorization_relationship: RELATIONSHIP_LABELS[record.authorization.relationship],
+      authorization_relationship: authorizationRelationshipLabel(record.authorization.relationship),
       ...Object.fromEntries(
         Object.entries(record.requested_paths ?? {}).filter(([, value]) => value),
       ),
