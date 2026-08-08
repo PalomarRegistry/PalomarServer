@@ -84,6 +84,7 @@ async function fixture(overrides = {}, reviewOverrides = {}) {
   };
   return {
     "index/inflight.json": { open: [] },
+    "index/open.json": { schema_version: 1, open: [] },
     [`index/tokens/${await tokenDigest(ENV, TOKEN)}.json`]: { id: record.id },
     [statePath(record.id, "state.json")]: record,
     [statePath(record.id, "review.json")]: {
@@ -224,6 +225,20 @@ test("a submission whose review could not be completed is still the submitter's 
   const state = written.find((item) => item.path.endsWith("state.json"));
   assert.equal(state.value.status, "withdrawn");
   assert.equal(state.value.events.at(-1).note, "Withdrawn by the submitter");
+});
+
+test("withdrawal validates the inflight reservation before changing the record", async () => {
+  const files = await fixture({ status: "review-failed" });
+  files["index/inflight.json"] = { open: "damaged" };
+  const { written } = stubState(files);
+
+  const response = await worker.fetch(request("/withdraw", "POST"), ENV);
+  assert.equal(response.status, 503);
+  assert.match(response.headers.get("content-type"), /application\/json/);
+  assert.deepEqual(await response.json(), {
+    error: "submission decisions are temporarily unavailable",
+  });
+  assert.deepEqual(written, [], "the record was withdrawn before capacity state was validated");
 });
 
 test("consent is not forged by an anonymous request", async () => {
@@ -546,17 +561,45 @@ test("the inflight index refuses obsolete and malformed shapes", async () => {
   };
   const cases = [
     [{ open: [{ id: current.id, owner: current.owner, at: current.at }] },
-      /open\[0\]\.submitter must be a non-empty login/],
+      /must contain exactly id, owner, submitter, and at/],
+    [{ open: [{ ...current, obsolete: true }] },
+      /must contain exactly id, owner, submitter, and at/],
+    [{ open: [{ ...current, id: "A1B2C3D4E5F6" }] },
+      /id must be a 12-character submission id/],
+    [{ open: [{ ...current, id: 123456789012 }] },
+      /id must be a 12-character submission id/],
+    [{ open: [{ ...current, owner: "-example" }] },
+      /owner must be a GitHub login or null/],
+    [{ open: [{ ...current, submitter: "some--one" }] },
+      /submitter must be a GitHub login/],
+    [{ open: [{ ...current, submitter: "some_one_extra" }] },
+      /submitter must be a GitHub login/],
+    [{ open: [{ ...current, submitter: null }] },
+      /submitter must be a GitHub login/],
     [{ open: [{ ...current, at: "yesterday" }] },
-      /open\[0\]\.at must be a timestamp/],
-    [{ open: {} }, /must be an object with an open array/],
-    [null, /must be an object with an open array/],
+      /at must be a canonical UTC-seconds timestamp/],
+    [{ open: [{ ...current, at: "2026-08-01T00:00:00.000Z" }] },
+      /at must be a canonical UTC-seconds timestamp/],
+    [{ open: [{ ...current, at: "2026-02-30T00:00:00Z" }] },
+      /at must be a canonical UTC-seconds timestamp/],
+    [{ open: [current, { ...current }] }, /duplicates another inflight submission/],
+    [{ open: [], schema_version: 1 }, /exactly one top-level open array/],
+    [{ open: {} }, /exactly one top-level open array/],
+    [null, /exactly one top-level open array/],
   ];
 
   for (const [value, message] of cases) {
     stubState(value === null ? {} : { "index/inflight.json": value }, []);
     await assert.rejects(() => reconcile(ENV), message);
   }
+
+  globalThis.fetch = async (url) => {
+    if (new URL(url).pathname.endsWith("/contents/index/inflight.json")) {
+      return Response.json({ content: Buffer.from("{").toString("base64"), sha: "bad-json" });
+    }
+    return new Response("", { status: 404 });
+  };
+  await assert.rejects(() => reconcile(ENV), /index\/inflight\.json must contain valid JSON/);
 });
 
 test("the current inflight contract permits a missing repository owner", async () => {
@@ -564,7 +607,7 @@ test("the current inflight contract permits a missing repository owner", async (
   const { store } = stubState({
     "index/inflight.json": {
       open: [{
-        id: "a1b2c3d4e5f6", owner: null, submitter: "someone",
+        id: "a1b2c3d4e5f6", owner: null, submitter: "someone_octo",
         at: "2026-08-01T00:00:00Z",
       }],
     },
@@ -572,6 +615,17 @@ test("the current inflight contract permits a missing repository owner", async (
 
   assert.deepEqual(await reconcile(ENV), { released: 1, open: 0 });
   assert.deepEqual(store.get("index/inflight.json"), { open: [] });
+});
+
+test("the checked-in state bootstrap is the exact empty current contract", async () => {
+  const inflight = JSON.parse(await readFile(
+    new URL("../state-bootstrap/index/inflight.json", import.meta.url), "utf8",
+  ));
+  const reviewer = JSON.parse(await readFile(
+    new URL("../state-bootstrap/index/open.json", import.meta.url), "utf8",
+  ));
+  assert.deepEqual(inflight, { open: [] });
+  assert.deepEqual(reviewer, { schema_version: 1, open: [] });
 });
 
 test("a commit that does not exist is answered, not treated as a fault", async () => {
@@ -876,10 +930,20 @@ test("the dispatch carries only a ref, so every reviewer input needs a default",
  * record does not carry `push_verified`. It was never exercised, so nothing
  * would have noticed it being inverted, skipped, or refactored away.
  */
-function stubOAuth({ push, files = {}, login = "someone" }) {
+function stubOAuth({
+  push,
+  files = {},
+  login = "someone",
+  inflight = { open: [] },
+  reviewer = { schema_version: 1, open: [] },
+}) {
   const written = [];
-  const store = new Map(Object.entries({ "index/inflight.json": { open: [] }, ...files }));
+  const initial = { ...files };
+  if (inflight !== null) initial["index/inflight.json"] = inflight;
+  if (reviewer !== null) initial["index/open.json"] = reviewer;
+  const store = new Map(Object.entries(initial));
   const deleted = [];
+  const dispatched = [];
   globalThis.fetch = async (url, init = {}) => {
     const target = new URL(url);
     const method = init.method ?? "GET";
@@ -897,7 +961,10 @@ function stubOAuth({ push, files = {}, login = "someone" }) {
         permissions: { push },
       });
     }
-    if (target.pathname.includes("/actions/workflows/")) return Response.json({ ok: true });
+    if (target.pathname.includes("/actions/workflows/")) {
+      dispatched.push(target.pathname);
+      return Response.json({ ok: true });
+    }
     const path = decodeURI(
       target.pathname.replace(`/repos/${ENV.STATE_REPO}/contents/`, ""),
     );
@@ -915,7 +982,7 @@ function stubOAuth({ push, files = {}, login = "someone" }) {
     store.set(path, JSON.parse(Buffer.from(body.content, "base64").toString("utf-8")));
     return Response.json({ content: {} });
   };
-  return { written, deleted, store };
+  return { written, deleted, dispatched, store };
 }
 
 // The browser half of the intake. `beginSubmission` mints this, keeps only its
@@ -975,6 +1042,35 @@ test("a submitter who can push is recorded as having proved it", async () => {
   assert.equal(record.value.submitter, "someone");
 });
 
+test("browser intake fails closed and visibly when inflight state is unusable", async () => {
+  for (const [name, inflight] of [
+    ["missing", null],
+    ["malformed", { open: "not-an-array" }],
+  ]) {
+    const nonce = name === "missing" ? "1".repeat(64) : "2".repeat(64);
+    const pendingPath = `pending/${await digest(nonce)}.json`;
+    const stub = stubOAuth({
+      push: true,
+      inflight,
+      files: { [pendingPath]: PENDING },
+    });
+
+    const response = await callback(nonce);
+    assert.equal(response.status, 503, `${name} state did not stop browser intake`);
+    assert.match(response.headers.get("content-type"), /text\/html/);
+    const body = await response.text();
+    assert.match(body, /Submission intake is temporarily unavailable/);
+    assert.doesNotMatch(body, /inflight|open array|state-contract/);
+    assert.deepEqual(stub.deleted, [pendingPath], "the proved nonce was not consumed once");
+    assert.deepEqual(
+      stub.written.filter((item) => !item.path.startsWith("pending/")),
+      [],
+      "a browser proof created durable submission state after admission failed",
+    );
+    assert.deepEqual(stub.dispatched, [], "a browser proof dispatched work after admission failed");
+  }
+});
+
 test("a refused submitter keeps what they typed, and the nonce", async () => {
   // Consuming the pending record first meant a failed proof destroyed the
   // whole submission, undoing the care the form takes to hand it back.
@@ -1024,10 +1120,19 @@ test("an unattributable sign-in is refused rather than bucketed", async () => {
  * that carries an identity. Neither alone is enough and the record says so.
  */
 function stubAgent(config = {}) {
-  const state = { tag: {}, gist: {}, repoId: 987654321, ...config };
+  const {
+    inflight = { open: [] },
+    reviewer = { schema_version: 1, open: [] },
+    ...proofConfig
+  } = config;
+  const state = { tag: {}, gist: {}, repoId: 987654321, ...proofConfig };
   const written = [];
-  const store = new Map([["index/inflight.json", { open: [] }]]);
+  const initial = [];
+  if (inflight !== null) initial.push(["index/inflight.json", inflight]);
+  if (reviewer !== null) initial.push(["index/open.json", reviewer]);
+  const store = new Map(initial);
   const deleted = [];
+  const dispatched = [];
   globalThis.fetch = async (url, init = {}) => {
     const target = new URL(url);
     const method = init.method ?? "GET";
@@ -1053,7 +1158,10 @@ function stubAgent(config = {}) {
       });
     }
     if (target.pathname.includes("/commits/")) return Response.json({ sha: "1".repeat(40) });
-    if (target.pathname.includes("/actions/workflows/")) return Response.json({ ok: true });
+    if (target.pathname.includes("/actions/workflows/")) {
+      dispatched.push(target.pathname);
+      return Response.json({ ok: true });
+    }
     const path = decodeURI(target.pathname.replace(`/repos/${ENV.STATE_REPO}/contents/`, ""));
     if (method === "GET") {
       if (!store.has(path)) return new Response("", { status: 404 });
@@ -1066,7 +1174,7 @@ function stubAgent(config = {}) {
     store.set(path, value);
     return Response.json({ content: {} });
   };
-  return { written, deleted, store, state };
+  return { written, deleted, dispatched, store, state };
 }
 
 const AGENT_SUBMISSION = {
@@ -1130,6 +1238,39 @@ test("a tag and a gist together admit a submission", async () => {
   assert.equal(record.value.push_proof.method, "tag-and-gist");
   assert.equal(record.value.push_proof.binding, "separately-attested");
   assert.equal(record.value.push_proof.principal.id, 4242);
+});
+
+test("agent intake fails closed and in JSON when admission indexes are unusable", async () => {
+  const cases = [
+    ["missing inflight", { inflight: null }],
+    ["malformed inflight", { inflight: { open: [{ id: "old" }] } }],
+    ["missing reviewer queue", { reviewer: null }],
+    ["malformed reviewer queue", { reviewer: { schema_version: 1, open: "bad" } }],
+  ];
+  for (const [name, config] of cases) {
+    const stub = stubAgent(config);
+    const begun = await agentSubmit();
+    stub.state.tag = { exists: true, sha: "1".repeat(40) };
+    stub.state.gist = { exists: true, content: begun.challenge };
+    const before = stub.written.length;
+
+    const response = await agentVerify({
+      pending_secret: begun.pending_secret,
+      gist_id: "abc123",
+    });
+    assert.equal(response.status, 503, `${name} did not stop agent intake`);
+    assert.match(response.headers.get("content-type"), /application\/json/);
+    const body = await response.json();
+    assert.deepEqual(body, { error: "submission intake is temporarily unavailable" });
+    assert.ok(stub.deleted.some((path) => path.startsWith("pending/")),
+              `${name} did not consume the proved challenge exactly once`);
+    assert.deepEqual(
+      stub.written.slice(before).filter((item) => !item.path.startsWith("pending/")),
+      [],
+      `${name} created a state record or index`,
+    );
+    assert.deepEqual(stub.dispatched, [], `${name} dispatched verification`);
+  }
 });
 
 test("an admitted submission is put where the reviewer will find it", async () => {

@@ -4,8 +4,15 @@ import test from "node:test";
 import worker from "../redirect/index.js";
 
 test("the web-platform-only redirect does not enable Node compatibility", async () => {
-  const config = JSON.parse(await readFile(new URL("../redirect/wrangler.jsonc", import.meta.url)));
-  assert.deepEqual(config.compatibility_flags ?? [], []);
+  // Wrangler config is JSONC, not JSON. Inspect the source instead of relying
+  // on today's comment-free file remaining parseable by JSON.parse.
+  const config = await readFile(new URL("../redirect/wrangler.jsonc", import.meta.url), "utf8");
+  const source = await readFile(new URL("../redirect/index.js", import.meta.url), "utf8");
+  assert.doesNotMatch(config, /nodejs_compat/);
+  assert.doesNotMatch(source, /^\s*import\b|\bimport\s*\(/m);
+  assert.doesNotMatch(source, /["']node:|\brequire\s*\(|\bprocess\b|\bBuffer\b/);
+  assert.match(source, /new URL\(/);
+  assert.match(source, /new Response\(/);
 });
 
 for (const host of ["palomarregistry.org", "www.palomarregistry.org"]) {

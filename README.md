@@ -113,11 +113,24 @@ pending/<digest>.json         # a one-time intake nonce, consumed at the OAuth
                               #   callback or at /api/verify, swept after an hour
 ```
 
-`index/inflight.json` has one current entry contract: `id`, `owner`,
-`submitter`, and `at`, where `owner` may be `null` if GitHub returned none.
-Missing fields or a malformed index stop admission and reconciliation visibly;
-they are not coerced to an empty list or treated as if the repository owner
-were the submitter.
+`index/inflight.json` has exactly one top-level field, `open`, and no versioned
+pre-launch variants. Each entry has exactly `id`, `owner`, `submitter`, and
+`at`. The id is the current 12-character lowercase submission id; owner and
+submitter are GitHub logins (`owner` may be `null`); and `at` is a UTC timestamp
+at whole-second precision. Duplicate ids, missing or extra fields, noncanonical
+timestamps, and a missing file stop admission and reconciliation visibly. They
+are not coerced to an empty list or treated as if the repository owner were the
+submitter.
+
+`index/open.json` is likewise required. It is a schema-version 1 queue whose
+`open` array contains unique current submission ids; the reviewer may also
+record its `rebuilt_at` and `rebuild_after` timestamps. A missing or malformed
+queue is never overwritten with the one id the server happens to be appending.
+
+Before pointing a fresh or staging Worker at a new state repository, copy the
+two files in `state-bootstrap/index/` to `index/` and commit them. Deploying the
+Worker before that initialization deliberately leaves intake unavailable; it
+does not silently grant unbounded capacity.
 
 `index/open.json` holds every submission the reviewer is not yet finished with.
 This server adds an id when it admits one, and the reviewer drops one when the

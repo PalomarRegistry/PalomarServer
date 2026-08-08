@@ -101,6 +101,33 @@ const REQUIRED_SECRETS = [
 // records if it is missing, damaged, or too old to trust.
 const OPEN_INDEX_PATH = "index/open.json";
 
+const SUBMISSION_ID_RE = /^[0-9a-z]{12}$/;
+// GitHub.com logins are at most 39 characters. Ordinary accounts use
+// alphanumerics and single hyphens; managed-user accounts append one
+// `_SHORT-CODE` suffix. Preserve provider casing rather than normalising it.
+const GITHUB_LOGIN_RE =
+  /^(?!.*--)(?!.*_.*_)[A-Za-z0-9](?:[A-Za-z0-9_-]{0,37}[A-Za-z0-9])?$/;
+const UTC_SECONDS_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
+
+class StateContractError extends Error {}
+
+function plainObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function hasExactlyKeys(value, expected) {
+  const actual = Object.keys(value).sort();
+  const wanted = [...expected].sort();
+  return actual.length === wanted.length && actual.every((key, index) => key === wanted[index]);
+}
+
+function canonicalUtcSeconds(value) {
+  if (typeof value !== "string" || !UTC_SECONDS_RE.test(value)) return false;
+  const parsed = new Date(value);
+  return !Number.isNaN(parsed.valueOf()) &&
+    parsed.toISOString().replace(/\.\d+Z$/, "Z") === value;
+}
+
 /**
  * The one inflight-index shape this pre-launch server writes and reads.
  *
@@ -110,30 +137,92 @@ const OPEN_INDEX_PATH = "index/open.json";
  * that predates this contract must be migrated explicitly instead.
  */
 function inflightOpen(value) {
-  if (value === null || typeof value !== "object" || Array.isArray(value) ||
-      !Array.isArray(value.open)) {
-    throw new Error("index/inflight.json must be an object with an open array");
+  if (!plainObject(value) || !hasExactlyKeys(value, ["open"]) || !Array.isArray(value.open)) {
+    throw new StateContractError(
+      "index/inflight.json must contain exactly one top-level open array",
+    );
   }
 
+  const ids = new Set();
   for (const [index, item] of value.open.entries()) {
     const prefix = `index/inflight.json open[${index}]`;
-    if (item === null || typeof item !== "object" || Array.isArray(item)) {
-      throw new Error(`${prefix} must be an object`);
+    if (!plainObject(item) ||
+        !hasExactlyKeys(item, ["id", "owner", "submitter", "at"])) {
+      throw new StateContractError(
+        `${prefix} must contain exactly id, owner, submitter, and at`,
+      );
     }
-    if (typeof item.id !== "string" || !item.id) {
-      throw new Error(`${prefix}.id must be a non-empty submission id`);
+    if (typeof item.id !== "string" || !SUBMISSION_ID_RE.test(item.id)) {
+      throw new StateContractError(`${prefix}.id must be a 12-character submission id`);
     }
-    if (item.owner !== null && (typeof item.owner !== "string" || !item.owner)) {
-      throw new Error(`${prefix}.owner must be a non-empty login or null`);
+    if (ids.has(item.id)) {
+      throw new StateContractError(`${prefix}.id duplicates another inflight submission`);
     }
-    if (typeof item.submitter !== "string" || !item.submitter) {
-      throw new Error(`${prefix}.submitter must be a non-empty login`);
+    ids.add(item.id);
+    if (item.owner !== null &&
+        (typeof item.owner !== "string" || !GITHUB_LOGIN_RE.test(item.owner))) {
+      throw new StateContractError(`${prefix}.owner must be a GitHub login or null`);
     }
-    if (typeof item.at !== "string" || !Number.isFinite(Date.parse(item.at))) {
-      throw new Error(`${prefix}.at must be a timestamp`);
+    if (typeof item.submitter !== "string" || !GITHUB_LOGIN_RE.test(item.submitter)) {
+      throw new StateContractError(`${prefix}.submitter must be a GitHub login`);
+    }
+    if (!canonicalUtcSeconds(item.at)) {
+      throw new StateContractError(`${prefix}.at must be a canonical UTC-seconds timestamp`);
     }
   }
   return value.open;
+}
+
+/**
+ * The reviewer owns the rebuild timestamps beside this queue. The server owns
+ * appending ids. Both must refuse a missing or malformed queue instead of
+ * replacing it with the one id they happen to know about.
+ */
+function reviewerOpen(value) {
+  if (!plainObject(value) || value.schema_version !== 1 || !Array.isArray(value.open)) {
+    throw new StateContractError(
+      `${OPEN_INDEX_PATH} must be a schema-version 1 object with an open array`,
+    );
+  }
+  const allowed = new Set(["schema_version", "open", "rebuilt_at", "rebuild_after"]);
+  if (Object.keys(value).some((key) => !allowed.has(key))) {
+    throw new StateContractError(`${OPEN_INDEX_PATH} contains an unknown top-level field`);
+  }
+  for (const field of ["rebuilt_at", "rebuild_after"]) {
+    if (Object.hasOwn(value, field) && !canonicalUtcSeconds(value[field])) {
+      throw new StateContractError(`${OPEN_INDEX_PATH}.${field} must be a canonical timestamp`);
+    }
+  }
+  const ids = new Set();
+  for (const [index, id] of value.open.entries()) {
+    if (typeof id !== "string" || !SUBMISSION_ID_RE.test(id)) {
+      throw new StateContractError(`${OPEN_INDEX_PATH} open[${index}] is not a submission id`);
+    }
+    if (ids.has(id)) {
+      throw new StateContractError(`${OPEN_INDEX_PATH} open[${index}] is duplicated`);
+    }
+    ids.add(id);
+  }
+  return value.open;
+}
+
+async function readContractIndex(env, path, validate) {
+  let index;
+  try {
+    index = await readState(env, path);
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) throw error;
+    throw new StateContractError(`${path} must contain valid JSON`);
+  }
+  return { ...index, open: validate(index.value) };
+}
+
+function readInflightIndex(env) {
+  return readContractIndex(env, "index/inflight.json", inflightOpen);
+}
+
+function readReviewerIndex(env) {
+  return readContractIndex(env, OPEN_INDEX_PATH, reviewerOpen);
 }
 
 function isCurrentReview(review, submissionId) {
@@ -230,6 +319,10 @@ function intakeUnavailable(env, machine) {
         ]),
         503,
       );
+}
+
+function reportStateContract(error) {
+  console.error("state-contract", error.message);
 }
 
 // Pending intake that may exist at once, across everybody. This limits ordinary
@@ -624,8 +717,14 @@ function describeInterval(seconds) {
  * alone never noticed, because a fresh organisation buys fresh slots.
  */
 async function admit(env, { owner, submitter }) {
-  const inflight = await readState(env, "index/inflight.json");
-  const open = inflightOpen(inflight.value);
+  // Validate both shared indexes before creating a record. In particular, a
+  // damaged reviewer queue must not be replaced with this submission after
+  // the inflight write has already committed.
+  const [inflight] = await Promise.all([
+    readInflightIndex(env),
+    readReviewerIndex(env),
+  ]);
+  const open = inflight.open;
   if (open.length >= MAX_INFLIGHT_TOTAL) {
     return {
       refused: true, status: 503, title: "Palomar is at capacity",
@@ -693,14 +792,21 @@ async function admitSubmission(env, { pending, owner, submitter, proof }) {
     token_sha256: await tokenDigest(env, token),
     events: [{ at: now(), status: "verifying", note: "Mechanical verification dispatched" }],
   };
+  const nextInflight = [...open, { id, owner, submitter, at: record.created_at }];
+  // Validate the bytes we are about to write as well as the bytes we read.
+  // Provider logins are untrusted input at this boundary.
+  inflightOpen({ open: nextInflight });
   await writeState(env, statePath(id, "state.json"), record, `Open submission ${id}`);
   await writeState(
     env,
     "index/inflight.json",
-    { open: [...open, { id, owner, submitter, at: record.created_at }] },
+    { open: nextInflight },
     `Admit ${id}`,
     inflight.sha,
   );
+  // Re-read after the two preceding commits. The first read above is the
+  // fail-closed precondition; this one avoids widening the optimistic-SHA race
+  // with the reviewer by carrying an older queue version across those writes.
   await openSubmission(env, id);
   await writeState(
     env,
@@ -829,21 +935,28 @@ async function verifySubmission(request, env) {
     return json({ error: "that submission could not be claimed; try again" }, 409);
   }
 
-  const admitted = await admitSubmission(env, {
-    pending: pending.value,
-    owner: repo?.owner?.login ?? null,
-    submitter: gist.principal.login,
-    proof: {
-      schema_version: 1,
-      method: "tag-and-gist",
-      binding: "separately-attested",
-      verified_at: now(),
-      repository_id: pending.value.repository_id,
-      commit,
-      challenge_sha256: await digest(challenge),
-      principal: gist.principal,
-    },
-  });
+  let admitted;
+  try {
+    admitted = await admitSubmission(env, {
+      pending: pending.value,
+      owner: repo?.owner?.login ?? null,
+      submitter: gist.principal.login,
+      proof: {
+        schema_version: 1,
+        method: "tag-and-gist",
+        binding: "separately-attested",
+        verified_at: now(),
+        repository_id: pending.value.repository_id,
+        commit,
+        challenge_sha256: await digest(challenge),
+        principal: gist.principal,
+      },
+    });
+  } catch (error) {
+    if (!(error instanceof StateContractError)) throw error;
+    reportStateContract(error);
+    return intakeUnavailable(env, true);
+  }
   if (admitted.refused) {
     return json({ error: admitted.title, detail: admitted.detail }, admitted.status);
   }
@@ -977,20 +1090,27 @@ async function completeSubmission(request, env) {
   // exist. This is deliberately blunt: refusing a genuine submitter with a
   // clear message is recoverable, exhausting the runners is not.
   const owner = viewer.owner?.login ?? null;
-  const admitted = await admitSubmission(env, {
-    pending: pending.value,
-    owner,
-    submitter,
-    proof: {
-      schema_version: 1,
-      method: "oauth",
-      binding: "same-account",
-      verified_at: now(),
-      repository_id: viewer.id ?? null,
-      commit: pending.value.commit,
-      principal: { login: submitter, id: user?.id ?? null },
-    },
-  });
+  let admitted;
+  try {
+    admitted = await admitSubmission(env, {
+      pending: pending.value,
+      owner,
+      submitter,
+      proof: {
+        schema_version: 1,
+        method: "oauth",
+        binding: "same-account",
+        verified_at: now(),
+        repository_id: viewer.id ?? null,
+        commit: pending.value.commit,
+        principal: { login: submitter, id: user?.id ?? null },
+      },
+    });
+  } catch (error) {
+    if (!(error instanceof StateContractError)) throw error;
+    reportStateContract(error);
+    return intakeUnavailable(env, false);
+  }
   if (admitted.refused) {
     return html(errorPage(env, admitted.title, admitted.detail), admitted.status);
   }
@@ -1147,22 +1267,27 @@ async function refresh(env, entry) {
  * admissions landing together must not lose one of themselves.
  */
 async function openSubmission(env, id) {
-  const index = await readState(env, OPEN_INDEX_PATH);
-  const open = Array.isArray(index.value?.open) ? index.value.open : [];
+  const index = await readReviewerIndex(env);
+  const open = index.open;
   if (open.includes(id)) return;
   await writeState(
     env,
     OPEN_INDEX_PATH,
-    { schema_version: 1, ...(index.value ?? {}), open: [...open, id] },
+    { ...index.value, open: [...open, id] },
     `Open ${id}`,
     index.sha,
   );
 }
 
-async function release(env, id) {
-  const inflight = await readState(env, "index/inflight.json");
-  const open = inflightOpen(inflight.value);
-  if (!open.some((item) => item.id === id)) return;
+async function releaseReservation(env, id) {
+  const inflight = await readInflightIndex(env);
+  const open = inflight.open;
+  return { inflight, open, changed: open.some((item) => item.id === id) };
+}
+
+async function release(env, id, prepared = null) {
+  const { inflight, open, changed } = prepared ?? await releaseReservation(env, id);
+  if (!changed) return;
   await writeState(env, "index/inflight.json",
                    { open: open.filter((item) => item.id !== id) },
                    `Release ${id}`, inflight.sha);
@@ -1180,8 +1305,8 @@ async function release(env, id) {
 // cron path, and driving it directly is the only way to test the case where
 // nobody is watching.
 export async function reconcile(env) {
-  const inflight = await readState(env, "index/inflight.json");
-  const open = inflightOpen(inflight.value);
+  const inflight = await readInflightIndex(env);
+  const open = inflight.open;
   const still = [];
   for (const item of open) {
     const record = await readState(env, statePath(item.id, "state.json"));
@@ -1456,6 +1581,18 @@ export default {
         if (CLOSED.has(entry.record.status)) {
           return json({ error: `already ${entry.record.status}` }, 409);
         }
+        // Validate and reserve the exact inflight version before recording the
+        // decision. The two files cannot be committed atomically through the
+        // contents API, but malformed capacity state must never leave a record
+        // saying `withdrawn` while this request reports that release failed.
+        let reservation;
+        try {
+          reservation = await releaseReservation(env, entry.record.id);
+        } catch (error) {
+          if (!(error instanceof StateContractError)) throw error;
+          reportStateContract(error);
+          return json({ error: "submission decisions are temporarily unavailable" }, 503);
+        }
         const next = {
           ...entry.record,
           status: "withdrawn",
@@ -1464,7 +1601,7 @@ export default {
         };
         await writeState(env, statePath(next.id, "state.json"), next,
                          `Withdraw ${next.id}`, entry.sha);
-        await release(env, next.id);
+        await release(env, next.id, reservation);
         return json({ ok: true });
       }
       if (request.method === "GET" && url.pathname === "/api/review") {
@@ -1590,7 +1727,7 @@ export default {
       console.error("unhandled", url.pathname, String(error?.stack ?? error));
       return html(
         errorPage(env, "Palomar could not complete that just now", [
-          "Nothing was lost. Try again in a moment.",
+          "Try again in a moment. If you were making a decision, check its current status first.",
         ]),
         500,
       );
