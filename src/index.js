@@ -1414,7 +1414,20 @@ export default {
         const review = await readState(env, statePath(entry.record.id, "review.json"));
         if (!review.value) return json({ error: "no review yet" }, 404);
         if (!isCurrentReview(review.value, entry.record.id)) return obsoleteReview();
-        return json(submitterReview(review.value));
+        // The digest goes out with the bytes it names, so consent can be given
+        // for a review somebody actually read rather than for whatever was
+        // current at the instant they clicked.
+        //
+        // A review whose digest the record does not carry yet is not ready to
+        // be handed over. The reviewer writes the review and the digest in
+        // separate steps, so there is a window where one exists without the
+        // other, and answering with a null digest would leave the page holding
+        // a review it can never register: it stops asking once it has been
+        // shown one. Answering `no review yet` keeps it asking, which is what
+        // the window needs.
+        const reviewed = entry.record.review_sha256;
+        if (!reviewed) return json({ error: "no review yet" }, 404);
+        return json({ ...submitterReview(review.value), review_sha256: reviewed });
       }
       if (request.method === "POST" && url.pathname === "/register") {
         const entry = await caller(env, request, { mutating: true });
@@ -1437,6 +1450,33 @@ export default {
         // revised review requires fresh consent rather than inheriting this.
         const reviewed = entry.record.review_sha256;
         if (!reviewed) return json({ error: "there is no review to register yet" }, 409);
+
+        // Consent is to bytes, not to a moment. The digest went out with the
+        // review the submitter has in front of them and comes back with the
+        // click, and if the reviewer replaced the review in between the two do
+        // not match. Without this, a redelivery landing between reading and
+        // clicking recorded consent for a review nobody had read, and the
+        // review's comments go into a registered record: somebody could make
+        // criticism of their own work public without ever having seen it.
+        //
+        // The reviewer already refuses to register anything whose digest
+        // differs from the one consented to. That check and this one are the
+        // same identity seen from both ends: this one is what makes the digest
+        // it compares against mean what it says.
+        const asked = String((await request.json().catch(() => ({})))?.review_sha256 ?? "");
+        if (!asked) {
+          // Says what to do rather than what went wrong. Nothing has been
+          // replaced here; the caller simply did not say which review it meant.
+          return json({
+            error: "say which review this registers: post the review_sha256 " +
+              "that GET /api/review returned",
+          }, 409);
+        }
+        if (asked !== reviewed) {
+          return json({
+            error: "that review has been replaced; read the new one before registering",
+          }, 409);
+        }
         if (entry.record.registration_consent === true) return json({ ok: true });
         const next = {
           ...entry.record,

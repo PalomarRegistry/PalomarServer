@@ -106,6 +106,11 @@ function request(path, method = "GET", cookie = `palomar_session=${TOKEN}`, extr
   return new Request(`https://submit.palomar-registry.org${path}`, {
     method,
     headers: { "sec-fetch-site": "same-origin", ...(cookie ? { cookie } : {}), ...extra },
+    // Registration says which review it is consenting to. The fixture's review
+    // digest is the one the page would have been shown.
+    ...(path === "/register" && method === "POST"
+      ? { body: JSON.stringify({ review_sha256: "f".repeat(64) }) }
+      : {}),
   });
 }
 
@@ -1348,6 +1353,7 @@ test("an agent presenting the token as a header needs no cookie and no origin", 
     new Request("https://submit.palomar-registry.org/register", {
       method: "POST",
       headers: { authorization: `Bearer ${TOKEN}` },
+      body: JSON.stringify({ review_sha256: "f".repeat(64) }),
     }),
     ENV,
   );
@@ -1597,4 +1603,64 @@ test("a run found again clears a miss recorded before it", async () => {
   assert.equal(record.status, "verifying");
   assert.equal(record.run_misses, undefined, "the miss survived finding the run");
   assert.equal(record.run.id, 999, "a queued run was not pinned when it was found");
+});
+
+test("consent names the review it was given for", async () => {
+  // Consent used to be recorded against whatever digest state held at the
+  // instant of the click. A redelivery landing between reading and clicking
+  // recorded consent for a review nobody had read, and the review's comments go
+  // into a registered record.
+  stubState(await fixture());
+  const delivered = await worker.fetch(request("/api/review"), ENV);
+  assert.equal((await delivered.json()).review_sha256, "f".repeat(64));
+
+  // The review the submitter read is not the one the record now holds.
+  const { written } = stubState(await fixture({ review_sha256: "e".repeat(64) }));
+  const stale = await worker.fetch(
+    new Request("https://submit.palomar-registry.org/register", {
+      method: "POST",
+      headers: { "sec-fetch-site": "same-origin", cookie: `palomar_session=${TOKEN}` },
+      body: JSON.stringify({ review_sha256: "f".repeat(64) }),
+    }),
+    ENV,
+  );
+  assert.equal(stale.status, 409);
+  assert.match((await stale.json()).error, /has been replaced/);
+  assert.equal(written.length, 0, "consent was recorded for a review nobody read");
+
+  // And a registration that names nothing at all is not consent either.
+  const { written: silent } = stubState(await fixture());
+  const empty = await worker.fetch(
+    new Request("https://submit.palomar-registry.org/register", {
+      method: "POST",
+      headers: { "sec-fetch-site": "same-origin", cookie: `palomar_session=${TOKEN}` },
+    }),
+    ENV,
+  );
+  assert.equal(empty.status, 409);
+  assert.match((await empty.json()).error, /say which review this registers/);
+  assert.equal(silent.length, 0);
+});
+
+test("a review whose digest is not recorded yet is not handed over", async () => {
+  // The reviewer writes the review and the digest in separate steps. Handing
+  // over a review with a null digest would leave the page holding one it can
+  // never register, because it stops asking once it has been shown one.
+  stubState(await fixture({ review_sha256: undefined }));
+  const response = await worker.fetch(request("/api/review"), ENV);
+  assert.equal(response.status, 404);
+  assert.match((await response.json()).error, /no review yet/);
+
+  // And the page keeps asking on anything that is not a 409.
+  const script = await readFile(new URL("../public/status.js", import.meta.url), "utf8");
+  assert.match(script, /if \(!response\.ok\) return;/);
+});
+
+test("the page sends back the digest it was shown", async () => {
+  // The server can only compare what the client sends. If the page stopped
+  // sending it, every registration would answer 409 and nobody could register.
+  const script = await readFile(new URL("../public/status.js", import.meta.url), "utf8");
+  assert.match(script, /reviewDigest = review\.review_sha256/);
+  assert.match(script, /\{ review_sha256: reviewDigest \}/);
+  assert.match(script, /JSON\.stringify\(body\)/);
 });
