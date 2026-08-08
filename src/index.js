@@ -24,6 +24,9 @@ import {
   writeState,
 } from "./github.js";
 import { page, intakeForm, statusPage, errorPage } from "./html.js";
+// One vocabulary for "this submission has stopped moving", shared with the
+// status page, which asks a slightly different question of the same words.
+import { CLOSED } from "../public/statuses.js";
 
 const SECURITY_HEADERS = {
   // The intake form checks the repository, the commit, and a cited Palomar ID
@@ -73,8 +76,6 @@ const MAX_INFLIGHT_PER_SUBMITTER = 2;
 const MAX_VERIFY_ATTEMPTS = 10;
 const CURRENT_REVIEW_SCHEMA_VERSION = 2;
 const REVIEW_DECISIONS = new Set(["accept", "revise", "reject"]);
-
-const TERMINAL = new Set(["registered", "withdrawn", "verification-failed"]);
 
 // The reviewer's queue: every submission it is not yet finished with. This end
 // adds one when it admits a submission; the reviewer drops one when the record
@@ -130,9 +131,29 @@ function now() {
 async function beginSubmission(request, env, { machine = false } = {}) {
   // A browser sends a form; an agent sends JSON. Both are read through one
   // `get`, so every check below sees the same values whichever arrived.
-  const form = machine
-    ? new Map(Object.entries(await request.json().catch(() => ({}))))
-    : await request.formData();
+  //
+  // Neither read is allowed to throw. `formData()` throws on a body it cannot
+  // parse, and a JSON body posted to /submit did exactly that: the throw
+  // reached the handler's catch, and whoever sent it was told on a 500 that
+  // Palomar had had a bad moment and to try again shortly. Both halves of that
+  // were false. Nothing was wrong at this end, and trying again sends the same
+  // body and fails the same way, so the one thing the sender needed to know
+  // was the one thing the page did not say. 400 says it, and says it in JSON
+  // even though this endpoint's other answers are pages: a browser form post
+  // always carries something `formData()` reads, so whoever gets here is a
+  // program, and a program can act on `error`.
+  let form;
+  try {
+    form = machine
+      ? new Map(Object.entries(await request.json().catch(() => ({}))))
+      : await request.formData();
+  } catch {
+    return json({
+      error: machine
+        ? "that request body could not be read as a JSON object"
+        : "that request body could not be read as a form",
+    }, 400);
+  }
   const repositoryName = normalizeRepository(form.get("repository"));
   const commit = normalizeCommit(form.get("commit"));
   const rawExistingId = String(form.get("existing_id") ?? "").trim();
@@ -916,7 +937,18 @@ export default {
         return html(statusPage(env));
       }
       if (request.method === "POST" && url.pathname === "/session") {
-        const token = (await request.formData()).get("token");
+        // The same fault as /submit, and the same answer. A JSON body makes
+        // `formData()` throw, and the throw used to be answered with the 500
+        // page that blames Palomar and invites a retry that cannot work. The
+        // status page posts a form here; an agent following llms.txt posts a
+        // form here; a body this cannot read came from something that guessed,
+        // and 400 with a reason is what stops it guessing again.
+        let token;
+        try {
+          token = (await request.formData()).get("token");
+        } catch {
+          return json({ error: "post token=<access token> as a form, not as JSON" }, 400);
+        }
         const entry = await loadByToken(env, String(token ?? ""));
         if (!entry) return json({ error: "not found" }, 404);
         return json({ ok: true }, 200, sessionCookie(String(token)));
@@ -924,7 +956,7 @@ export default {
       if (request.method === "POST" && url.pathname === "/withdraw") {
         const entry = await loadByToken(env, sessionToken(request));
         if (!entry) return json({ error: "not found" }, 404);
-        if (TERMINAL.has(entry.record.status)) {
+        if (CLOSED.has(entry.record.status)) {
           return json({ error: `already ${entry.record.status}` }, 409);
         }
         const next = {
@@ -951,7 +983,7 @@ export default {
       if (request.method === "POST" && url.pathname === "/register") {
         const entry = await loadByToken(env, sessionToken(request));
         if (!entry) return json({ error: "not found" }, 404);
-        if (TERMINAL.has(entry.record.status)) {
+        if (CLOSED.has(entry.record.status)) {
           return json({ error: `already ${entry.record.status}` }, 409);
         }
         // Consent is only meaningful once the submitter can see what they
@@ -1009,8 +1041,18 @@ export default {
           events: record.events,
         });
       }
-      if (url.pathname === "/healthz") {
-        return json({ ok: true, state_repo: env.STATE_REPO });
+      if ((request.method === "GET" || request.method === "HEAD") &&
+          url.pathname === "/healthz") {
+        // Whether the service is up, and nothing else. It used to name the
+        // state repository, which is private, holds every record and every
+        // pending intake, and is nobody's business who has not been told about
+        // it: a monitoring endpoint that answers anybody is the last place to
+        // put the name of the thing worth attacking. It also answered any
+        // method at all, including POST, where every other route here matches
+        // on the method and lets the rest fall through to the 404 page. HEAD
+        // as well as GET, because that is what a health checker sends when it
+        // only wants the status line.
+        return json({ ok: true });
       }
       return html(errorPage(env, "No such page", []), 404);
     } catch (error) {

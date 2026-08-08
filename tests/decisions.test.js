@@ -191,6 +191,20 @@ test("a withdrawn submission cannot then be registered", async () => {
   assert.equal(written.length, 0);
 });
 
+test("a submission whose review could not be completed is still the submitter's to withdraw", async () => {
+  // `review-failed` is a fault at this end. The page stops asking about it,
+  // because nothing moves it without an operator, and that is the whole reason
+  // somebody might reasonably decide it belongs in the set the server refuses
+  // to act on. It does not: the submitter is left with a submission that is
+  // going nowhere and no way to take it back.
+  const { written } = stubState(await fixture({ status: "review-failed" }));
+  const response = await worker.fetch(request("/withdraw", "POST"), ENV);
+  assert.equal(response.status, 200);
+  const state = written.find((item) => item.path.endsWith("state.json"));
+  assert.equal(state.value.status, "withdrawn");
+  assert.equal(state.value.events.at(-1).note, "Withdrawn by the submitter");
+});
+
 test("consent is not forged by an anonymous request", async () => {
   const { written } = stubState(await fixture());
   const response = await worker.fetch(request("/register", "POST", ""), ENV);
@@ -214,6 +228,69 @@ test("the status feed never carries the submitter or the review", async () => {
   assert.equal(response.status, 200);
   assert.ok(!body.includes("someone"), "the submitter's login must not be echoed");
   assert.ok(!body.includes("An example review"), "the review must not ride along");
+});
+
+test("the health check says whether the service is up and nothing else", async () => {
+  // It named the state repository, which is private and holds every record and
+  // every pending intake. Anyone at all could ask an unauthenticated endpoint
+  // for the name of the thing worth attacking.
+  stubState(await fixture());
+  for (const method of ["GET", "HEAD"]) {
+    const response = await worker.fetch(request("/healthz", method), ENV);
+    assert.equal(response.status, 200, `${method} did not answer`);
+  }
+  const body = await (await worker.fetch(request("/healthz"), ENV)).json();
+  assert.deepEqual(body, { ok: true });
+  assert.ok(!JSON.stringify(body).includes("PalomarSubmissionState"),
+            "the health check still names the state repository");
+});
+
+test("a health check sent as anything but a read is no such page", async () => {
+  // Every other route matches on the method and lets the rest fall through to
+  // the 404. This one answered POST, PUT and DELETE alike.
+  stubState(await fixture());
+  for (const method of ["POST", "PUT", "DELETE"]) {
+    const response = await worker.fetch(request("/healthz", method), ENV);
+    assert.equal(response.status, 404, `${method} was answered by the health check`);
+  }
+});
+
+test("a body the form endpoints cannot read is not reported as Palomar's fault", async () => {
+  // `formData()` throws on a JSON body. The throw reached the handler's catch,
+  // so posting JSON to either of these got a 500 HTML page saying Palomar had
+  // had a bad moment and to try again shortly: not true, not the sender's
+  // problem as stated, and a retry that could only fail the same way.
+  for (const path of ["/session", "/submit"]) {
+    stubState(await fixture());
+    const response = await worker.fetch(
+      new Request(`https://submit.palomar-registry.org${path}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ token: TOKEN, repository: "example/project" }),
+      }),
+      ENV,
+    );
+    assert.equal(response.status, 400, `${path} did not say the body was the problem`);
+    assert.match(response.headers.get("content-type"), /application\/json/,
+                 `${path} answered with a page`);
+    assert.match((await response.json()).error, /could not be read|as a form/,
+                 `${path} did not say what was wrong`);
+  }
+});
+
+test("a well-formed form body is still read exactly as it was", async () => {
+  // The guard above must not have changed what happens to the bodies that
+  // parse: /session still exchanges a form for a cookie.
+  stubState(await fixture());
+  const response = await worker.fetch(
+    new Request("https://submit.palomar-registry.org/session", {
+      method: "POST",
+      body: new URLSearchParams({ token: TOKEN }),
+    }),
+    ENV,
+  );
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("set-cookie"), new RegExp(`palomar_session=${TOKEN}`));
 });
 
 test("the verification run is pinned once, and a later namesake cannot take it", async () => {
@@ -508,6 +585,24 @@ test("the page keeps asking while anything is still moving", async () => {
   for (const done of ["registered", "withdrawn", "verification-failed", "review-failed"]) {
     assert.equal(nextPollDelay({ status: done }), null, `${done} should stop the polling`);
   }
+});
+
+test("the page stops asking about exactly one status more than the server calls closed", async () => {
+  // Two nearly identical sets, one in the server and one in the browser, with
+  // names that read as synonyms. Every status the server will not act on is one
+  // there is no point asking about, and `review-failed` is the single status
+  // that is the other way round: nothing moves it on its own, so the page stops
+  // asking, but the submitter may still withdraw it. Written as one derivation
+  // from one list so that nobody can quietly make the two equal, in either
+  // direction, without saying so here.
+  const { CLOSED, SETTLED } = await import("../public/statuses.js");
+  for (const status of CLOSED) {
+    assert.ok(SETTLED.has(status), `${status} is closed but the page would keep asking about it`);
+  }
+  assert.deepEqual([...SETTLED].filter((status) => !CLOSED.has(status)), ["review-failed"]);
+  // And the page's own list is that same set, not a copy of it.
+  const { SETTLED: fromPolling } = await import("../public/polling.js");
+  assert.equal(fromPolling, SETTLED);
 });
 
 test("a status page left open cannot spend the server's hourly budget", async () => {

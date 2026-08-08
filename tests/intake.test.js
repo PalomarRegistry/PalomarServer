@@ -153,7 +153,7 @@ test("one word for one thing, in the code as well as the copy", async () => {
   // how a field gets read under one name and written under the other.
   const files = ["../src/index.js", "../src/html.js", "../src/submission.js",
                  "../src/github.js", "../public/status.js", "../public/intake.js",
-                 "../public/polling.js"];
+                 "../public/polling.js", "../public/statuses.js"];
   for (const file of files) {
     const source = await readFile(new URL(file, import.meta.url), "utf8");
     const stray = [...source.matchAll(/\b\w*[Pp]ublish\w*|\b\w*[Pp]ublicat\w*/g)].map((m) => m[0]);
