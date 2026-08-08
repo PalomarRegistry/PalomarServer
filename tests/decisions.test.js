@@ -260,6 +260,27 @@ test("withdrawal validates the inflight reservation before changing the record",
   assert.deepEqual(written, [], "the record was withdrawn before capacity state was validated");
 });
 
+test("withdrawing a verifying submission commits the decision before releasing its slot", async () => {
+  const held = {
+    id: "a1b2c3d4e5f6",
+    owner: "example",
+    submitter: "someone",
+    at: "2026-08-01T00:00:00Z",
+  };
+  const files = await fixture({ status: "verifying" });
+  files["index/inflight.json"] = { open: [held] };
+  const { written, store } = stubState(files);
+
+  const response = await worker.fetch(request("/withdraw", "POST"), ENV);
+  assert.equal(response.status, 200);
+  assert.equal(store.get(statePath(held.id, "state.json")).status, "withdrawn");
+  assert.deepEqual(store.get("index/inflight.json"), { open: [] });
+  assert.deepEqual(
+    written.map((item) => item.path),
+    [statePath(held.id, "state.json"), "index/inflight.json"],
+  );
+});
+
 test("consent is not forged by an anonymous request", async () => {
   const { written } = stubState(await fixture());
   const response = await worker.fetch(request("/register", "POST", ""), ENV);

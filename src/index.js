@@ -1357,7 +1357,9 @@ async function release(env, id) {
  * Slots used to be released only when the submitter's page polled, so closing
  * the tab held one forever and enough abandoned submissions would wedge
  * intake. This runs on a schedule instead, so nothing depends on a browser
- * staying open.
+ * staying open. It may throw after committing safe partial progress: in
+ * particular it releases unrelated terminal reservations, then fails the run
+ * if a malformed reviewer queue kept a successful verification from settling.
  */
 // Exported for the tests, like `sweepPending`. Nothing else calls it: it is the
 // cron path, and driving it directly is the only way to test the case where
@@ -1659,9 +1661,10 @@ export default {
         if (CLOSED.has(entry.record.status)) {
           return json({ error: `already ${entry.record.status}` }, 409);
         }
-        // Only verifying records hold admission capacity. Validate that shared
-        // contract before changing such a record; later states must remain
-        // withdrawable even when an unrelated capacity index needs repair.
+        // Verifying records are the ones expected to hold admission capacity.
+        // A later state can temporarily retain a stale slot after a failed
+        // release, but scheduled reconciliation owns that repair; withdrawal
+        // must remain available despite unrelated capacity-index damage.
         if (entry.record.status === "verifying") {
           try {
             await assertInflightContract(env);
