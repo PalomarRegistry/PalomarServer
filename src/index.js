@@ -97,8 +97,8 @@ const REQUIRED_SECRETS = [
 
 // The reviewer's queue: every submission it is not yet finished with. This end
 // adds one when it admits a submission; the reviewer drops one when the record
-// says there is nothing left to do to it, and rebuilds the whole file from the
-// records if it is missing, damaged, or too old to trust.
+// says there is nothing left to do to it. The reviewer can rebuild the derived
+// file from records; this server treats absence or damage as unavailable state.
 const OPEN_INDEX_PATH = "index/open.json";
 
 const SUBMISSION_ID_RE = /^[0-9a-z]{12}$/;
@@ -1099,10 +1099,13 @@ async function completeSubmission(request, env) {
   if (!submitter) {
     // Every quota keys on this. Without it the old code bucketed submissions
     // under the empty string, where they throttled each other.
-    return html(errorPage(env, "GitHub did not say who you are", [
-      "Palomar could not read your GitHub login, and admits nothing it cannot",
-      "attribute. Please try again.",
-    ]), 502);
+    return html(
+      errorPage(env, "GitHub did not say who you are", spentSignInProblems([
+        "Palomar could not read your GitHub login, and admits nothing it cannot attribute.",
+      ])),
+      502,
+      { "set-cookie": await intakeCookie(nonce, null, { clear: true }) },
+    );
   }
 
   // Anyone who can prove push access to any public repository can reach this
@@ -1128,15 +1131,18 @@ async function completeSubmission(request, env) {
       },
     });
   } catch (error) {
-    if (!(error instanceof StateContractError)) throw error;
-    reportStateContract(error);
+    const contractFailure = error instanceof StateContractError;
+    if (contractFailure) reportStateContract(error);
+    else console.error("browser-admission", error?.stack ?? String(error));
     return html(
       errorPage(
         env,
-        "Submission intake is temporarily unavailable",
+        contractFailure
+          ? "Submission intake is temporarily unavailable"
+          : "Submission intake could not be completed",
         spentSignInProblems(["This is ours to fix, not yours."]),
       ),
-      503,
+      contractFailure ? 503 : 500,
       { "set-cookie": await intakeCookie(nonce, null, { clear: true }) },
     );
   }
@@ -1355,6 +1361,7 @@ export async function reconcile(env) {
   const inflight = await readInflightIndex(env);
   const open = inflight.open;
   const still = [];
+  let reviewerQueueUnavailable = false;
   for (const item of open) {
     const record = await readState(env, statePath(item.id, "state.json"));
     if (!record.value) continue;               // vanished: do not hold its slot
@@ -1399,7 +1406,21 @@ export async function reconcile(env) {
       // thing that gets retried is a submission still in flight. The reviewer's
       // weekly sweep would rebuild the whole index eventually, but a week is
       // not a repair for a submitter waiting on a review.
-      if (settled === "awaiting-review") await openSubmission(env, item.id);
+      if (settled === "awaiting-review") {
+        if (reviewerQueueUnavailable) {
+          still.push(item);
+          continue;
+        }
+        try {
+          await openSubmission(env, item.id);
+        } catch (error) {
+          if (!(error instanceof StateContractError)) throw error;
+          reportStateContract(error);
+          reviewerQueueUnavailable = true;
+          still.push(item);
+          continue;
+        }
+      }
       const done = {
         ...record.value,
         run,
@@ -1412,9 +1433,9 @@ export async function reconcile(env) {
                        `Reconcile ${item.id}`, record.sha);
       if (settled === "awaiting-review") {
         // Idempotent and cheap. A submission that settles without an entry here
-        // is one the reviewer's pass never looks at, and nothing rebuilds this
-        // file for a single missing id: it is rebuilt when it is absent,
-        // damaged, or stale, and one short is none of those.
+        // is one the reviewer's pass never looks at. The reviewer can rebuild
+        // the derived queue on its maintenance path, but this server never
+        // treats a missing id or malformed queue as an empty one.
         await dispatchReviewer(env).catch(() => false);
       }
       continue;
@@ -1532,7 +1553,15 @@ export default {
         // The limiter counts here too. Intake refuses without it, so a
         // deployment that has lost it is not serving its main purpose, and a
         // health endpoint that answered `ok` would be the last place that knew.
-        const ok = missing.length === 0 && Boolean(env.INTAKE_LIMITER);
+        let ok = missing.length === 0 && Boolean(env.INTAKE_LIMITER);
+        if (ok) {
+          try {
+            await Promise.all([readInflightIndex(env), readReviewerIndex(env)]);
+          } catch (error) {
+            console.error("health-state", error?.stack ?? String(error));
+            ok = false;
+          }
+        }
         return json({ ok }, ok ? 200 : 503);
       }
 

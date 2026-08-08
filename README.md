@@ -136,7 +136,8 @@ does not silently grant unbounded capacity.
 These files are separate GitHub commits, not a transaction. Validation and
 compare-and-swap writes prevent a known-bad index or a concurrent edit from
 being silently overwritten, but a conflict after an earlier commit can leave a
-partial admission or decision for reconciliation or an operator to repair.
+partial admission or decision. A later request can retry an entry whose
+reservation remains in flight; other partial states require an operator.
 
 `index/open.json` holds every submission the reviewer is not yet finished with.
 This server adds an id when it admits one, and the reviewer drops one when the
@@ -198,6 +199,11 @@ Pushes to `main` are deployed automatically after the test suite passes. The
 GitHub repository must provide `CLOUDFLARE_ACCOUNT_ID` and
 `CLOUDFLARE_API_TOKEN` as Actions secrets. CI uploads and promotes a version;
 it does not change the existing route or cron trigger.
+
+Before the first deployment against a State repository, commit both files from
+`state-bootstrap/index/` as described above. `/healthz` verifies those two
+required index contracts as well as configuration, and remains 503 until the
+State bootstrap is valid.
 
 To deploy manually:
 

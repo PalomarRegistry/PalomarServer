@@ -303,6 +303,24 @@ test("the health check says whether the service is up and nothing else", async (
             "the health check still names the state repository");
 });
 
+test("the health check fails closed when either admission index is unusable", async () => {
+  for (const [name, mutate] of [
+    ["missing inflight", (files) => files.delete("index/inflight.json")],
+    ["malformed inflight", (files) => files.set("index/inflight.json", { open: "bad" })],
+    ["missing reviewer queue", (files) => files.delete("index/open.json")],
+    ["malformed reviewer queue", (files) => files.set("index/open.json", { open: "bad" })],
+  ]) {
+    const files = new Map(Object.entries(await fixture()));
+    mutate(files);
+    stubState(Object.fromEntries(files));
+    const response = await worker.fetch(request("/healthz"), ENV);
+    assert.equal(response.status, 503, `${name} was reported healthy`);
+    const body = await response.json();
+    assert.deepEqual(body, { ok: false });
+    assert.ok(!JSON.stringify(body).includes("index"), `${name} leaked private state detail`);
+  }
+});
+
 test("a health check sent as anything but a read is no such page", async () => {
   // Every other route matches on the method and lets the rest fall through to
   // the 404. This one answered POST, PUT and DELETE alike.
@@ -1181,7 +1199,36 @@ test("an unattributable sign-in is refused rather than bucketed", async () => {
   });
   const response = await callback(nonce);
   assert.equal(response.status, 502);
+  const body = await response.text();
+  assert.match(body, /sign-in was spent/);
+  assert.match(body, /Start a new submission from the submission form/);
+  assert.match(response.headers.get("set-cookie"), /Max-Age=0/);
   assert.deepEqual(written.map((item) => item.path), []);
+});
+
+test("an unexpected failure after browser proof consumption is honest and terminal", async () => {
+  const nonce = "0".repeat(64);
+  const pendingPath = `pending/${await digest(nonce)}.json`;
+  const stub = stubOAuth({ push: true, files: { [pendingPath]: PENDING } });
+  const inner = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    const target = new URL(url);
+    if ((init.method ?? "GET") === "PUT" && target.pathname.includes("/contents/submissions/")) {
+      return new Response("upstream failure", { status: 502 });
+    }
+    return inner(url, init);
+  };
+
+  const response = await callback(nonce);
+  assert.equal(response.status, 500);
+  const body = await response.text();
+  assert.match(body, /could not be completed/);
+  assert.match(body, /sign-in was spent/);
+  assert.match(body, /Start a new submission from the submission form/);
+  assert.match(response.headers.get("set-cookie"), /Max-Age=0/);
+  assert.deepEqual(stub.deleted, [pendingPath]);
+  assert.deepEqual(stub.written, []);
+  assert.deepEqual(stub.dispatched, []);
 });
 
 /**
@@ -1931,6 +1978,39 @@ test("a submission that settles is put where the reviewer will find it", async (
   await reconcile(ENV);
   assert.equal(store.get(statePath("a1b2c3d4e5f6", "state.json")).status, "awaiting-review");
   assert.deepEqual(store.get("index/open.json").open, ["a1b2c3d4e5f6"]);
+});
+
+test("one malformed reviewer queue does not retain unrelated terminal slots", async () => {
+  const { reconcile } = await import("../src/index.js");
+  const awaitingId = "a1b2c3d4e5f6";
+  const terminalId = "b1b2c3d4e5f6";
+  const done = {
+    id: 12345, name: `Verify submission ${awaitingId}`, status: "completed",
+    conclusion: "success", html_url: "https://example.test/run",
+    run_started_at: "2026-08-01T00:00:00Z",
+  };
+  const files = {
+    ...(await fixture({ status: "verifying", run: { id: 12345 } })),
+    "index/inflight.json": {
+      open: [
+        { id: awaitingId, owner: "example", submitter: "someone", at: "2026-08-01T00:00:00Z" },
+        { id: terminalId, owner: "other", submitter: "elsewhere", at: "2026-08-01T00:00:01Z" },
+      ],
+    },
+    "index/open.json": { schema_version: 1, open: "malformed" },
+    [statePath(terminalId, "state.json")]: {
+      schema_version: 1, id: terminalId, status: "verification-failed",
+    },
+  };
+  const { store } = stubState(files, [done]);
+
+  assert.deepEqual(await reconcile(ENV), { released: 1, open: 1 });
+  assert.equal(
+    store.get(statePath(awaitingId, "state.json")).status,
+    "verifying",
+    "an unqueued successful verification was settled anyway",
+  );
+  assert.deepEqual(store.get("index/inflight.json").open, [files["index/inflight.json"].open[0]]);
 });
 
 test("a run past the first page is still found", async () => {
