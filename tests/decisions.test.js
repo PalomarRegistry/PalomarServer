@@ -83,6 +83,7 @@ async function fixture(overrides = {}, reviewOverrides = {}) {
     ...overrides,
   };
   return {
+    "index/inflight.json": { open: [] },
     [`index/tokens/${await tokenDigest(ENV, TOKEN)}.json`]: { id: record.id },
     [statePath(record.id, "state.json")]: record,
     [statePath(record.id, "review.json")]: {
@@ -535,6 +536,44 @@ test("a scheduled pass that could not do its work does not report success", asyn
             "the pending sweep never ran");
 });
 
+test("the inflight index refuses obsolete and malformed shapes", async () => {
+  const { reconcile } = await import("../src/index.js");
+  const current = {
+    id: "a1b2c3d4e5f6",
+    owner: "example",
+    submitter: "someone",
+    at: "2026-08-01T00:00:00Z",
+  };
+  const cases = [
+    [{ open: [{ id: current.id, owner: current.owner, at: current.at }] },
+      /open\[0\]\.submitter must be a non-empty login/],
+    [{ open: [{ ...current, at: "yesterday" }] },
+      /open\[0\]\.at must be a timestamp/],
+    [{ open: {} }, /must be an object with an open array/],
+    [null, /must be an object with an open array/],
+  ];
+
+  for (const [value, message] of cases) {
+    stubState(value === null ? {} : { "index/inflight.json": value }, []);
+    await assert.rejects(() => reconcile(ENV), message);
+  }
+});
+
+test("the current inflight contract permits a missing repository owner", async () => {
+  const { reconcile } = await import("../src/index.js");
+  const { store } = stubState({
+    "index/inflight.json": {
+      open: [{
+        id: "a1b2c3d4e5f6", owner: null, submitter: "someone",
+        at: "2026-08-01T00:00:00Z",
+      }],
+    },
+  }, []);
+
+  assert.deepEqual(await reconcile(ENV), { released: 1, open: 0 });
+  assert.deepEqual(store.get("index/inflight.json"), { open: [] });
+});
+
 test("a commit that does not exist is answered, not treated as a fault", async () => {
   // GitHub answers 422 for a well-formed SHA it does not have, and 404 for a
   // malformed one. Both mean the same thing to a submitter.
@@ -839,7 +878,7 @@ test("the dispatch carries only a ref, so every reviewer input needs a default",
  */
 function stubOAuth({ push, files = {}, login = "someone" }) {
   const written = [];
-  const store = new Map(Object.entries(files));
+  const store = new Map(Object.entries({ "index/inflight.json": { open: [] }, ...files }));
   const deleted = [];
   globalThis.fetch = async (url, init = {}) => {
     const target = new URL(url);
@@ -987,7 +1026,7 @@ test("an unattributable sign-in is refused rather than bucketed", async () => {
 function stubAgent(config = {}) {
   const state = { tag: {}, gist: {}, repoId: 987654321, ...config };
   const written = [];
-  const store = new Map();
+  const store = new Map([["index/inflight.json", { open: [] }]]);
   const deleted = [];
   globalThis.fetch = async (url, init = {}) => {
     const target = new URL(url);
@@ -1458,7 +1497,9 @@ test("a run that nobody can find eventually gives its slot back", async () => {
   const old = "2026-01-01T00:00:00Z";
   const files = {
     ...(await fixture({ status: "verifying", created_at: old, run: undefined })),
-    "index/inflight.json": { open: [{ id: "a1b2c3d4e5f6", owner: "example", at: old }] },
+    "index/inflight.json": {
+      open: [{ id: "a1b2c3d4e5f6", owner: "example", submitter: "someone", at: old }],
+    },
   };
   const { written, store } = stubState(files, []);
 
@@ -1489,7 +1530,9 @@ test("a run that is merely queued is left alone however long it waits", async ()
   };
   const files = {
     ...(await fixture({ status: "verifying", created_at: old, run: { id: 999 } })),
-    "index/inflight.json": { open: [{ id: "a1b2c3d4e5f6", owner: "example", at: old }] },
+    "index/inflight.json": {
+      open: [{ id: "a1b2c3d4e5f6", owner: "example", submitter: "someone", at: old }],
+    },
   };
   const { store } = stubState(files, [queued]);
   await reconcile(ENV);
@@ -1510,7 +1553,12 @@ test("a second run carrying the same submission id cannot settle the record", as
   };
   const files = {
     ...(await fixture({ status: "verifying", run: { id: 12345 } })),
-    "index/inflight.json": { open: [{ id: "a1b2c3d4e5f6", owner: "example", at: "2026-08-01T00:00:00Z" }] },
+    "index/inflight.json": {
+      open: [{
+        id: "a1b2c3d4e5f6", owner: "example", submitter: "someone",
+        at: "2026-08-01T00:00:00Z",
+      }],
+    },
   };
   const { store } = stubState(files, [impostor]);
   await reconcile(ENV);
@@ -1531,7 +1579,12 @@ test("a submission that settles is put where the reviewer will find it", async (
   };
   const files = {
     ...(await fixture({ status: "verifying", run: { id: 12345 } })),
-    "index/inflight.json": { open: [{ id: "a1b2c3d4e5f6", owner: "example", at: "2026-08-01T00:00:00Z" }] },
+    "index/inflight.json": {
+      open: [{
+        id: "a1b2c3d4e5f6", owner: "example", submitter: "someone",
+        at: "2026-08-01T00:00:00Z",
+      }],
+    },
     "index/open.json": { schema_version: 1, open: [] },
   };
   const { store } = stubState(files, [done]);
@@ -1598,7 +1651,10 @@ test("a run found again clears a miss recorded before it", async () => {
       run: undefined, run_misses: 1,
     })),
     "index/inflight.json": {
-      open: [{ id: "a1b2c3d4e5f6", owner: "example", at: "2026-01-01T00:00:00Z" }],
+      open: [{
+        id: "a1b2c3d4e5f6", owner: "example", submitter: "someone",
+        at: "2026-01-01T00:00:00Z",
+      }],
     },
   };
   const { store } = stubState(files, [queued]);

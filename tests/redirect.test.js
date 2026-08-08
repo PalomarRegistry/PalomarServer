@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import worker from "../redirect/index.js";
+
+test("the web-platform-only redirect does not enable Node compatibility", async () => {
+  const config = JSON.parse(await readFile(new URL("../redirect/wrangler.jsonc", import.meta.url)));
+  assert.deepEqual(config.compatibility_flags ?? [], []);
+});
 
 for (const host of ["palomarregistry.org", "www.palomarregistry.org"]) {
   test(`${host} redirects a deep link to the canonical domain`, async () => {

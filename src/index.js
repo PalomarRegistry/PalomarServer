@@ -101,6 +101,41 @@ const REQUIRED_SECRETS = [
 // records if it is missing, damaged, or too old to trust.
 const OPEN_INDEX_PATH = "index/open.json";
 
+/**
+ * The one inflight-index shape this pre-launch server writes and reads.
+ *
+ * Treating an absent or malformed `open` as an empty list silently disables
+ * admission limits. Treating an entry without `submitter` as though its owner
+ * were the submitter invents an identity the record never established. State
+ * that predates this contract must be migrated explicitly instead.
+ */
+function inflightOpen(value) {
+  if (value === null || typeof value !== "object" || Array.isArray(value) ||
+      !Array.isArray(value.open)) {
+    throw new Error("index/inflight.json must be an object with an open array");
+  }
+
+  for (const [index, item] of value.open.entries()) {
+    const prefix = `index/inflight.json open[${index}]`;
+    if (item === null || typeof item !== "object" || Array.isArray(item)) {
+      throw new Error(`${prefix} must be an object`);
+    }
+    if (typeof item.id !== "string" || !item.id) {
+      throw new Error(`${prefix}.id must be a non-empty submission id`);
+    }
+    if (item.owner !== null && (typeof item.owner !== "string" || !item.owner)) {
+      throw new Error(`${prefix}.owner must be a non-empty login or null`);
+    }
+    if (typeof item.submitter !== "string" || !item.submitter) {
+      throw new Error(`${prefix}.submitter must be a non-empty login`);
+    }
+    if (typeof item.at !== "string" || !Number.isFinite(Date.parse(item.at))) {
+      throw new Error(`${prefix}.at must be a timestamp`);
+    }
+  }
+  return value.open;
+}
+
 function isCurrentReview(review, submissionId) {
   return review !== null && typeof review === "object" && !Array.isArray(review) &&
     review.schema_version === CURRENT_REVIEW_SCHEMA_VERSION &&
@@ -590,7 +625,7 @@ function describeInterval(seconds) {
  */
 async function admit(env, { owner, submitter }) {
   const inflight = await readState(env, "index/inflight.json");
-  const open = Array.isArray(inflight.value?.open) ? inflight.value.open : [];
+  const open = inflightOpen(inflight.value);
   if (open.length >= MAX_INFLIGHT_TOTAL) {
     return {
       refused: true, status: 503, title: "Palomar is at capacity",
@@ -606,9 +641,7 @@ async function admit(env, { owner, submitter }) {
       ],
     };
   }
-  // `item.submitter ?? item.owner` so entries written before this shipped are
-  // still counted as something rather than silently as nobody.
-  const mine = open.filter((item) => (item.submitter ?? item.owner) === submitter).length;
+  const mine = open.filter((item) => item.submitter === submitter).length;
   if (mine >= MAX_INFLIGHT_PER_SUBMITTER) {
     return {
       refused: true, status: 429, title: "You already have submissions in flight",
@@ -1128,7 +1161,7 @@ async function openSubmission(env, id) {
 
 async function release(env, id) {
   const inflight = await readState(env, "index/inflight.json");
-  const open = Array.isArray(inflight.value?.open) ? inflight.value.open : [];
+  const open = inflightOpen(inflight.value);
   if (!open.some((item) => item.id === id)) return;
   await writeState(env, "index/inflight.json",
                    { open: open.filter((item) => item.id !== id) },
@@ -1148,7 +1181,7 @@ async function release(env, id) {
 // nobody is watching.
 export async function reconcile(env) {
   const inflight = await readState(env, "index/inflight.json");
-  const open = Array.isArray(inflight.value?.open) ? inflight.value.open : [];
+  const open = inflightOpen(inflight.value);
   const still = [];
   for (const item of open) {
     const record = await readState(env, statePath(item.id, "state.json"));

@@ -113,6 +113,12 @@ pending/<digest>.json         # a one-time intake nonce, consumed at the OAuth
                               #   callback or at /api/verify, swept after an hour
 ```
 
+`index/inflight.json` has one current entry contract: `id`, `owner`,
+`submitter`, and `at`, where `owner` may be `null` if GitHub returned none.
+Missing fields or a malformed index stop admission and reconciliation visibly;
+they are not coerced to an empty list or treated as if the repository owner
+were the submitter.
+
 `index/open.json` holds every submission the reviewer is not yet finished with.
 This server adds an id when it admits one, and the reviewer drops one when the
 record says there is nothing left to do to it, so a reviewer pass costs the
