@@ -1000,6 +1000,10 @@ function stubAgent(config = {}) {
       if (!state.gist.exists) return new Response("", { status: 404 });
       return Response.json({
         owner: state.gist.owner ?? { type: "User", login: "someone", id: 4242 },
+        // Secret, and made after the challenge was issued: what the
+        // instructions ask an agent for.
+        public: state.gist.public ?? false,
+        created_at: state.gist.created_at ?? "2030-01-01T00:00:00Z",
         files: { "palomar.txt": { content: state.gist.content } },
       });
     }
@@ -1663,4 +1667,68 @@ test("the page sends back the digest it was shown", async () => {
   assert.match(script, /reviewDigest = review\.review_sha256/);
   assert.match(script, /\{ review_sha256: reviewDigest \}/);
   assert.match(script, /JSON\.stringify\(body\)/);
+});
+
+test("an attempt is spent before anything is spent on it", async () => {
+  // Counting afterwards bounded nothing: calls arriving together all read the
+  // same count, all made their GitHub calls, and all but one then lost the
+  // write race, so one attempt was recorded for many rounds of Palomar's token
+  // being pointed at a repository the caller named.
+  const stub = stubAgent();
+  const begun = await agentSubmit();
+  stub.state.tag = { exists: false };
+
+  const before = stub.written.length;
+  const refused = await agentVerify({ pending_secret: begun.pending_secret, gist_id: "abc123" });
+  assert.equal(refused.status, 403);
+  const body = await refused.json();
+  assert.equal(body.attempts_remaining, 9);
+
+  // The reservation is a write, and it landed before the proof was looked at.
+  const reservation = stub.written.slice(before).find((item) => item.path.startsWith("pending/"));
+  assert.ok(reservation, "no attempt was reserved");
+  assert.equal(reservation.value.attempts, 1);
+});
+
+test("a repository that changed identity is refused before the proof is read", async () => {
+  // GitHub follows renames and transfers silently. Checking afterwards meant
+  // Palomar's token had already made calls against whatever now answers to that
+  // name, for a submission it was always going to refuse.
+  const stub = stubAgent();
+  const begun = await agentSubmit();
+  stub.state.repoId = 111111;
+  stub.state.tag = { exists: true, sha: "1".repeat(40) };
+  stub.state.gist = { exists: true, content: begun.challenge };
+
+  const asked = [];
+  const inner = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    asked.push(new URL(url).pathname);
+    return inner(url, init);
+  };
+  const response = await agentVerify({ pending_secret: begun.pending_secret, gist_id: "abc123" });
+  assert.equal(response.status, 409);
+  assert.match((await response.json()).error, /not the one this submission began for/);
+  assert.ok(!asked.some((path) => path.includes("/git/ref/tags/")), "the tag was still read");
+  assert.ok(!asked.some((path) => path.startsWith("/gists/")), "the gist was still read");
+});
+
+test("a gist that anybody could have found is not identity", async () => {
+  // The challenge is public by construction: it is a tag name on a public
+  // repository. A secret gist has to be handed over deliberately, and one made
+  // before the challenge existed cannot have been made for it.
+  for (const [gist, reason] of [
+    [{ exists: true, public: true }, /public/],
+    [{ exists: true, created_at: "2000-01-01T00:00:00Z" }, /predates/],
+  ]) {
+    const stub = stubAgent();
+    const begun = await agentSubmit();
+    stub.state.tag = { exists: true, sha: "1".repeat(40) };
+    stub.state.gist = { ...gist, content: begun.challenge };
+    const response = await agentVerify({
+      pending_secret: begun.pending_secret, gist_id: "abc123",
+    });
+    assert.equal(response.status, 403);
+    assert.match((await response.json()).gist, reason);
+  }
 });

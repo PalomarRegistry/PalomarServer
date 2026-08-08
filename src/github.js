@@ -369,7 +369,7 @@ export async function challengeTag(token, name, challenge, commit) {
  * sets `owner`, and answers immediately, which is why this and not the events
  * feed: that is documented at anything up to six hours.
  */
-export async function challengeGist(token, id, challenge) {
+export async function challengeGist(token, id, challenge, { issuedAt = null } = {}) {
   if (!/^[0-9a-f]{1,64}$/i.test(String(id ?? ""))) {
     return { ok: false, reason: "that is not a gist id" };
   }
@@ -378,6 +378,23 @@ export async function challengeGist(token, id, challenge) {
   const files = Object.values(gist.files ?? {});
   if (!files.some((file) => String(file?.content ?? "").trim() === challenge)) {
     return { ok: false, reason: "the gist does not carry the challenge" };
+  }
+  // Made for this challenge, rather than found already carrying it. The
+  // challenge is public by construction: it is a tag name on a public
+  // repository, so anybody watching can read it. Requiring the gist to postdate
+  // the intake means one that existed beforehand cannot be pointed at, and
+  // it costs a legitimate agent nothing, since it creates the gist after being
+  // told what to put in it.
+  if (issuedAt && Date.parse(gist.created_at ?? 0) < Date.parse(issuedAt) - 60_000) {
+    return { ok: false, reason: "the gist predates this challenge" };
+  }
+  // The instructions say secret and the check should say it too. A public gist
+  // is discoverable, so somebody talked into posting the challenge in one could
+  // be found rather than having to hand the id over, which is the difference
+  // between an attack that needs cooperation and one that needs a single
+  // careless act.
+  if (gist.public !== false) {
+    return { ok: false, reason: "the gist is public; Palomar reads secret gists" };
   }
   const owner = gist.owner;
   if (owner?.type !== "User" || !owner?.login || !owner?.id) {

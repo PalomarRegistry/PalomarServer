@@ -730,41 +730,64 @@ async function verifySubmission(request, env) {
     return json({ error: "that intake is a browser sign-in, not an agent submission" }, 409);
   }
 
-  // Bounded, so /api/verify cannot be used to make Palomar's token hammer a
-  // repository the caller names.
+  // The attempt is spent before anything is spent on it, and claimed under the
+  // sha it was read at. Counting afterwards bounded nothing: twenty calls
+  // arriving together all read `attempts: 0`, all made their GitHub calls, and
+  // nineteen then lost the write race, so one attempt was recorded for twenty
+  // rounds of Palomar's token being pointed at a repository the caller named.
+  // Whoever wins the write is the only one that goes on to spend anything;
+  // everybody else is told to try again, which costs them a round trip and
+  // costs Palomar nothing.
   const attempts = Number(pending.value.attempts ?? 0) + 1;
   if (attempts > MAX_VERIFY_ATTEMPTS) {
     await deleteState(env, pendingPath, pending.sha, "Discard an intake that could not be proved");
     return json({ error: "too many attempts; start again" }, 429);
   }
+  const reserved = { ...pending.value, attempts };
+  try {
+    await writeState(env, pendingPath, reserved, "Take a verification attempt", pending.sha);
+  } catch (error) {
+    return json({ error: "that submission is being verified; try again" }, 409);
+  }
+  const remaining = MAX_VERIFY_ATTEMPTS - attempts;
 
   const { repository, commit, challenge } = pending.value;
+
+  // Before the proof, not after. The repository must be the one the challenge
+  // was issued for, and GitHub follows renames and transfers silently, so
+  // checking afterwards meant Palomar's token had already made calls against
+  // whatever now answers to that name for a submission it was always going to
+  // refuse.
+  const repo = await fetchRepository(env.GITHUB_TOKEN, repository);
+  if (pending.value.repository_id && repo?.id !== pending.value.repository_id) {
+    return json({
+      error: "that repository is not the one this submission began for",
+      attempts_remaining: remaining,
+    }, 409);
+  }
+
   const tag = await challengeTag(env.SUBMISSION_TOKEN, repository, challenge, commit);
   const gist = tag.ok
-    ? await challengeGist(env.SUBMISSION_TOKEN, body.gist_id, challenge)
+    ? await challengeGist(env.SUBMISSION_TOKEN, body.gist_id, challenge, {
+        issuedAt: pending.value.created_at,
+      })
     : { ok: false };
   if (!tag.ok || !gist.ok) {
-    await writeState(
-      env, pendingPath, { ...pending.value, attempts }, "Record a failed proof", pending.sha,
-    ).catch(() => {});
     return json({
       error: "that proof was refused",
       tag: tag.ok ? "accepted" : tag.reason,
       gist: gist.ok ? "accepted" : (gist.reason ?? "not checked: the tag was refused"),
-      attempts_remaining: MAX_VERIFY_ATTEMPTS - attempts,
+      attempts_remaining: remaining,
     }, 403);
   }
 
-  // The repository must be the one the challenge was issued for. GitHub follows
-  // renames and transfers silently, so the name alone would not notice.
-  const repo = await fetchRepository(env.GITHUB_TOKEN, repository);
-  if (pending.value.repository_id && repo?.id !== pending.value.repository_id) {
-    return json({ error: "that repository is not the one this submission began for" }, 409);
-  }
-
   // Consumed only once the proof holds, and its failure is fatal: this is the
-  // only thing between one challenge and two submissions.
-  if (!(await deleteState(env, pendingPath, pending.sha, "Consume pending intake"))) {
+  // only thing between one challenge and two submissions. Re-read because the
+  // reservation above replaced the blob, so the sha this started with is no
+  // longer the one the delete has to name.
+  const held = await readState(env, pendingPath);
+  if (!held.value ||
+      !(await deleteState(env, pendingPath, held.sha, "Consume pending intake"))) {
     return json({ error: "that submission could not be claimed; try again" }, 409);
   }
 
