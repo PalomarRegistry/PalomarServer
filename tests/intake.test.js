@@ -313,6 +313,7 @@ test("a submission must select one Comparator configuration explicitly", async (
   const response = await worker.fetch(
     new Request("https://submit.palomar-registry.org/submit", {
       method: "POST",
+      headers: { "sec-fetch-site": "same-origin" },
       body: new URLSearchParams({
         repository: "owner/name",
         commit: "nonsense",
@@ -380,6 +381,7 @@ test("a rejected submission gives back the layout it was told", async () => {
   const response = await worker.fetch(
     new Request("https://submit.palomar-registry.org/submit", {
       method: "POST",
+      headers: { "sec-fetch-site": "same-origin" },
       body: new URLSearchParams({
         repository: "owner/name",
         commit: "nonsense",
@@ -437,6 +439,7 @@ test("a directory really called `invalid` is a path, not an error", async () => 
   const response = await worker.fetch(
     new Request("https://submit.palomar-registry.org/submit", {
       method: "POST",
+      headers: { "sec-fetch-site": "same-origin" },
       body: new URLSearchParams({
         repository: "owner/name", commit: "nope",
         authorization_relationship: "maintainer", project_path: "invalid",
@@ -479,6 +482,7 @@ test("a path that escapes the repository is refused", async () => {
     const response = await worker.fetch(
       new Request("https://submit.palomar-registry.org/submit", {
         method: "POST",
+        headers: { "sec-fetch-site": "same-origin" },
         body: new URLSearchParams({
           repository: "owner/name", commit: "a".repeat(40),
           authorization_relationship: "maintainer", project_path: bad,
@@ -543,7 +547,11 @@ test("an intake refused by the throttle never reaches GitHub", async () => {
       ["/api/verify", JSON.stringify({ pending_secret: "b".repeat(64) }), /slow down/],
     ]) {
       const response = await worker.fetch(
-        new Request(`https://submit.palomar-registry.org${path}`, { method: "POST", body }),
+        new Request(`https://submit.palomar-registry.org${path}`, {
+          method: "POST",
+          headers: { "sec-fetch-site": "same-origin" },
+          body,
+        }),
         env,
       );
       assert.equal(response.status, 429, `${path} was not refused`);
@@ -646,7 +654,11 @@ test("intake refuses when the limiter binding has gone missing", async () => {
       ["/api/verify", JSON.stringify({ pending_secret: "b".repeat(64) })],
     ]) {
       const response = await worker.fetch(
-        new Request(`https://submit.palomar-registry.org${path}`, { method: "POST", body }),
+        new Request(`https://submit.palomar-registry.org${path}`, {
+          method: "POST",
+          headers: { "sec-fetch-site": "same-origin" },
+          body,
+        }),
         env,
       );
       assert.equal(response.status, 503, `${path} was not refused`);

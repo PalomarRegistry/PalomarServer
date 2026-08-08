@@ -131,6 +131,48 @@ function sessionToken(request) {
   return match ? match[1] : null;
 }
 
+/**
+ * The same credential, presented rather than carried.
+ *
+ * A cookie is ambient: the browser attaches it to whatever it is talked into
+ * sending, which is what makes cross-site request forgery a thing at all. A
+ * header is not, because nothing else can set it on somebody's behalf. So an
+ * agent holding the access token says so explicitly and is exempt from the
+ * same-origin requirement below, and a browser keeps the cookie and is not.
+ */
+function bearerToken(request) {
+  const match = /^Bearer ([0-9a-f]{64})$/.exec(request.headers.get("authorization") ?? "");
+  return match ? match[1] : null;
+}
+
+/**
+ * Whether a request carrying the session cookie was made by this site.
+ *
+ * `SameSite=Strict` is scoped to the registrable domain, not to the origin, so
+ * `data.palomar-registry.org` is same-site with this host and a document
+ * executing there has the cookie attached to whatever it sends here. That
+ * origin serves render bundles built from submitted Lean source, which is the
+ * one place in Palomar that runs something a submitter wrote. The render CSP
+ * blocks the outbound request today, which means the render CSP is currently
+ * part of this server's defence against forgery. That is not how the layering
+ * is meant to read, and the documentation is emphatic that no layer should be
+ * removed because another one happens to cover it.
+ *
+ * `Sec-Fetch-Site` answers the question directly and needs no allowlist to
+ * maintain. `Origin` is the fallback for anything that does not send it. A
+ * request that sends neither is not a browser, and gets told to present the
+ * token as a header instead, where no ambient credential is involved.
+ */
+function madeByThisSite(request) {
+  const site = request.headers.get("sec-fetch-site");
+  if (site) return site === "same-origin" || site === "none";
+  const origin = request.headers.get("origin");
+  // `null` is what a sandboxed or redirected context sends, and it is exactly
+  // the case that must not be read as "no origin, so no problem".
+  if (origin === null) return false;
+  return origin === new URL(request.url).origin;
+}
+
 function now() {
   return new Date().toISOString().replace(/\.\d+Z$/, "Z");
 }
@@ -356,8 +398,21 @@ async function beginSubmission(request, env, { machine = false } = {}) {
   // which reads the review, consents to registration, and withdraws.
   const nonce = newAccessToken();
   const challenge = newAccessToken();
+  // A third secret, and only the browser path needs it. `state` travels in a
+  // URL, and a URL can be handed to somebody else: anything the callback can
+  // recover from `state` alone, it can recover in a browser that never saw the
+  // form. So an attacker who begins an intake and passes on the authorize link
+  // gets a submission attributed to whoever follows it, with their slot, their
+  // interval, and the attacker's wording in the record. The pending intake is
+  // therefore *found* by `state` and *unlocked* by a cookie, and the second
+  // half never leaves the browser that started it.
+  //
+  // The agent path needs none of this: `pending_secret` is returned in a
+  // response body and never travels in a URL at all.
+  const binding = machine ? null : newAccessToken();
   const pending = {
     schema_version: 2,
+    ...(binding ? { binding_sha256: await digest(binding) } : {}),
     method: machine ? "tag-and-gist" : "oauth",
     challenge,
     repository_id: repo.id ?? null,
@@ -415,7 +470,45 @@ async function beginSubmission(request, env, { machine = false } = {}) {
   authorize.searchParams.set("redirect_uri", `${new URL(request.url).origin}/oauth/callback`);
   authorize.searchParams.set("scope", "read:user");
   authorize.searchParams.set("state", nonce);
-  return Response.redirect(authorize.toString(), 303);
+  // `Response.redirect` answers with immutable headers, so the redirect is
+  // built by hand in order to carry the cookie.
+  return new Response(null, {
+    status: 303,
+    headers: {
+      location: authorize.toString(),
+      "set-cookie": await intakeCookie(nonce, binding),
+      ...SECURITY_HEADERS,
+    },
+  });
+}
+
+/**
+ * The cookie that unlocks one pending intake, named after the intake it opens.
+ *
+ * Named rather than fixed, because a submitter may have two submissions in
+ * flight and the form does not stop them starting a second in another tab. One
+ * name would mean the second sign-in overwrote the first one's cookie, and then
+ * finishing the first would look exactly like the attack this exists to catch:
+ * refused, and its pending record deleted, for doing nothing wrong.
+ *
+ * `Lax`, not `Strict`. The callback is a top-level navigation from github.com,
+ * and `Strict` would withhold the cookie on the one request that needs it. Lax
+ * is enough here because the cookie confers nothing on its own: it only opens a
+ * record whose name the holder must already know.
+ */
+async function intakeCookie(nonce, binding, { clear = false } = {}) {
+  const name = `palomar_intake_${(await digest(nonce)).slice(0, 16)}`;
+  const attributes = "Path=/oauth/callback; HttpOnly; Secure; SameSite=Lax";
+  return clear
+    ? `${name}=; ${attributes}; Max-Age=0`
+    : `${name}=${binding}; ${attributes}; Max-Age=900`;
+}
+
+function intakeBinding(request, nonceDigest) {
+  const name = `palomar_intake_${nonceDigest.slice(0, 16)}`;
+  const match = new RegExp(`(?:^|;\\s*)${name}=([0-9a-f]{64})(?:;|$)`)
+    .exec(request.headers.get("cookie") ?? "");
+  return match ? match[1] : null;
 }
 
 /**
@@ -711,13 +804,35 @@ async function completeSubmission(request, env) {
   const nonce = url.searchParams.get("state");
   if (!code || !nonce) return html(errorPage(env, "That sign-in did not complete", []), 400);
 
-  const pendingPath = `pending/${await digest(nonce)}.json`;
+  const nonceDigest = await digest(nonce);
+  const pendingPath = `pending/${nonceDigest}.json`;
   const pending = await readState(env, pendingPath);
   if (!pending.value) {
     return html(errorPage(env, "That sign-in has already been used", [
       "Start again from the submission form.",
     ]), 400);
   }
+
+  // The cookie half of the intake, checked before the code is exchanged. The
+  // only way to be here without it is that the browser finishing this sign-in
+  // is not the browser that began it, which is the attack. The record is
+  // consumed rather than left open, so the same link cannot be offered to the
+  // next person, and the cookie is cleared so a stale one cannot confuse the
+  // submitter's own retry.
+  const presented = intakeBinding(request, nonceDigest);
+  const expected = pending.value.binding_sha256;
+  if (!expected || !presented || (await digest(presented)) !== expected) {
+    await deleteState(env, pendingPath, pending.sha, "Discard an intake finished elsewhere");
+    return html(
+      errorPage(env, "That sign-in did not begin here", [
+        "Palomar completes a sign-in only in the browser that started it.",
+        "If this was you, start again from the submission form.",
+      ]),
+      400,
+      { "set-cookie": await intakeCookie(nonce, null, { clear: true }) },
+    );
+  }
+
   const tokenResponse = await fetch("https://github.com/login/oauth/access_token", {
     method: "POST",
     headers: { accept: "application/json", "content-type": "application/json" },
@@ -800,7 +915,44 @@ async function completeSubmission(request, env) {
     return html(errorPage(env, admitted.title, admitted.detail), admitted.status);
   }
   const { token } = admitted;
-  return Response.redirect(`${new URL(request.url).origin}/s#${token}`, 303);
+  return new Response(null, {
+    status: 303,
+    headers: {
+      location: `${new URL(request.url).origin}/s#${token}`,
+      // Spent. Leaving it would put a live secret in the browser for fifteen
+      // minutes against a record that no longer exists.
+      "set-cookie": await intakeCookie(nonce, null, { clear: true }),
+      ...SECURITY_HEADERS,
+    },
+  });
+}
+
+/**
+ * Who is asking, and whether they were allowed to ask this way.
+ *
+ * Returns the submission entry, or a Response to send instead. Mutating
+ * endpoints pass `mutating`, because the same-origin requirement is about a
+ * credential being spent without its holder meaning to, and reading a review
+ * cross-origin is already stopped by the browser refusing to hand over the
+ * response.
+ */
+async function caller(env, request, { mutating = false } = {}) {
+  const presented = bearerToken(request);
+  if (presented) {
+    const entry = await loadByToken(env, presented);
+    return entry ?? json({ error: "not found" }, 404);
+  }
+  if (mutating && !madeByThisSite(request)) {
+    return json({
+      error: "that request did not come from this site",
+      detail:
+        "A browser must make this call from Palomar's own pages. A client that " +
+        "is not a browser should present the access token as " +
+        "`Authorization: Bearer <token>` instead of exchanging it for a cookie.",
+    }, 403);
+  }
+  const entry = await loadByToken(env, sessionToken(request));
+  return entry ?? json({ error: "not found" }, 404);
 }
 
 async function loadByToken(env, token) {
@@ -1062,6 +1214,19 @@ export default {
         );
       }
       if (request.method === "POST" && url.pathname === "/submit") {
+        // Guarded as well as bound. The cookie stops a sign-in being finished
+        // elsewhere, but not an intake being *started* in somebody's browser by
+        // a page they were visiting: that browser would then hold the right
+        // cookie for a submission the attacker composed. Agents use
+        // `/api/submit`, and llms.txt tells them not to drive this one.
+        if (!madeByThisSite(request)) {
+          return html(
+            errorPage(env, "That submission did not come from this site", [
+              "Start again from Palomar's own submission form.",
+            ]),
+            403,
+          );
+        }
         return (
           (await intakeThrottle(env, request)) ?? (await beginSubmission(request, env))
         );
@@ -1081,6 +1246,19 @@ export default {
         // status page posts a form here; an agent following llms.txt posts a
         // form here; a body this cannot read came from something that guessed,
         // and 400 with a reason is what stops it guessing again.
+        //
+        // This is also what hands out the ambient credential, so a cross-site
+        // post to it fixes a session in somebody's browser. A client that is
+        // not a browser has no reason to be here: it can present the token as
+        // a header on each call and never hold a cookie at all.
+        if (!madeByThisSite(request)) {
+          return json({
+            error: "that request did not come from this site",
+            detail:
+              "Present the access token as `Authorization: Bearer <token>` " +
+              "rather than exchanging it for a cookie.",
+          }, 403);
+        }
         let token;
         try {
           token = (await request.formData()).get("token");
@@ -1092,8 +1270,8 @@ export default {
         return json({ ok: true }, 200, sessionCookie(String(token)));
       }
       if (request.method === "POST" && url.pathname === "/withdraw") {
-        const entry = await loadByToken(env, sessionToken(request));
-        if (!entry) return json({ error: "not found" }, 404);
+        const entry = await caller(env, request, { mutating: true });
+        if (entry instanceof Response) return entry;
         if (CLOSED.has(entry.record.status)) {
           return json({ error: `already ${entry.record.status}` }, 409);
         }
@@ -1111,16 +1289,16 @@ export default {
       if (request.method === "GET" && url.pathname === "/api/review") {
         // The submitter sees the outcome and useful prose, but not the internal
         // three-way decision, scores, pass records, or finding severities.
-        const entry = await loadByToken(env, sessionToken(request));
-        if (!entry) return json({ error: "not found" }, 404);
+        const entry = await caller(env, request);
+        if (entry instanceof Response) return entry;
         const review = await readState(env, statePath(entry.record.id, "review.json"));
         if (!review.value) return json({ error: "no review yet" }, 404);
         if (!isCurrentReview(review.value, entry.record.id)) return obsoleteReview();
         return json(submitterReview(review.value));
       }
       if (request.method === "POST" && url.pathname === "/register") {
-        const entry = await loadByToken(env, sessionToken(request));
-        if (!entry) return json({ error: "not found" }, 404);
+        const entry = await caller(env, request, { mutating: true });
+        if (entry instanceof Response) return entry;
         if (CLOSED.has(entry.record.status)) {
           return json({ error: `already ${entry.record.status}` }, 409);
         }
@@ -1156,8 +1334,8 @@ export default {
         return json({ ok: true });
       }
       if (request.method === "GET" && url.pathname === "/api/submission") {
-        const entry = await loadByToken(env, sessionToken(request));
-        if (!entry) return json({ error: "not found" }, 404);
+        const entry = await caller(env, request);
+        if (entry instanceof Response) return entry;
         const record = await refresh(env, entry);
         return json({
           id: record.id,

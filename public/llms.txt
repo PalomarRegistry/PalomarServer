@@ -79,8 +79,10 @@ register permanently.
 
 ## After that, monitoring is yours
 
-With the token you can drive the rest over plain HTTP. `POST /session` once with
-`token=<the fragment>` to exchange it for a cookie, then:
+With the token you can drive the rest over plain HTTP. Send it as a header on
+every call:
+
+    Authorization: Bearer <the fragment>
 
 - `GET /api/submission` — status, events, the verification run, the paths the
   submission asked for, and an estimate of how long review is taking.
@@ -89,9 +91,13 @@ With the token you can drive the rest over plain HTTP. `POST /session` once with
   issue, before it is registered.
 - `POST /withdraw` — abandon the submission.
 
-`POST /session` reads a form, not JSON. A JSON body is refused with 400 and a
-JSON `error` saying so. The cookie lasts twelve hours, so a long-running agent
-exchanges the token again rather than assuming it still holds.
+Use the header rather than `POST /session`. That endpoint exchanges the token
+for a cookie, which is what the status page in a browser uses, and a cookie is
+ambient: the browser attaches it to whatever it is talked into sending. So the
+calls that change something refuse a cookie that did not come from Palomar's own
+pages, and `/session` itself refuses a caller that is not one. A header is not
+ambient, nothing else can set it on your behalf, and it does not expire after
+twelve hours the way the cookie does.
 
 Poll `GET /api/submission` at a human pace; a submission takes minutes, not
 seconds. Once a minute is fast enough while something is running, and once

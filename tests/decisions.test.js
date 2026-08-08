@@ -93,10 +93,13 @@ async function fixture(overrides = {}, reviewOverrides = {}) {
   };
 }
 
-function request(path, method = "GET", cookie = `palomar_session=${TOKEN}`) {
+// What a browser on Palomar's own pages sends. The mutating endpoints refuse a
+// cookie that did not come from this site, so a helper that omitted this would
+// be testing the refusal rather than the endpoint.
+function request(path, method = "GET", cookie = `palomar_session=${TOKEN}`, extra = {}) {
   return new Request(`https://submit.palomar-registry.org${path}`, {
     method,
-    headers: cookie ? { cookie } : {},
+    headers: { "sec-fetch-site": "same-origin", ...(cookie ? { cookie } : {}), ...extra },
   });
 }
 
@@ -271,7 +274,7 @@ test("a body the form endpoints cannot read is not reported as Palomar's fault",
     const response = await worker.fetch(
       new Request(`https://submit.palomar-registry.org${path}`, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", "sec-fetch-site": "same-origin" },
         body: JSON.stringify({ token: TOKEN, repository: "example/project" }),
       }),
       ENV,
@@ -291,6 +294,7 @@ test("a well-formed form body is still read exactly as it was", async () => {
   const response = await worker.fetch(
     new Request("https://submit.palomar-registry.org/session", {
       method: "POST",
+      headers: { "sec-fetch-site": "same-origin" },
       body: new URLSearchParams({ token: TOKEN }),
     }),
     ENV,
@@ -541,6 +545,7 @@ test("the session exchange actually sets the cookie it promises", async () => {
   const response = await worker.fetch(
     new Request("https://submit.palomar-registry.org/session", {
       method: "POST",
+      headers: { "sec-fetch-site": "same-origin" },
       body: new URLSearchParams({ token: TOKEN }),
     }),
     ENV,
@@ -561,6 +566,7 @@ test("the cookie the exchange sets is the one the status page is read with", asy
   const exchange = await worker.fetch(
     new Request("https://submit.palomar-registry.org/session", {
       method: "POST",
+      headers: { "sec-fetch-site": "same-origin" },
       body: new URLSearchParams({ token: TOKEN }),
     }),
     ENV,
@@ -856,8 +862,14 @@ function stubOAuth({ push, files = {}, login = "someone" }) {
   return { written, deleted, store };
 }
 
+// The browser half of the intake. `beginSubmission` mints this, keeps only its
+// digest, and hands the secret back in a cookie scoped to the callback; the
+// callback refuses anything that cannot present it.
+const BINDING = "9".repeat(64);
+
 const PENDING = {
-  schema_version: 1,
+  schema_version: 2,
+  binding_sha256: await digest(BINDING),
   repository: "example/project",
   commit: "1".repeat(40),
   existing_id: null,
@@ -868,9 +880,12 @@ const PENDING = {
   created_at: "2026-08-01T00:00:00Z",
 };
 
-async function callback(nonce) {
+async function callback(nonce, { binding = BINDING } = {}) {
+  const name = `palomar_intake_${(await digest(nonce)).slice(0, 16)}`;
   return worker.fetch(
-    new Request(`https://submit.palomar-registry.org/oauth/callback?code=c&state=${nonce}`),
+    new Request(`https://submit.palomar-registry.org/oauth/callback?code=c&state=${nonce}`, {
+      headers: binding ? { cookie: `${name}=${binding}` } : {},
+    }),
     ENV,
   );
 }
@@ -1160,6 +1175,7 @@ test("a browser sign-in cannot be completed as an agent submission", async () =>
   await worker.fetch(
     new Request("https://submit.palomar-registry.org/submit", {
       method: "POST",
+      headers: { "sec-fetch-site": "same-origin" },
       body: new URLSearchParams(AGENT_SUBMISSION),
     }),
     ENV,
@@ -1229,4 +1245,125 @@ test("the tag name is one GitHub will actually accept", async () => {
   assert.doesNotMatch(tagName, /^[0-9a-f]{40}$/);
   assert.doesNotMatch(tagName, /^[0-9a-f]{64}$/);
   assert.ok(tagName.endsWith(begun.challenge), "the tag no longer carries the challenge");
+});
+
+test("a sign-in completed in a browser that did not begin it is refused", async () => {
+  // `state` travels in a URL, and a URL can be handed to somebody else. Without
+  // the cookie half, an attacker who begins an intake and passes on the
+  // authorize link gets a submission attributed to whoever follows it.
+  for (const binding of [null, "0".repeat(64)]) {
+    const nonce = "7".repeat(64);
+    const path = `pending/${await digest(nonce)}.json`;
+    const { written, deleted } = stubOAuth({ push: true, files: { [path]: PENDING } });
+    const response = await callback(nonce, { binding });
+
+    assert.equal(response.status, 400);
+    assert.match(await response.text(), /did not begin here/);
+    // Nothing admitted, and the code never exchanged.
+    assert.deepEqual(written.map((item) => item.path), []);
+    // Consumed, so the same link cannot be offered to the next person.
+    assert.deepEqual(deleted, [path]);
+  }
+});
+
+test("two submissions in two tabs do not overwrite each other's binding", async () => {
+  // A fixed cookie name would mean starting the second sign-in clobbered the
+  // first one's cookie, and finishing the first would then look exactly like
+  // the attack above: refused, and its intake deleted, for doing nothing wrong.
+  // A submitter may have two in flight, so this is ordinary use, not an edge.
+  const first = "1".repeat(64);
+  const second = "2".repeat(64);
+  const names = await Promise.all(
+    [first, second].map(async (nonce) =>
+      `palomar_intake_${(await digest(nonce)).slice(0, 16)}`),
+  );
+  assert.notEqual(names[0], names[1], "both intakes would share one cookie");
+
+  // Both cookies present at once, as a browser would hold them.
+  const cookie = `${names[0]}=${BINDING}; ${names[1]}=${BINDING}`;
+  for (const nonce of [first, second]) {
+    const { written } = stubOAuth({
+      push: true,
+      files: { [`pending/${await digest(nonce)}.json`]: PENDING },
+    });
+    const response = await worker.fetch(
+      new Request(
+        `https://submit.palomar-registry.org/oauth/callback?code=c&state=${nonce}`,
+        { headers: { cookie } },
+      ),
+      ENV,
+    );
+    assert.equal(response.status, 303, "a legitimate sign-in was refused");
+    assert.ok(written.find((item) => item.path.endsWith("state.json")));
+  }
+});
+
+test("a mutating call that did not come from this site is refused", async () => {
+  // SameSite is scoped to the registrable domain, so data.palomar-registry.org
+  // is same-site with this host and its documents carry the session cookie
+  // here. That origin serves renders built from submitted Lean source.
+  for (const path of ["/register", "/withdraw"]) {
+    for (const headers of [
+      { "sec-fetch-site": "same-site" },
+      { "sec-fetch-site": "cross-site" },
+      { origin: "https://data.palomar-registry.org" },
+      { origin: "null" },
+      {},
+    ]) {
+      const { written } = stubState(await fixture());
+      // Built directly: the shared helper sends `same-origin` by default, which
+      // is exactly the header these cases must not carry.
+      const response = await worker.fetch(
+        new Request(`https://submit.palomar-registry.org${path}`, {
+          method: "POST",
+          headers: { cookie: `palomar_session=${TOKEN}`, ...headers },
+        }),
+        ENV,
+      );
+      assert.equal(response.status, 403, `${path} accepted ${JSON.stringify(headers)}`);
+      assert.equal(written.length, 0, `${path} wrote something`);
+    }
+  }
+});
+
+test("an agent presenting the token as a header needs no cookie and no origin", async () => {
+  // The cookie is ambient and a header is not, so there is nothing to forge.
+  // This is the path llms.txt points a client that is not a browser at.
+  const { written } = stubState(await fixture());
+  const response = await worker.fetch(
+    new Request("https://submit.palomar-registry.org/register", {
+      method: "POST",
+      headers: { authorization: `Bearer ${TOKEN}` },
+    }),
+    ENV,
+  );
+  assert.equal(response.status, 200);
+  const state = written.find((item) => item.path.endsWith("state.json"));
+  assert.equal(state.value.registration_consent, true);
+
+  // And a token that is not one is still nobody.
+  const wrong = await worker.fetch(
+    new Request("https://submit.palomar-registry.org/register", {
+      method: "POST",
+      headers: { authorization: `Bearer ${"b".repeat(64)}` },
+    }),
+    ENV,
+  );
+  assert.equal(wrong.status, 404);
+});
+
+test("the session exchange refuses a cross-site caller", async () => {
+  // This is what hands out the ambient credential, so a cross-site post to it
+  // fixes a session in somebody's browser.
+  stubState(await fixture());
+  const response = await worker.fetch(
+    new Request("https://submit.palomar-registry.org/session", {
+      method: "POST",
+      headers: { "sec-fetch-site": "cross-site" },
+      body: new URLSearchParams({ token: TOKEN }),
+    }),
+    ENV,
+  );
+  assert.equal(response.status, 403);
+  assert.equal(response.headers.get("set-cookie"), null);
 });
