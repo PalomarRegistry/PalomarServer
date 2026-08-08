@@ -872,6 +872,9 @@ function stubOAuth({ push, files = {}, login = "someone", id = 4242, engagement 
       listed.push(resource);
       const answer = engagement[resource];
       if (answer === "unreadable") return new Response("no", { status: 500 });
+      // A list GitHub accepts and never answers, which is not the same as one
+      // that fails: nothing here rejects, so only a deadline ends it.
+      if (answer === "never") return new Promise(() => {});
       const page = Number(target.searchParams.get("page") ?? "1");
       return Response.json(page === 1 ? (answer ?? []) : []);
     }
@@ -1819,7 +1822,13 @@ test("a repository nobody trusted has touched is refused, and nothing is written
   // The refusal names what would have counted, in the words the configuration
   // used, because "some engagement" is not something anybody can act on.
   assert.match(body, /a star, a fork, an issue, a pull request, a comment, or a commit/);
-  assert.deepEqual(stub.written.map((item) => item.path), []);
+  // No submission, no admission slot, no token. The one thing a refusal does
+  // write is the wait it charges for having spent the GitHub budget, which the
+  // rate-limit test below is about.
+  assert.deepEqual(
+    stub.written.map((item) => item.path).filter((path) => !path.startsWith("index/rate/")),
+    [],
+  );
 });
 
 test("each kind of engagement counts, and only the ones configured", async () => {
@@ -2039,4 +2048,68 @@ test("a rule that names nothing real stops the deployment rather than itself", a
     assert.equal((await health(env)).status, status, `healthz on ${configured}`);
     assert.equal((await form(env)).status, status, `the form on ${configured}`);
   }
+});
+
+test("an eligibility refusal costs the submitter a start", async () => {
+  // The expensive refusal. It reads up to thirty-five lists against the token
+  // the whole pipeline shares, and it used to return before the interval was
+  // written, so the next attempt was allowed immediately: one address could
+  // spend the hour's GitHub budget in an hour and stop Palomar recording
+  // anything at all. An eligibility refusal is deterministic, so there is
+  // nothing a fast retry could discover anyway.
+  const nonce = "ec".padEnd(64, "0");
+  const ratePath = `index/rate/${await digest(`${ENV.TOKEN_PEPPER}:4242`)}.json`;
+  const stub = stubOAuth({
+    push: true,
+    files: {
+      ...(await pending(nonce)),
+      [ENDORSERS]: { schema_version: 1, registered: [{ login: "trusted", id: 77 }] },
+    },
+    engagement: { stargazers: [{ login: "a-stranger", id: 5 }] },
+  });
+  const response = await callback(nonce, { env: endorsing() });
+
+  assert.equal(response.status, 403);
+  const rate = stub.written.find((item) => item.path === ratePath);
+  assert.ok(rate, "a refusal that spent the GitHub budget recorded no start");
+  assert.equal(rate.value.starts, 1);
+  assert.equal(rate.value.interval_seconds, 60);
+  assert.ok(Date.parse(rate.value.next_allowed_at) > Date.now(), "no wait was imposed");
+  // Still nothing admitted: the start is a charge, not a submission.
+  assert.deepEqual(stub.written.filter((item) => item.path.endsWith("state.json")), []);
+});
+
+test("a deployment misconfiguration is not charged to the submitter", async () => {
+  const nonce = "ed".padEnd(64, "0");
+  const ratePath = `index/rate/${await digest(`${ENV.TOKEN_PEPPER}:4242`)}.json`;
+  const stub = stubOAuth({ push: true, files: await pending(nonce), engagement: {} });
+  const response = await callback(nonce, { env: endorsing() });
+
+  assert.equal(response.status, 503);
+  assert.equal(stub.written.find((item) => item.path === ratePath), undefined,
+    "our misconfiguration put a wait on somebody else's account");
+});
+
+test("a GitHub that never answers does not hold the sign-in open", async () => {
+  // The page cap bounds requests, not time. A list that hangs would otherwise
+  // hold a submitter's redirect for as long as it liked, and a sign-in that
+  // never comes back is worse than either answer this rule can give.
+  const nonce = "ee".padEnd(64, "0");
+  const stub = stubOAuth({
+    push: true,
+    files: {
+      ...(await pending(nonce)),
+      [ENDORSERS]: { schema_version: 1, registered: [{ login: "trusted", id: 77 }] },
+    },
+    engagement: { stargazers: "never" },
+  });
+  const started = Date.now();
+  const response = await callback(nonce, { env: endorsing({ SUBMISSION_ENDORSEMENT: "star" }) });
+  const took = Date.now() - started;
+
+  assert.equal(response.status, 303);
+  assert.ok(took < 20_000, `the sign-in took ${took}ms`);
+  const record = stub.written.find((item) => item.path.endsWith("state.json"));
+  assert.equal(record.value.endorsement.outcome, "unchecked");
+  assert.match(record.value.endorsement.reason, /gave up/);
 });

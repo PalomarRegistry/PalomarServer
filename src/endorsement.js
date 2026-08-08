@@ -49,6 +49,13 @@ export const SIGNALS = {
     // their own name or not at all: a deployment asking for `issue` alone and
     // silently accepting pull requests would be a wider rule than the one it
     // configured.
+    //
+    // The cost of that is worth knowing before configuring this one on its own.
+    // There is no way to ask REST for issues that are not pull requests, and on
+    // a busy repository almost all of them are: a hundred rows of mathlib4's
+    // list held one issue. So on such a repository this signal spends its whole
+    // budget and answers `unchecked` rather than yes or no. Configured beside
+    // `star` and `commit`, which are dense, that costs nothing.
     scans: [{
       path: "issues?state=all",
       actor: (item) => (item?.pull_request ? null : item?.user),
@@ -86,6 +93,22 @@ export const SIGNALS = {
 // paid by every submission that reaches here.
 const PER_PAGE = 100;
 const MAX_PAGES = 5;
+
+/**
+ * How long the whole check may take, whatever the repository is.
+ *
+ * The page cap bounds requests. It does not bound time, and time is the one a
+ * submitter experiences: one page of mathlib4's review comments answers in four
+ * seconds, and five pages of seven lists measured twenty-six. That is spent
+ * inside the sign-in redirect, with somebody watching a blank tab, and long
+ * enough to be taken for a hang.
+ *
+ * A repository quiet enough for this rule to be deciding anything answers in
+ * about a third of a second, so this costs the case it exists for nothing. Past
+ * here the answer is `unchecked` and the submission is admitted, exactly as when
+ * GitHub will not answer at all.
+ */
+const BUDGET_MS = 5000;
 
 /**
  * What this deployment is asking for, read from the environment.
@@ -179,6 +202,12 @@ function recognise(endorsers, actor) {
 async function scan(env, repositoryName, { path, actor }, endorsers, state) {
   for (let page = 1; page <= MAX_PAGES; page += 1) {
     if (state.found) return;
+    // Never before the first page, so every configured list is asked once
+    // however slow its neighbours were. After that, only while there is time.
+    if (page > 1 && Date.now() > state.deadline) {
+      state.unread.push(`${path}: out of time after ${page - 1} page(s)`);
+      return;
+    }
     const separator = path.includes("?") ? "&" : "?";
     const query = `${separator}per_page=${PER_PAGE}&page=${page}`;
     let items;
@@ -270,7 +299,9 @@ export async function requireEndorsement(env, { repositoryName, principal }) {
     if (typeof principal.login === "string") endorsers.logins.delete(principal.login.toLowerCase());
   }
 
-  const state = { found: null, unread: [], signalOf: new Map() };
+  const state = {
+    found: null, unread: [], signalOf: new Map(), deadline: Date.now() + BUDGET_MS,
+  };
   const scans = [];
   for (const name of policy.signals) {
     for (const item of SIGNALS[name].scans) {
@@ -278,7 +309,20 @@ export async function requireEndorsement(env, { repositoryName, principal }) {
       scans.push(item);
     }
   }
-  await Promise.all(scans.map((item) => scan(env, repositoryName, item, endorsers, state)));
+  // The deadline above is checked between pages, which bounds how many rounds
+  // are started and not how long one takes. A single request that never answers
+  // would hold the sign-in open for as long as it liked, so the budget is also
+  // enforced from outside. Whatever is still in flight when this returns is
+  // abandoned; the answer is already `unchecked`, and the response is what the
+  // submitter is waiting on.
+  const finished = Promise
+    .all(scans.map((item) => scan(env, repositoryName, item, endorsers, state)))
+    .then(() => true, () => true);
+  const completed = await Promise.race([
+    finished,
+    new Promise((resolve) => setTimeout(() => resolve(false), BUDGET_MS + 500)),
+  ]);
+  if (!completed && !state.found) state.unread.push(`gave up after ${BUDGET_MS}ms`);
 
   if (state.found) {
     return {
@@ -300,6 +344,9 @@ export async function requireEndorsement(env, { repositoryName, principal }) {
   }
   return {
     refused: true,
+    // This one read the repository's lists, so the caller charges the submitter
+    // a start for it. The 503s above did not, and are ours rather than theirs.
+    spent: true,
     status: 403,
     title: "That repository has no connection to Palomar yet",
     detail: [

@@ -569,6 +569,38 @@ async function rateLimit(env, principal) {
   return { refused: false, path, sha: current.sha, interval, starts: Number(current.value?.starts ?? 0) };
 }
 
+/**
+ * Charge this submitter for a start, so the next one costs them longer.
+ *
+ * Every path that has spent Palomar's shared GitHub budget on somebody calls
+ * this, not only the one that admitted them. That distinction was worth a
+ * denial of service: an eligibility refusal returned before the interval was
+ * ever written, so the interval stayed at nothing, so the next attempt was
+ * allowed immediately — and the attempt it allowed is the most expensive one
+ * there is, up to thirty-five list reads against a token the whole pipeline
+ * shares. One address inside one data centre could have spent the hour's budget
+ * in an hour and stopped Palomar recording anything at all.
+ *
+ * Doubling and not merely a floor, because an eligibility refusal is
+ * deterministic: the same repository refuses again, so there is nothing for a
+ * fast retry to discover. A misconfiguration at this end is not charged for,
+ * which is the whole reason the caller distinguishes the two refusals.
+ */
+async function recordStart(env, limit, principal, note) {
+  if (!limit.path) return;
+  const interval = limit.starts === 0 ? RATE_FLOOR_SECONDS : limit.interval * 2;
+  const at = now();
+  await writeState(env, limit.path, {
+    schema_version: 1,
+    login: principal?.login ?? null,
+    starts: limit.starts + 1,
+    interval_seconds: interval,
+    last_start_at: at,
+    next_allowed_at: new Date(Date.parse(at) + interval * 1000).toISOString()
+      .replace(/\.\d+Z$/, "Z"),
+  }, note, limit.sha).catch(() => {});
+}
+
 function describeInterval(seconds) {
   if (seconds < 90) return `${Math.max(1, Math.round(seconds))} seconds`;
   const minutes = Math.round(seconds / 60);
@@ -644,7 +676,15 @@ async function admitSubmission(env, { pending, owner, submitter, proof }) {
     repositoryName: pending.repository,
     principal: proof?.principal,
   });
-  if (endorsed.refused) return endorsed;
+  if (endorsed.refused) {
+    // `spent` is the 403 that read the repository's lists, not the 503 that
+    // found this deployment misconfigured. Charging for the second would bill a
+    // submitter for our mistake, and would do it to every submitter at once.
+    if (endorsed.spent) {
+      await recordStart(env, limit, proof?.principal, "Record a refused start");
+    }
+    return endorsed;
+  }
   const admission = await admit(env, { owner, submitter });
   if (admission.refused) return admission;
   const { inflight, open } = admission;
@@ -694,18 +734,7 @@ async function admitSubmission(env, { pending, owner, submitter, proof }) {
     { id },
     `Index submission ${id}`,
   );
-  if (limit.path) {
-    const interval = limit.starts === 0 ? RATE_FLOOR_SECONDS : limit.interval * 2;
-    await writeState(env, limit.path, {
-      schema_version: 1,
-      login: proof.principal.login,
-      starts: limit.starts + 1,
-      interval_seconds: interval,
-      last_start_at: record.created_at,
-      next_allowed_at: new Date(Date.now() + interval * 1000).toISOString()
-        .replace(/\.\d+Z$/, "Z"),
-    }, `Record a submission start`, limit.sha).catch(() => {});
-  }
+  await recordStart(env, limit, proof?.principal, "Record a submission start");
   await dispatchVerification(env, {
     repositoryName: record.repository,
     commit: record.commit,

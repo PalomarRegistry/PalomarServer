@@ -105,12 +105,33 @@ same name, so the id is what makes an entry survive a rename; a login alone is
 matched by name, without regard to case, which is what makes the hand-written
 half usable by somebody who has a name and not a number.
 
-Reading is bounded: five pages of a hundred per list, run together, stopping at
-the first person found. A list GitHub will not answer, or one longer than that,
-is not an absence: the submission is admitted and its record says `unchecked`
-and why. Turning a bad minute at GitHub into a refusal aimed at somebody who did
-nothing wrong is the worse failure, and the rate limit and the admission caps
-are still in front of whatever comes next.
+Reading is bounded twice: five pages of a hundred per list, and five seconds for
+all of them together. The second bound is the one that matters, because the
+first bounds requests rather than time, and time is what a submitter
+experiences: one page of mathlib4's review comments answers in four seconds, and
+five pages of seven lists measured twenty-six, spent inside the sign-in redirect
+with somebody watching a blank tab. A repository quiet enough for this rule to
+be deciding anything answers in about a third of a second.
+
+A list GitHub will not answer, one longer than the budget, and a check that ran
+out of time are all treated alike and none of them is an absence: the submission
+is admitted and its record says `unchecked` and why. Turning a bad minute at
+GitHub into a refusal aimed at somebody who did nothing wrong is the worse
+failure, and the rate limit and the admission caps are still in front of
+whatever comes next.
+
+A refusal is charged for. It spends up to thirty-five list reads against the
+token the whole pipeline shares, so it records a start against the submitter's
+interval exactly as an admission does, and the next attempt waits twice as long.
+Without that the most expensive path through intake was also the only one with
+no backoff behind it, and one address could have spent the hour's GitHub budget
+in an hour. A 503 from a misconfiguration here is not charged for: that one is
+ours.
+
+Note that `issue` is a poor signal on its own. REST cannot be asked for issues
+that are not pull requests, and on a busy repository nearly all of them are, so
+that list spends its budget and answers `unchecked`. Beside `star` and `commit`,
+which are dense, it costs nothing.
 
 ## Configuration
 
