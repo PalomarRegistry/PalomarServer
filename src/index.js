@@ -735,9 +735,14 @@ async function verifySubmission(request, env) {
   // arriving together all read `attempts: 0`, all made their GitHub calls, and
   // nineteen then lost the write race, so one attempt was recorded for twenty
   // rounds of Palomar's token being pointed at a repository the caller named.
-  // Whoever wins the write is the only one that goes on to spend anything;
-  // everybody else is told to try again, which costs them a round trip and
-  // costs Palomar nothing.
+  //
+  // What this buys is accounting that holds under concurrency, not exclusive
+  // ownership. Every reservation that succeeds allows exactly one proof check
+  // and records exactly one attempt, so ten is the most that can ever be spent.
+  // Callers racing on the same sha cannot both have it and the losers are told
+  // to try again, but one arriving after a reservation has landed can take the
+  // next attempt while the first check is still running. That is fine: the
+  // bound is on how many checks happen, not on how many happen at once.
   const attempts = Number(pending.value.attempts ?? 0) + 1;
   if (attempts > MAX_VERIFY_ATTEMPTS) {
     await deleteState(env, pendingPath, pending.sha, "Discard an intake that could not be proved");
