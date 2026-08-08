@@ -135,12 +135,25 @@ function now() {
   return new Date().toISOString().replace(/\.\d+Z$/, "Z");
 }
 
-// Pending intake that may exist at once, across everybody. A bound on the size
-// of the damage rather than on who caused it: `listState` refuses to enumerate
-// a directory at the contents API's thousand-name limit, so a `pending/` allowed
-// to reach that takes the sweep down with it and the flood stops being something
-// an hour undoes. Refusing well short of it keeps the sweep able to do its job,
-// which is the only thing that clears one.
+/** Ours to fix, not the submitter's, and never phrased as though it were. */
+function intakeUnavailable(env, machine) {
+  return machine
+    ? json({ error: "submission intake is temporarily unavailable" }, 503)
+    : html(
+        errorPage(env, "Submission intake is temporarily unavailable", [
+          "This is ours to fix, not yours. Please try again in a moment.",
+        ]),
+        503,
+      );
+}
+
+// Pending intake that may exist at once, across everybody. This limits ordinary
+// growth rather than bounding it: the count is read and the record is written
+// separately, so intakes arriving together can overshoot it. What it is really
+// for is the cliff behind it. `listState` refuses to enumerate a directory at
+// the contents API's thousand-name limit, so a `pending/` allowed to reach that
+// takes `sweepPending` down with it, and a flood the sweep cannot clear stops
+// being something an hour undoes.
 const MAX_PENDING = 200;
 
 /**
@@ -159,15 +172,21 @@ const MAX_PENDING = 200;
  *
  * Keyed on the connecting address, which is free to rotate, and counted per
  * data centre rather than globally. Neither of those makes it an authorisation
- * boundary and nothing here treats it as one. It is here so that the cost of a
- * flood scales with the attacker's effort instead of with a for-loop, and the
- * ceiling above is what actually bounds the damage.
+ * boundary and nothing here treats it as one, and neither makes exhaustion
+ * impossible: enough addresses still get through, each still spending the read
+ * that the ceiling above costs. What it does is make the rate from any one
+ * address small enough that a flood takes effort rather than a for-loop.
  */
 async function intakeThrottle(env, request, { machine = false } = {}) {
-  // Absent under `node --test`, where there is no platform to bind. Production
-  // has it because `wrangler.jsonc` declares it; a deployment that somehow does
-  // not still has MAX_PENDING behind it.
-  if (!env.INTAKE_LIMITER) return null;
+  // `wrangler.jsonc` declares this, so its absence is configuration drift and
+  // not a dependency having a bad moment. Refusing is the point: the moment the
+  // cheapest protection has gone missing is the wrong moment to start doing
+  // without it, and a limiter that quietly is not there reads exactly like one
+  // that is.
+  if (!env.INTAKE_LIMITER) {
+    console.error("configuration", "missing: INTAKE_LIMITER");
+    return intakeUnavailable(env, machine);
+  }
   const key = request.headers.get("cf-connecting-ip") ?? "unknown";
   const { success } = await env.INTAKE_LIMITER.limit({ key });
   if (success) return null;
@@ -295,16 +314,20 @@ async function beginSubmission(request, env, { machine = false } = {}) {
   }
   if (problems.length) return rejected(...problems);
 
-  // Ahead of the two reads below, so a flood costs one call rather than three,
-  // and ahead of the write, which is the one that cannot be undone cheaply.
-  // A listing that throws is treated the same as a full one: both mean this
-  // directory can no longer be managed, and admitting more into it is the one
-  // response that is certainly wrong.
-  let pendingCount = 0;
+  // Ahead of the two reads below and ahead of the write, so an intake refused
+  // here costs one call rather than three. For one that is allowed it adds a
+  // call, which is the price of the cliff `MAX_PENDING` is guarding; the write
+  // it goes on to protect is the expensive one, because content writes are what
+  // GitHub's secondary limit counts.
+  let pendingCount;
   try {
     pendingCount = (await listState(env, "pending")).length;
   } catch (error) {
-    pendingCount = MAX_PENDING;
+    // Not the same thing as full, and saying it was would be a refusal the
+    // submitter cannot act on: a read that failed says nothing at all about how
+    // many submissions are in progress. The real reason goes to the log.
+    console.error("pending", String(error?.stack ?? error));
+    return intakeUnavailable(env, machine);
   }
   if (pendingCount >= MAX_PENDING) {
     return rejected("Palomar has too many submissions in progress. Please try again shortly.");
@@ -1001,7 +1024,11 @@ export default {
       // every other route here.
       if ((request.method === "GET" || request.method === "HEAD") &&
           url.pathname === "/healthz") {
-        return json({ ok: missing.length === 0 }, missing.length ? 503 : 200);
+        // The limiter counts here too. Intake refuses without it, so a
+        // deployment that has lost it is not serving its main purpose, and a
+        // health endpoint that answered `ok` would be the last place that knew.
+        const ok = missing.length === 0 && Boolean(env.INTAKE_LIMITER);
+        return json({ ok }, ok ? 200 : 503);
       }
 
       // A missing secret is not a per-request failure to be reported five ways;

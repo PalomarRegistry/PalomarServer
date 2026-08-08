@@ -19,6 +19,10 @@ const ENV = {
   TOKEN_PEPPER: "test-pepper",
   OAUTH_CLIENT_ID: "client-id",
   OAUTH_CLIENT_SECRET: "client-secret",
+  // Declared in wrangler.jsonc, so production always has one. Intake refuses
+  // without it, and a test env lacking it would exercise that refusal instead
+  // of whatever the test is about.
+  INTAKE_LIMITER: { limit: async () => ({ success: true }) },
 };
 const form = intakeForm(ENV);
 
@@ -623,4 +627,69 @@ test("a deployment missing a secret serves nothing, and says so without naming i
   const ok = await worker.fetch(new Request("https://submit.palomar-registry.org/healthz"), ENV);
   assert.equal(ok.status, 200);
   assert.deepEqual(await ok.json(), { ok: true });
+});
+
+test("intake refuses when the limiter binding has gone missing", async () => {
+  // The binding is declared in wrangler.jsonc, so its absence is configuration
+  // drift. Failing open would remove the cheapest protection at exactly the
+  // moment the configuration is already wrong, and nothing would say so.
+  const previous = globalThis.fetch;
+  globalThis.fetch = async () => {
+    throw new Error("intake reached GitHub without a limiter");
+  };
+  try {
+    const env = { ...ENV };
+    delete env.INTAKE_LIMITER;
+    for (const [path, body] of [
+      ["/submit", new URLSearchParams({ repository: "owner/name" })],
+      ["/api/submit", JSON.stringify({ repository: "owner/name" })],
+      ["/api/verify", JSON.stringify({ pending_secret: "b".repeat(64) })],
+    ]) {
+      const response = await worker.fetch(
+        new Request(`https://submit.palomar-registry.org${path}`, { method: "POST", body }),
+        env,
+      );
+      assert.equal(response.status, 503, `${path} was not refused`);
+    }
+    // And the health check knows, rather than being the last place to find out.
+    const health = await worker.fetch(
+      new Request("https://submit.palomar-registry.org/healthz"),
+      env,
+    );
+    assert.equal(health.status, 503);
+    assert.deepEqual(await health.json(), { ok: false });
+  } finally {
+    globalThis.fetch = previous;
+  }
+});
+
+test("a pending directory that cannot be read is not called full", async () => {
+  // A read that failed says nothing about how many submissions are in progress.
+  // Answering "too many submissions in progress" would be a refusal the
+  // submitter can neither act on nor believe, and it would blame them for it.
+  const previous = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    if (new URL(url).pathname.endsWith("/contents/pending")) {
+      return new Response("upstream is having a moment", { status: 502 });
+    }
+    throw new Error("intake went past an unreadable pending directory");
+  };
+  try {
+    const response = await worker.fetch(
+      new Request("https://submit.palomar-registry.org/api/submit", {
+        method: "POST",
+        body: JSON.stringify({
+          repository: "owner/name",
+          commit: "c".repeat(40),
+          authorization_relationship: "maintainer",
+          comparator_config_path: "comparator.json",
+        }),
+      }),
+      ENV,
+    );
+    assert.equal(response.status, 503);
+    assert.match((await response.json()).error, /temporarily unavailable/);
+  } finally {
+    globalThis.fetch = previous;
+  }
 });
