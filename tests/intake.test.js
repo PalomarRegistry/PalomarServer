@@ -8,7 +8,22 @@ import { readFile } from "node:fs/promises";
 import { intakeForm } from "../src/html.js";
 import worker from "../src/index.js";
 
-const ENV = { SITE_URL: "https://palomar-registry.org", STATE_REPO: "x/y" };
+// A configured deployment. The server refuses everything without these, so a
+// test env missing one would exercise the refusal rather than the thing it is
+// about.
+const ENV = {
+  SITE_URL: "https://palomar-registry.org",
+  STATE_REPO: "x/y",
+  GITHUB_TOKEN: "state-token",
+  SUBMISSION_TOKEN: "dispatch-token",
+  TOKEN_PEPPER: "test-pepper",
+  OAUTH_CLIENT_ID: "client-id",
+  OAUTH_CLIENT_SECRET: "client-secret",
+  // Declared in wrangler.jsonc, so production always has one. Intake refuses
+  // without it, and a test env lacking it would exercise that refusal instead
+  // of whatever the test is about.
+  INTAKE_LIMITER: { limit: async () => ({ success: true }) },
+};
 const form = intakeForm(ENV);
 
 test("the disclosure says what is recorded and when it becomes public", () => {
@@ -509,5 +524,172 @@ test("nothing promises to publish an identity the record cannot hold", async () 
     assert.doesNotMatch(text, /identity becomes? public/i, `${name} still discloses an identity`);
     assert.doesNotMatch(text, /and your identity public/i, `${name} still discloses an identity`);
     assert.match(text, /identity is not made public/i, `${name} does not say identity is withheld`);
+  }
+});
+
+test("an intake refused by the throttle never reaches GitHub", async () => {
+  // The whole point of the throttle is where it sits. A refusal that still
+  // spent a GitHub call would leave the tokens exhaustible by exactly the loop
+  // it exists to stop, and nothing downstream would report that.
+  const previous = globalThis.fetch;
+  globalThis.fetch = async () => {
+    throw new Error("a throttled intake reached GitHub");
+  };
+  try {
+    const env = { ...ENV, INTAKE_LIMITER: { limit: async () => ({ success: false }) } };
+    for (const [path, body, expected] of [
+      ["/submit", new URLSearchParams({ repository: "owner/name" }), /Too many submissions/],
+      ["/api/submit", JSON.stringify({ repository: "owner/name" }), /slow down/],
+      ["/api/verify", JSON.stringify({ pending_secret: "b".repeat(64) }), /slow down/],
+    ]) {
+      const response = await worker.fetch(
+        new Request(`https://submit.palomar-registry.org${path}`, { method: "POST", body }),
+        env,
+      );
+      assert.equal(response.status, 429, `${path} was not refused`);
+      assert.match(await response.text(), expected);
+    }
+  } finally {
+    globalThis.fetch = previous;
+  }
+});
+
+test("intake stops before it can fill the pending directory", async () => {
+  // `listState` refuses to enumerate a directory at the contents API's limit,
+  // so a `pending/` allowed to reach it takes the sweep down with it and the
+  // flood stops being something an hour undoes.
+  const previous = globalThis.fetch;
+  const seen = [];
+  globalThis.fetch = async (url) => {
+    const path = new URL(url).pathname;
+    seen.push(path);
+    if (path.endsWith("/contents/pending")) {
+      const entries = Array.from({ length: 200 }, (_, i) => ({
+        type: "file", name: `${i}.json`, sha: "s",
+      }));
+      return new Response(JSON.stringify(entries), { status: 200 });
+    }
+    throw new Error(`intake went past the ceiling to ${path}`);
+  };
+  try {
+    const response = await worker.fetch(
+      new Request("https://submit.palomar-registry.org/api/submit", {
+        method: "POST",
+        body: JSON.stringify({
+          repository: "owner/name",
+          commit: "c".repeat(40),
+          authorization_relationship: "maintainer",
+          comparator_config_path: "comparator.json",
+        }),
+      }),
+      ENV,
+    );
+    assert.equal(response.status, 400);
+    assert.match(await response.text(), /too many submissions in progress/);
+    // The ceiling is checked before the repository and the commit are read, so
+    // a flood costs one call rather than three.
+    assert.deepEqual(seen.filter((p) => !p.endsWith("/contents/pending")), []);
+  } finally {
+    globalThis.fetch = previous;
+  }
+});
+
+test("a deployment missing a secret serves nothing, and says so without naming it", async () => {
+  // TOKEN_PEPPER used to default to the empty string, so losing it kept every
+  // digest working and quietly removed the property it was there for.
+  for (const missing of ["TOKEN_PEPPER", "GITHUB_TOKEN", "OAUTH_CLIENT_SECRET"]) {
+    const env = { ...ENV };
+    delete env[missing];
+
+    const health = await worker.fetch(
+      new Request("https://submit.palomar-registry.org/healthz"),
+      env,
+    );
+    assert.equal(health.status, 503, `${missing} did not fail the health check`);
+    const body = await health.json();
+    assert.equal(body.ok, false);
+    // What is missing goes to the log, not to whoever asked. Naming it here
+    // would tell a stranger which secrets this deployment has lost.
+    assert.deepEqual(Object.keys(body), ["ok"]);
+
+    for (const path of ["/", "/submit", "/api/review"]) {
+      const response = await worker.fetch(
+        new Request(`https://submit.palomar-registry.org${path}`, {
+          method: path === "/submit" ? "POST" : "GET",
+        }),
+        env,
+      );
+      assert.equal(response.status, 503, `${path} still served without ${missing}`);
+    }
+  }
+
+  // And a configured one says so rather than staying silent about it.
+  const ok = await worker.fetch(new Request("https://submit.palomar-registry.org/healthz"), ENV);
+  assert.equal(ok.status, 200);
+  assert.deepEqual(await ok.json(), { ok: true });
+});
+
+test("intake refuses when the limiter binding has gone missing", async () => {
+  // The binding is declared in wrangler.jsonc, so its absence is configuration
+  // drift. Failing open would remove the cheapest protection at exactly the
+  // moment the configuration is already wrong, and nothing would say so.
+  const previous = globalThis.fetch;
+  globalThis.fetch = async () => {
+    throw new Error("intake reached GitHub without a limiter");
+  };
+  try {
+    const env = { ...ENV };
+    delete env.INTAKE_LIMITER;
+    for (const [path, body] of [
+      ["/submit", new URLSearchParams({ repository: "owner/name" })],
+      ["/api/submit", JSON.stringify({ repository: "owner/name" })],
+      ["/api/verify", JSON.stringify({ pending_secret: "b".repeat(64) })],
+    ]) {
+      const response = await worker.fetch(
+        new Request(`https://submit.palomar-registry.org${path}`, { method: "POST", body }),
+        env,
+      );
+      assert.equal(response.status, 503, `${path} was not refused`);
+    }
+    // And the health check knows, rather than being the last place to find out.
+    const health = await worker.fetch(
+      new Request("https://submit.palomar-registry.org/healthz"),
+      env,
+    );
+    assert.equal(health.status, 503);
+    assert.deepEqual(await health.json(), { ok: false });
+  } finally {
+    globalThis.fetch = previous;
+  }
+});
+
+test("a pending directory that cannot be read is not called full", async () => {
+  // A read that failed says nothing about how many submissions are in progress.
+  // Answering "too many submissions in progress" would be a refusal the
+  // submitter can neither act on nor believe, and it would blame them for it.
+  const previous = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    if (new URL(url).pathname.endsWith("/contents/pending")) {
+      return new Response("upstream is having a moment", { status: 502 });
+    }
+    throw new Error("intake went past an unreadable pending directory");
+  };
+  try {
+    const response = await worker.fetch(
+      new Request("https://submit.palomar-registry.org/api/submit", {
+        method: "POST",
+        body: JSON.stringify({
+          repository: "owner/name",
+          commit: "c".repeat(40),
+          authorization_relationship: "maintainer",
+          comparator_config_path: "comparator.json",
+        }),
+      }),
+      ENV,
+    );
+    assert.equal(response.status, 503);
+    assert.match((await response.json()).error, /temporarily unavailable/);
+  } finally {
+    globalThis.fetch = previous;
   }
 });

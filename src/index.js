@@ -6,6 +6,7 @@ import {
   normalizeCommit,
   normalizePalomarId,
   normalizeRepository,
+  pepper,
   statePath,
   tokenDigest,
 } from "./submission.js";
@@ -77,6 +78,18 @@ const MAX_VERIFY_ATTEMPTS = 10;
 const CURRENT_REVIEW_SCHEMA_VERSION = 2;
 const REVIEW_DECISIONS = new Set(["accept", "revise", "reject"]);
 
+// Without any one of these the server cannot do the thing it claims to do, and
+// two of them fail silently rather than loudly if they are missing: TOKEN_PEPPER
+// would have degraded every peppered digest to an unsalted one, and the OAuth
+// pair would have sent submitters to GitHub to be refused there instead of here.
+const REQUIRED_SECRETS = [
+  "TOKEN_PEPPER",
+  "GITHUB_TOKEN",
+  "SUBMISSION_TOKEN",
+  "OAUTH_CLIENT_ID",
+  "OAUTH_CLIENT_SECRET",
+];
+
 // The reviewer's queue: every submission it is not yet finished with. This end
 // adds one when it admits a submission; the reviewer drops one when the record
 // says there is nothing left to do to it, and rebuilds the whole file from the
@@ -120,6 +133,71 @@ function sessionToken(request) {
 
 function now() {
   return new Date().toISOString().replace(/\.\d+Z$/, "Z");
+}
+
+/** Ours to fix, not the submitter's, and never phrased as though it were. */
+function intakeUnavailable(env, machine) {
+  return machine
+    ? json({ error: "submission intake is temporarily unavailable" }, 503)
+    : html(
+        errorPage(env, "Submission intake is temporarily unavailable", [
+          "This is ours to fix, not yours. Please try again in a moment.",
+        ]),
+        503,
+      );
+}
+
+// Pending intake that may exist at once, across everybody. This limits ordinary
+// growth rather than bounding it: the count is read and the record is written
+// separately, so intakes arriving together can overshoot it. What it is really
+// for is the cliff behind it. `listState` refuses to enumerate a directory at
+// the contents API's thousand-name limit, so a `pending/` allowed to reach that
+// takes `sweepPending` down with it, and a flood the sweep cannot clear stops
+// being something an hour undoes.
+const MAX_PENDING = 200;
+
+/**
+ * The cheapest possible refusal, before an intake has cost anything.
+ *
+ * `rateLimit` runs inside `admitSubmission`, which is after the proof. That is
+ * the right place to slow a submitter who keeps starting and never finishing,
+ * and the wrong place to stop somebody who never intended to prove anything:
+ * by the time an intake reaches the proof it has already spent a read on the
+ * repository, a read on the commit, and a commit to the state repository, all
+ * on tokens the whole pipeline shares. GitHub's secondary limit is a few
+ * hundred content writes an hour, so a short loop against an unauthenticated
+ * endpoint could stop Palomar recording anything at all.
+ *
+ * So this runs first and touches nothing: no state, no network, no token.
+ *
+ * Keyed on the connecting address, which is free to rotate, and counted per
+ * data centre rather than globally. Neither of those makes it an authorisation
+ * boundary and nothing here treats it as one, and neither makes exhaustion
+ * impossible: enough addresses still get through, each still spending the read
+ * that the ceiling above costs. What it does is make the rate from any one
+ * address small enough that a flood takes effort rather than a for-loop.
+ */
+async function intakeThrottle(env, request, { machine = false } = {}) {
+  // `wrangler.jsonc` declares this, so its absence is configuration drift and
+  // not a dependency having a bad moment. Refusing is the point: the moment the
+  // cheapest protection has gone missing is the wrong moment to start doing
+  // without it, and a limiter that quietly is not there reads exactly like one
+  // that is.
+  if (!env.INTAKE_LIMITER) {
+    console.error("configuration", "missing: INTAKE_LIMITER");
+    return intakeUnavailable(env, machine);
+  }
+  const key = request.headers.get("cf-connecting-ip") ?? "unknown";
+  const { success } = await env.INTAKE_LIMITER.limit({ key });
+  if (success) return null;
+  return machine
+    ? json({ error: "too many submissions were started from this address; slow down" }, 429)
+    : html(
+        errorPage(env, "Too many submissions were started from here", [
+          "Please wait a minute and try again.",
+        ]),
+        429,
+      );
 }
 
 /**
@@ -236,6 +314,25 @@ async function beginSubmission(request, env, { machine = false } = {}) {
   }
   if (problems.length) return rejected(...problems);
 
+  // Ahead of the two reads below and ahead of the write, so an intake refused
+  // here costs one call rather than three. For one that is allowed it adds a
+  // call, which is the price of the cliff `MAX_PENDING` is guarding; the write
+  // it goes on to protect is the expensive one, because content writes are what
+  // GitHub's secondary limit counts.
+  let pendingCount;
+  try {
+    pendingCount = (await listState(env, "pending")).length;
+  } catch (error) {
+    // Not the same thing as full, and saying it was would be a refusal the
+    // submitter cannot act on: a read that failed says nothing at all about how
+    // many submissions are in progress. The real reason goes to the log.
+    console.error("pending", String(error?.stack ?? error));
+    return intakeUnavailable(env, machine);
+  }
+  if (pendingCount >= MAX_PENDING) {
+    return rejected("Palomar has too many submissions in progress. Please try again shortly.");
+  }
+
   const repo = await fetchRepository(env.GITHUB_TOKEN, repositoryName);
   if (!repo) {
     return rejected(`${repositoryName} could not be read. Palomar accepts public repositories only.`);
@@ -344,7 +441,7 @@ async function beginSubmission(request, env, { machine = false } = {}) {
 const RATE_FLOOR_SECONDS = 60;
 
 async function ratePath(env, principalId) {
-  return `index/rate/${await digest(`${env.TOKEN_PEPPER ?? ""}:${principalId}`)}.json`;
+  return `index/rate/${await digest(`${pepper(env)}:${principalId}`)}.json`;
 }
 
 async function rateLimit(env, principal) {
@@ -916,17 +1013,58 @@ export default {
     const url = new URL(request.url);
 
     try {
+      const missing = REQUIRED_SECRETS.filter((name) => !env[name]);
+
+      // Answered ahead of the refusal below, because a health endpoint that
+      // stops answering when the configuration is wrong cannot report the one
+      // thing worth reporting. Whether the service is up, and nothing else:
+      // naming what is missing here would tell anybody who asked which secrets
+      // this deployment has and which it has lost, and the log already says it
+      // where an operator can read it and a stranger cannot. GET and HEAD, like
+      // every other route here.
+      if ((request.method === "GET" || request.method === "HEAD") &&
+          url.pathname === "/healthz") {
+        // The limiter counts here too. Intake refuses without it, so a
+        // deployment that has lost it is not serving its main purpose, and a
+        // health endpoint that answered `ok` would be the last place that knew.
+        const ok = missing.length === 0 && Boolean(env.INTAKE_LIMITER);
+        return json({ ok }, ok ? 200 : 503);
+      }
+
+      // A missing secret is not a per-request failure to be reported five ways;
+      // it is a deployment that should not be serving. Refusing everything is
+      // also what makes the pepper's absence impossible to miss, which is the
+      // whole reason it stopped defaulting to the empty string.
+      if (missing.length) {
+        console.error("configuration", `missing: ${missing.join(", ")}`);
+        return html(
+          errorPage(env, "Palomar is not configured", [
+            "This deployment is missing something it needs and is not accepting",
+            "submissions. This is ours to fix, not yours.",
+          ]),
+          503,
+        );
+      }
+
       if (request.method === "GET" && url.pathname === "/") {
         return html(intakeForm(env));
       }
       if (request.method === "POST" && url.pathname === "/api/submit") {
-        return await beginSubmission(request, env, { machine: true });
+        return (
+          (await intakeThrottle(env, request, { machine: true })) ??
+          (await beginSubmission(request, env, { machine: true }))
+        );
       }
       if (request.method === "POST" && url.pathname === "/api/verify") {
-        return await verifySubmission(request, env);
+        return (
+          (await intakeThrottle(env, request, { machine: true })) ??
+          (await verifySubmission(request, env))
+        );
       }
       if (request.method === "POST" && url.pathname === "/submit") {
-        return await beginSubmission(request, env);
+        return (
+          (await intakeThrottle(env, request)) ?? (await beginSubmission(request, env))
+        );
       }
       if (request.method === "GET" && url.pathname === "/oauth/callback") {
         return await completeSubmission(request, env);
@@ -1040,19 +1178,6 @@ export default {
           registered_url: record.registered_url ?? null,
           events: record.events,
         });
-      }
-      if ((request.method === "GET" || request.method === "HEAD") &&
-          url.pathname === "/healthz") {
-        // Whether the service is up, and nothing else. It used to name the
-        // state repository, which is private, holds every record and every
-        // pending intake, and is nobody's business who has not been told about
-        // it: a monitoring endpoint that answers anybody is the last place to
-        // put the name of the thing worth attacking. It also answered any
-        // method at all, including POST, where every other route here matches
-        // on the method and lets the rest fall through to the 404 page. HEAD
-        // as well as GET, because that is what a health checker sends when it
-        // only wants the status line.
-        return json({ ok: true });
       }
       return html(errorPage(env, "No such page", []), 404);
     } catch (error) {

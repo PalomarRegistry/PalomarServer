@@ -18,6 +18,12 @@ const ENV = {
   GITHUB_TOKEN: "state-token",
   SUBMISSION_TOKEN: "dispatch-token",
   TOKEN_PEPPER: "test-pepper",
+  OAUTH_CLIENT_ID: "client-id",
+  OAUTH_CLIENT_SECRET: "client-secret",
+  // Declared in wrangler.jsonc, so production always has one. Intake refuses
+  // without it, and a test env lacking it would exercise that refusal instead
+  // of whatever the test is about.
+  INTAKE_LIMITER: { limit: async () => ({ success: true }) },
 };
 
 const TOKEN = "a".repeat(64);
