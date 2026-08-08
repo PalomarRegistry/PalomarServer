@@ -68,6 +68,7 @@ export const STATUSES = {
   reviewing: "The automated review is running",
   "review-ready": "The automated review is ready for you",
   "review-failed": "The automated review could not be completed",
+  "dispatch-lost": "Palomar lost track of the verification run it started",
   registered: "Registered in the registry",
   withdrawn: "Withdrawn",
 };

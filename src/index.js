@@ -75,6 +75,11 @@ const MAX_INFLIGHT_TOTAL = 12;
 const MAX_INFLIGHT_PER_OWNER = 2;
 const MAX_INFLIGHT_PER_SUBMITTER = 2;
 const MAX_VERIFY_ATTEMPTS = 10;
+// How old a `verifying` submission must be before a run nobody can find is
+// treated as lost. Generous by three orders of magnitude: a dispatched run is
+// listed within seconds, and this only ever applies to one that cannot be found
+// at all.
+const LOST_RUN_MS = 3600_000;
 const CURRENT_REVIEW_SCHEMA_VERSION = 2;
 const REVIEW_DECISIONS = new Set(["accept", "revise", "reject"]);
 
@@ -1018,13 +1023,20 @@ async function refresh(env, entry) {
     return reset;
   }
   if (record.status !== "verifying") return record;
-  const run = await findVerificationRun(env, record.id);
+  const { run } = await findVerificationRun(env, record.id, {
+    pinnedRunId: record.run?.id ?? null,
+    since: record.created_at,
+  });
   if (!run) return record;
   // The run is pinned the first time it is seen. A second run carrying the
   // same public submission id must not be able to take its place.
   if (record.run?.id && record.run.id !== run.id) return record;
 
+  // Finding it clears any misses the cron pass recorded. Without this a miss is
+  // permanent, and two misses an hour apart with a perfectly healthy run
+  // between them would read as a run nobody can find.
   const next = { ...record, run };
+  delete next.run_misses;
   if (run.status === "completed") {
     next.status = run.conclusion === "success" ? "awaiting-review" : "verification-failed";
     next.events = [
@@ -1036,6 +1048,13 @@ async function refresh(env, entry) {
     await release(env, record.id);
   }
   if (next.status === "awaiting-review") {
+    // Before the record says `awaiting-review`, and not caught. A submission
+    // that settles without an entry in the reviewer's queue is one nothing
+    // looks at until the weekly rebuild, and a failure swallowed here leaves a
+    // record that will not be repaired sooner than that, because it no longer
+    // looks like it needs anything. Failing leaves it `verifying`, which the
+    // next pass retries.
+    await openSubmission(env, record.id);
     // Failing to ask only costs the schedule's latency, so it is not fatal.
     await dispatchReviewer(env).catch(() => false);
   }
@@ -1096,7 +1115,10 @@ async function release(env, id) {
  * intake. This runs on a schedule instead, so nothing depends on a browser
  * staying open.
  */
-async function reconcile(env) {
+// Exported for the tests, like `sweepPending`. Nothing else calls it: it is the
+// cron path, and driving it directly is the only way to test the case where
+// nobody is watching.
+export async function reconcile(env) {
   const inflight = await readState(env, "index/inflight.json");
   const open = Array.isArray(inflight.value?.open) ? inflight.value.open : [];
   const still = [];
@@ -1104,19 +1126,103 @@ async function reconcile(env) {
     const record = await readState(env, statePath(item.id, "state.json"));
     if (!record.value) continue;               // vanished: do not hold its slot
     if (record.value.status !== "verifying") continue;
-    const run = await findVerificationRun(env, item.id);
+    const pinned = record.value.run?.id ?? null;
+    const { run, complete } = await findVerificationRun(env, item.id, {
+      pinnedRunId: pinned,
+      since: record.value.created_at,
+    });
+
+    // The same pinning `refresh` documents, and for the same reason: the
+    // submission id is in a public run name, so a second run carrying it must
+    // not settle this record. Missing here before, and this is the path that
+    // runs with nobody watching.
+    if (pinned && run && run.id !== pinned) {
+      still.push(item);
+      continue;
+    }
+
+    // Pin a run that is not finished yet, and forget any miss recorded before it
+    // was found. Waiting for a run to complete before writing it down meant
+    // every pass searched by name again, and meant a miss recorded an hour ago
+    // still counted against a run that has been answering ever since.
+    //
+    // Only for a run still going: a completed one is written by the settle
+    // below, in the same commit as the status it produced, and writing it twice
+    // here would leave the second write holding a sha the first one replaced.
+    if (run && run.status !== "completed" && (!pinned || record.value.run_misses)) {
+      const seen = { ...record.value, run };
+      delete seen.run_misses;
+      await writeState(env, statePath(item.id, "state.json"), seen,
+                       `Pin the run for ${item.id}`, record.sha);
+      still.push(item);
+      continue;
+    }
+
     if (run?.status === "completed") {
       const settled =
         run.conclusion === "success" ? "awaiting-review" : "verification-failed";
-      await writeState(env, statePath(item.id, "state.json"), {
+      // Before the record stops saying `verifying`, and not caught. A failure
+      // here has to leave something that will be tried again, and the only
+      // thing that gets retried is a submission still in flight. The reviewer's
+      // weekly sweep would rebuild the whole index eventually, but a week is
+      // not a repair for a submitter waiting on a review.
+      if (settled === "awaiting-review") await openSubmission(env, item.id);
+      const done = {
         ...record.value,
         run,
         status: settled,
         events: [...record.value.events,
                  { at: now(), status: settled, note: `Verification ${run.conclusion}` }],
-      }, `Reconcile ${item.id}`, record.sha);
-      if (settled === "awaiting-review") await dispatchReviewer(env).catch(() => false);
+      };
+      delete done.run_misses;
+      await writeState(env, statePath(item.id, "state.json"), done,
+                       `Reconcile ${item.id}`, record.sha);
+      if (settled === "awaiting-review") {
+        // Idempotent and cheap. A submission that settles without an entry here
+        // is one the reviewer's pass never looks at, and nothing rebuilds this
+        // file for a single missing id: it is rebuilt when it is absent,
+        // damaged, or stale, and one short is none of those.
+        await dispatchReviewer(env).catch(() => false);
+      }
       continue;
+    }
+
+    // A run nothing can find is not a run this record is waiting for. With the
+    // search bounded by time rather than by count this should not happen, which
+    // is exactly why it needs a floor: a submission stuck in `verifying` holds
+    // three separate quotas and nothing else releases it, so a bug here used to
+    // mean a registry that quietly stopped accepting submissions and an
+    // operator editing private state by hand.
+    //
+    // Two misses rather than one, because a single empty answer is as likely to
+    // be GitHub having a moment as a genuinely lost run, and this ends a
+    // submission somebody is waiting on. Finding the run clears the count, so
+    // the two have to be consecutive. A run that is merely queued is found, and
+    // is left alone however long it waits.
+    //
+    // Only when the search actually established that there is no such run. A
+    // search that ran out of pages says where it stopped looking and nothing
+    // more, and reading that as absence is how a live run loses its slot.
+    if (!run && complete) {
+      const missed = (record.value.run_misses ?? 0) + 1;
+      const age = Date.now() - (Date.parse(record.value.created_at) || Date.now());
+      if (missed >= 2 && age > LOST_RUN_MS) {
+        await writeState(env, statePath(item.id, "state.json"), {
+          ...record.value,
+          status: "dispatch-lost",
+          run_misses: missed,
+          events: [...record.value.events, {
+            at: now(), status: "dispatch-lost",
+            note: "Palomar could not find the verification run it started, and released the slot",
+          }],
+        }, `Release ${item.id}: its run was never found`, record.sha);
+        continue;                              // dropped from `still`: slot back
+      }
+      if (missed !== (record.value.run_misses ?? 0)) {
+        await writeState(env, statePath(item.id, "state.json"),
+                         { ...record.value, run_misses: missed },
+                         `Note a missing run for ${item.id}`, record.sha).catch(() => {});
+      }
     }
     still.push(item);
   }

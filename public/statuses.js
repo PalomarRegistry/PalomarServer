@@ -8,7 +8,17 @@
  * status page stops asking about: nothing further happens on its own, so there
  * is no news to wait for.
  *
- * They differ by `review-failed`, and the difference is load-bearing both ways.
+ * `dispatch-lost` sits with `review-failed` for the same reason and by the same
+ * argument. Palomar could not find the run it started, which is a fault at this
+ * end and not a statement about the submitter's proof, so there is nothing to
+ * poll for; but the submission is still theirs and they must be able to
+ * withdraw it. It is deliberately not `verification-failed`: telling somebody
+ * their proof did not verify when the truth is that we lost track of the run
+ * would be a false claim, from a registry whose whole product is claims that
+ * are true.
+ *
+ * `CLOSED` and `SETTLED` differ by `review-failed` and `dispatch-lost`, and the
+ * difference is load-bearing both ways.
  * A review that could not be completed is a fault at this end, so the page has
  * nothing to poll for until an operator moves it; but the submission is still
  * the submitter's, and they must be able to withdraw it. Putting `review-failed`
@@ -29,4 +39,4 @@
 
 export const CLOSED = new Set(["registered", "withdrawn", "verification-failed"]);
 
-export const SETTLED = new Set([...CLOSED, "review-failed"]);
+export const SETTLED = new Set([...CLOSED, "review-failed", "dispatch-lost"]);

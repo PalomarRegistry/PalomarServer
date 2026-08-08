@@ -257,16 +257,13 @@ export async function dispatchVerification(env, { repositoryName, commit, reques
  * inputs. A dispatch does not return a run id, so this is how a dispatched run
  * is recovered after a crash between dispatching and recording.
  */
-export async function findVerificationRun(env, requestId) {
-  const data = await call(
-    env.SUBMISSION_TOKEN,
-    `/repos/${env.SUBMISSION_REPO}/actions/workflows/${env.VERIFY_WORKFLOW}/runs?per_page=40`,
-  );
-  // Exact name, not a substring: the submission id appears in a public run
-  // name, so anything that merely quotes it is not this submission's run.
-  const expected = `Verify submission ${requestId}`;
-  const run = (data?.workflow_runs ?? []).find((item) => item.name === expected);
-  if (!run) return null;
+// Pages of a hundred. A submission that is admitted and dispatched is looked
+// for from the moment it was admitted, so reaching this many full pages means
+// the workflow ran three hundred times in that window, which is a different
+// problem from the one this function is solving.
+const MAX_RUN_PAGES = 3;
+
+function describeRun(run) {
   return {
     id: run.id,
     status: run.status,
@@ -274,6 +271,65 @@ export async function findVerificationRun(env, requestId) {
     url: run.html_url,
     started_at: run.run_started_at,
   };
+}
+
+/**
+ * The verification run a submission dispatched.
+ *
+ * A dispatch answers with no run id, so a run has to be recovered by name the
+ * first time. `per_page=40` made that a window rather than a search: forty runs
+ * between the dispatch and the next reconcile and this submission's run was
+ * never seen again, and its record went on holding one of twelve global slots,
+ * one of two for its owner and one of two for its submitter, until somebody
+ * edited private state by hand. Bounded by when the submission was admitted
+ * instead, since nothing started before it can be its run, and by `event`,
+ * because a scheduled or push-triggered run never carries this name.
+ *
+ * Once a run is pinned it is asked for by id. Searching by name and then
+ * refusing whatever came back would wedge a record whose own run had simply
+ * fallen further down the list than the search reached.
+ *
+ * Answers `{ run, complete }`. `complete` says whether the absence of a run is
+ * something this function actually established, or only where it stopped
+ * looking, and the difference decides whether a submission may be given up on.
+ * Reading a truncated search as "no such run" is how a live run gets its slot
+ * taken away from it.
+ */
+export async function findVerificationRun(env, requestId, { pinnedRunId = null, since = null } = {}) {
+  const expected = `Verify submission ${requestId}`;
+
+  if (pinnedRunId) {
+    const run = await call(
+      env.SUBMISSION_TOKEN,
+      `/repos/${env.SUBMISSION_REPO}/actions/runs/${pinnedRunId}`,
+    );
+    // The repository comes from the path and the workflow and event were
+    // established when this id was first discovered and written to private
+    // state, so the name is what is left to check, against a record that has
+    // been corrupted or an id that has been reused.
+    if (!run || run.name !== expected) return { run: null, complete: true };
+    return { run: describeRun(run), complete: true };
+  }
+
+  // Exact name, not a substring: the submission id appears in a public run
+  // name, so anything that merely quotes it is not this submission's run.
+  const query = new URLSearchParams({ event: "workflow_dispatch", per_page: "100" });
+  if (since) query.set("created", `>=${since}`);
+  for (let page = 1; page <= MAX_RUN_PAGES; page += 1) {
+    query.set("page", String(page));
+    const data = await call(
+      env.SUBMISSION_TOKEN,
+      `/repos/${env.SUBMISSION_REPO}/actions/workflows/${env.VERIFY_WORKFLOW}/runs?${query}`,
+    );
+    const runs = data?.workflow_runs ?? [];
+    const run = runs.find((item) => item.name === expected);
+    if (run) return { run: describeRun(run), complete: true };
+    // A short page is the last page: the run is genuinely not there.
+    if (runs.length < 100) return { run: null, complete: true };
+  }
+  // Every page was full, so the search ran out of pages rather than out of
+  // runs, and nothing has been established.
+  return { run: null, complete: false };
 }
 
 /**
