@@ -1550,11 +1550,51 @@ test("a run past the first page is still found", async () => {
     const page = target.searchParams.get("page");
     return Response.json({ workflow_runs: page === "1" ? filler : [wanted] });
   };
-  const run = await findVerificationRun(ENV, "a1b2c3d4e5f6", { since: "2026-08-01T00:00:00Z" });
-  assert.equal(run.id, 4242);
+  const found = await findVerificationRun(ENV, "a1b2c3d4e5f6", { since: "2026-08-01T00:00:00Z" });
+  assert.equal(found.run.id, 4242);
+  assert.equal(found.complete, true);
   // Bounded by when the submission was admitted, and to dispatched runs, so a
   // scheduled or push-triggered run never has to be looked at.
   assert.match(queries[0], /event=workflow_dispatch/);
   assert.match(queries[0], /created=%3E%3D2026-08-01/);
   assert.match(queries[0], /per_page=100/);
+});
+
+test("a search that runs out of pages is not the same as a run that is not there", async () => {
+  // The difference decides whether a submission may be given up on. Reading a
+  // truncated search as absence is how a live run loses its slot.
+  const { findVerificationRun } = await import("../src/github.js");
+  const full = Array.from({ length: 100 }, (_, i) => ({
+    id: i, name: `Verify submission other${i}`, status: "completed",
+    conclusion: "success", html_url: "", run_started_at: "",
+  }));
+  globalThis.fetch = async () => Response.json({ workflow_runs: full });
+  const found = await findVerificationRun(ENV, "a1b2c3d4e5f6", { since: "2026-08-01T00:00:00Z" });
+  assert.equal(found.run, null);
+  assert.equal(found.complete, false, "a truncated search claimed the run is absent");
+});
+
+test("a run found again clears a miss recorded before it", async () => {
+  // Without this a miss is permanent, and two misses an hour apart with a
+  // perfectly healthy run between them read as a run nobody can find.
+  const { reconcile } = await import("../src/index.js");
+  const queued = {
+    id: 999, name: "Verify submission a1b2c3d4e5f6", status: "queued",
+    conclusion: null, html_url: "https://example.test/run", run_started_at: "",
+  };
+  const files = {
+    ...(await fixture({
+      status: "verifying", created_at: "2026-01-01T00:00:00Z",
+      run: undefined, run_misses: 1,
+    })),
+    "index/inflight.json": {
+      open: [{ id: "a1b2c3d4e5f6", owner: "example", at: "2026-01-01T00:00:00Z" }],
+    },
+  };
+  const { store } = stubState(files, [queued]);
+  await reconcile(ENV);
+  const record = store.get(statePath("a1b2c3d4e5f6", "state.json"));
+  assert.equal(record.status, "verifying");
+  assert.equal(record.run_misses, undefined, "the miss survived finding the run");
+  assert.equal(record.run.id, 999, "a queued run was not pinned when it was found");
 });

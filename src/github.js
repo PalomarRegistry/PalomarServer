@@ -257,6 +257,12 @@ export async function dispatchVerification(env, { repositoryName, commit, reques
  * inputs. A dispatch does not return a run id, so this is how a dispatched run
  * is recovered after a crash between dispatching and recording.
  */
+// Pages of a hundred. A submission that is admitted and dispatched is looked
+// for from the moment it was admitted, so reaching this many full pages means
+// the workflow ran three hundred times in that window, which is a different
+// problem from the one this function is solving.
+const MAX_RUN_PAGES = 3;
+
 function describeRun(run) {
   return {
     id: run.id,
@@ -282,25 +288,34 @@ function describeRun(run) {
  * Once a run is pinned it is asked for by id. Searching by name and then
  * refusing whatever came back would wedge a record whose own run had simply
  * fallen further down the list than the search reached.
+ *
+ * Answers `{ run, complete }`. `complete` says whether the absence of a run is
+ * something this function actually established, or only where it stopped
+ * looking, and the difference decides whether a submission may be given up on.
+ * Reading a truncated search as "no such run" is how a live run gets its slot
+ * taken away from it.
  */
 export async function findVerificationRun(env, requestId, { pinnedRunId = null, since = null } = {}) {
+  const expected = `Verify submission ${requestId}`;
+
   if (pinnedRunId) {
     const run = await call(
       env.SUBMISSION_TOKEN,
       `/repos/${env.SUBMISSION_REPO}/actions/runs/${pinnedRunId}`,
     );
-    // Checked rather than trusted: an id is only meaningful alongside the
-    // workflow and the name it was pinned for.
-    if (!run || run.name !== `Verify submission ${requestId}`) return null;
-    return describeRun(run);
+    // The repository comes from the path and the workflow and event were
+    // established when this id was first discovered and written to private
+    // state, so the name is what is left to check, against a record that has
+    // been corrupted or an id that has been reused.
+    if (!run || run.name !== expected) return { run: null, complete: true };
+    return { run: describeRun(run), complete: true };
   }
 
   // Exact name, not a substring: the submission id appears in a public run
   // name, so anything that merely quotes it is not this submission's run.
-  const expected = `Verify submission ${requestId}`;
   const query = new URLSearchParams({ event: "workflow_dispatch", per_page: "100" });
   if (since) query.set("created", `>=${since}`);
-  for (let page = 1; page <= 3; page += 1) {
+  for (let page = 1; page <= MAX_RUN_PAGES; page += 1) {
     query.set("page", String(page));
     const data = await call(
       env.SUBMISSION_TOKEN,
@@ -308,11 +323,13 @@ export async function findVerificationRun(env, requestId, { pinnedRunId = null, 
     );
     const runs = data?.workflow_runs ?? [];
     const run = runs.find((item) => item.name === expected);
-    if (run) return describeRun(run);
-    // A short page is the last page, so there is nothing further to ask for.
-    if (runs.length < 100) return null;
+    if (run) return { run: describeRun(run), complete: true };
+    // A short page is the last page: the run is genuinely not there.
+    if (runs.length < 100) return { run: null, complete: true };
   }
-  return null;
+  // Every page was full, so the search ran out of pages rather than out of
+  // runs, and nothing has been established.
+  return { run: null, complete: false };
 }
 
 /**
