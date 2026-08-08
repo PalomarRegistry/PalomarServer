@@ -135,10 +135,13 @@ function sessionToken(request) {
  * The same credential, presented rather than carried.
  *
  * A cookie is ambient: the browser attaches it to whatever it is talked into
- * sending, which is what makes cross-site request forgery a thing at all. A
- * header is not, because nothing else can set it on somebody's behalf. So an
- * agent holding the access token says so explicitly and is exempt from the
- * same-origin requirement below, and a browser keeps the cookie and is not.
+ * sending, which is what makes cross-site request forgery a thing at all. This
+ * is not, because `Authorization` is not a CORS-safelisted header: a page on
+ * another origin cannot attach it without a preflight this server never grants,
+ * and a form, an image, or a navigation cannot set a header at all. That is a
+ * statement about other origins, not a claim that the token is safe from
+ * anything already holding it. So an agent presenting the token is exempt from
+ * the same-origin requirement below, and a browser carrying the cookie is not.
  */
 function bearerToken(request) {
   const match = /^Bearer ([0-9a-f]{64})$/.exec(request.headers.get("authorization") ?? "");
@@ -786,7 +789,9 @@ async function verifySubmission(request, env) {
       `Delete both artifacts now:`,
       `  gh api -X DELETE repos/${repository}/git/refs/tags/${CHALLENGE_TAG_PREFIX}${challenge}`,
       `  gh api -X DELETE gists/${body.gist_id}`,
-      `Then POST /session with token=<access_token> and follow the status.`,
+      `Then send Authorization: Bearer <access_token> on the status and`,
+      `decision requests. Do not exchange it for a cookie: that path is`,
+      `for the browser, and it refuses a caller that is not one.`,
     ].join("\n"),
   });
 }
@@ -813,16 +818,25 @@ async function completeSubmission(request, env) {
     ]), 400);
   }
 
-  // The cookie half of the intake, checked before the code is exchanged. The
-  // only way to be here without it is that the browser finishing this sign-in
-  // is not the browser that began it, which is the attack. The record is
-  // consumed rather than left open, so the same link cannot be offered to the
-  // next person, and the cookie is cleared so a stale one cannot confuse the
-  // submitter's own retry.
+  // The cookie half of the intake, checked before the code is exchanged. It
+  // can be absent because the browser finishing this sign-in is not the one
+  // that began it, which is the attack, and it can be absent because fifteen
+  // minutes went by or the browser was told to keep no cookies, which is not.
+  // Both get the same answer: there is no way to tell them apart from here,
+  // and guessing at which it was would only make the message worse.
   const presented = intakeBinding(request, nonceDigest);
   const expected = pending.value.binding_sha256;
   if (!expected || !presented || (await digest(presented)) !== expected) {
-    await deleteState(env, pendingPath, pending.sha, "Discard an intake finished elsewhere");
+    // Consuming it stops the same link being offered to the next person, and
+    // stops a leaked callback URL being replayed by whoever composed the flow.
+    // Not fatal if it fails, unlike the consumption on the success path: this
+    // request is refused either way and the sweep collects the record within
+    // the hour. Logged rather than ignored, so a delete that keeps failing is
+    // visible before it becomes a pile.
+    if (!(await deleteState(env, pendingPath, pending.sha,
+                            "Discard an intake finished elsewhere"))) {
+      console.error("pending", `could not discard ${pendingPath}`);
+    }
     return html(
       errorPage(env, "That sign-in did not begin here", [
         "Palomar completes a sign-in only in the browser that started it.",
@@ -1243,8 +1257,8 @@ export default {
         // The same fault as /submit, and the same answer. A JSON body makes
         // `formData()` throw, and the throw used to be answered with the 500
         // page that blames Palomar and invites a retry that cannot work. The
-        // status page posts a form here; an agent following llms.txt posts a
-        // form here; a body this cannot read came from something that guessed,
+        // status page posts a form here; a body this cannot read came from
+        // something that guessed,
         // and 400 with a reason is what stops it guessing again.
         //
         // This is also what hands out the ambient credential, so a cross-site
@@ -1334,7 +1348,12 @@ export default {
         return json({ ok: true });
       }
       if (request.method === "GET" && url.pathname === "/api/submission") {
-        const entry = await caller(env, request);
+        // A GET, but `refresh` writes records, releases capacity, spends the
+        // shared GitHub budget and dispatches reviewer work, so it is guarded
+        // like the rest. A same-site sibling could cause it with the session
+        // cookie attached even though it could never read the answer, and not
+        // depending on the render CSP for that is the point of this change.
+        const entry = await caller(env, request, { mutating: true });
         if (entry instanceof Response) return entry;
         const record = await refresh(env, entry);
         return json({

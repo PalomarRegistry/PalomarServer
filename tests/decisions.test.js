@@ -573,7 +573,9 @@ test("the cookie the exchange sets is the one the status page is read with", asy
   );
   const cookie = exchange.headers.get("set-cookie").split(";")[0];
   const status = await worker.fetch(
-    new Request("https://submit.palomar-registry.org/api/submission", { headers: { cookie } }),
+    new Request("https://submit.palomar-registry.org/api/submission", {
+      headers: { cookie, "sec-fetch-site": "same-origin" },
+    }),
     ENV,
   );
   assert.equal(status.status, 200, "the cookie from /session did not authenticate /api/submission");
@@ -1225,8 +1227,10 @@ test("a registration puts the interval back to a minute", async () => {
   stub.store.set(statePathName, { ...stub.store.get(statePathName), status: "registered" });
 
   const response = await worker.fetch(
+    // An agent presents the token rather than exchanging it for a cookie,
+    // which is what llms.txt now tells it to do.
     new Request("https://submit.palomar-registry.org/api/submission", {
-      headers: { cookie: `palomar_session=${verified.access_token}` },
+      headers: { authorization: `Bearer ${verified.access_token}` },
     }),
     ENV,
   );
@@ -1366,4 +1370,24 @@ test("the session exchange refuses a cross-site caller", async () => {
   );
   assert.equal(response.status, 403);
   assert.equal(response.headers.get("set-cookie"), null);
+});
+
+test("the status read is guarded too, because it is not really a read", async () => {
+  // `refresh` writes records, releases capacity, spends the shared GitHub
+  // budget and dispatches reviewer work. A same-site sibling could cause all of
+  // that with the session cookie attached even though it could never read the
+  // answer, and the point of the guard is to stop depending on the render CSP
+  // to prevent it.
+  const { written } = stubState(await fixture({ status: "verifying" }));
+  const forged = await worker.fetch(
+    new Request("https://submit.palomar-registry.org/api/submission", {
+      headers: {
+        cookie: `palomar_session=${TOKEN}`,
+        origin: "https://data.palomar-registry.org",
+      },
+    }),
+    ENV,
+  );
+  assert.equal(forged.status, 403);
+  assert.equal(written.length, 0, "a forged status read still moved the submission");
 });

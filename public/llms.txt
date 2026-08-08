@@ -79,8 +79,8 @@ register permanently.
 
 ## After that, monitoring is yours
 
-With the token you can drive the rest over plain HTTP. Send it as a header on
-every call:
+With the token you can drive the rest through the HTTPS API. Send it as a
+header on every call:
 
     Authorization: Bearer <the fragment>
 
