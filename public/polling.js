@@ -41,6 +41,13 @@ export const SLOW_POLL_CAP_MS = 300_000;
 // files nobody would have needed to be told.
 export { SETTLED };
 
+/** Missing and unauthorized sessions are terminal; service failures are retryable. */
+export function pollFailureAction(status) {
+  if (status === 404) return "missing";
+  if (status === 401 || status === 403) return "unauthorized";
+  return "retry";
+}
+
 const SLOW = new Set(["awaiting-review", "review-ready"]);
 
 /**

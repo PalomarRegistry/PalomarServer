@@ -157,13 +157,19 @@ press it, that is fine; deciding for them is not.
 - One repository owner, and separately one submitter, may have a small number of
   submissions verifying at once; further ones are refused with 429 until those
   finish. When Palomar as a whole is at capacity the refusal is 503. Neither is
-  a reason to retry immediately.
+  a reason to retry immediately. These refusals happen after `/api/verify` has
+  accepted and consumed the proof: follow its `restart` instruction and begin a
+  new submission when capacity is available.
 - There is also an interval between starting one submission and starting the
   next. A 429 that says you started one too recently says how long to wait;
   wait that long rather than probing for the boundary.
 - `/api/verify` allows a bounded number of failed proofs and then refuses and
   discards the intake. Fix the tag or the gist before retrying, rather than
   retrying the same broken proof.
+- Once `/api/verify` has accepted the proof, every refusal says
+  `"proof_consumed": true` and includes a `restart` instruction. Start again at
+  `/api/submit` and create a new tag and gist; retrying the old
+  `pending_secret` cannot succeed.
 - Errors on the `/api/` routes come back as JSON `{"error": "..."}` with a
   meaningful status, sometimes with `problems` or `detail` beside it. An unknown
   path, a wrong method, and an unhandled failure give you an HTML page instead,

@@ -83,6 +83,8 @@ async function fixture(overrides = {}, reviewOverrides = {}) {
     ...overrides,
   };
   return {
+    "index/inflight.json": { open: [] },
+    "index/open.json": { schema_version: 1, open: [] },
     [`index/tokens/${await tokenDigest(ENV, TOKEN)}.json`]: { id: record.id },
     [statePath(record.id, "state.json")]: record,
     [statePath(record.id, "review.json")]: {
@@ -217,12 +219,66 @@ test("a submission whose review could not be completed is still the submitter's 
   // somebody might reasonably decide it belongs in the set the server refuses
   // to act on. It does not: the submitter is left with a submission that is
   // going nowhere and no way to take it back.
-  const { written } = stubState(await fixture({ status: "review-failed" }));
+  const files = await fixture({ status: "review-failed" });
+  // This record no longer holds a slot. An unrelated damaged capacity index
+  // must not take away the submitter's last way to stop it.
+  files["index/inflight.json"] = { open: "damaged" };
+  const { written } = stubState(files);
+  const inner = globalThis.fetch;
+  let inflightReads = 0;
+  globalThis.fetch = async (url, init = {}) => {
+    const target = new URL(url);
+    if ((init.method ?? "GET") === "GET" && target.pathname.endsWith("/index/inflight.json")) {
+      inflightReads += 1;
+    }
+    return inner(url, init);
+  };
   const response = await worker.fetch(request("/withdraw", "POST"), ENV);
   assert.equal(response.status, 200);
   const state = written.find((item) => item.path.endsWith("state.json"));
   assert.equal(state.value.status, "withdrawn");
   assert.equal(state.value.events.at(-1).note, "Withdrawn by the submitter");
+  assert.equal(inflightReads, 0, "a record without a slot consulted unrelated capacity state");
+  assert.deepEqual(
+    written.map((item) => item.path),
+    [statePath("a1b2c3d4e5f6", "state.json")],
+    "withdrawal changed capacity state for a record that held no slot",
+  );
+});
+
+test("withdrawal validates the inflight reservation before changing the record", async () => {
+  const files = await fixture({ status: "verifying" });
+  files["index/inflight.json"] = { open: "damaged" };
+  const { written } = stubState(files);
+
+  const response = await worker.fetch(request("/withdraw", "POST"), ENV);
+  assert.equal(response.status, 503);
+  assert.match(response.headers.get("content-type"), /application\/json/);
+  assert.deepEqual(await response.json(), {
+    error: "submission decisions are temporarily unavailable",
+  });
+  assert.deepEqual(written, [], "the record was withdrawn before capacity state was validated");
+});
+
+test("withdrawing a verifying submission commits the decision before releasing its slot", async () => {
+  const held = {
+    id: "a1b2c3d4e5f6",
+    owner: "example",
+    submitter: "someone",
+    at: "2026-08-01T00:00:00Z",
+  };
+  const files = await fixture({ status: "verifying" });
+  files["index/inflight.json"] = { open: [held] };
+  const { written, store } = stubState(files);
+
+  const response = await worker.fetch(request("/withdraw", "POST"), ENV);
+  assert.equal(response.status, 200);
+  assert.equal(store.get(statePath(held.id, "state.json")).status, "withdrawn");
+  assert.deepEqual(store.get("index/inflight.json"), { open: [] });
+  assert.deepEqual(
+    written.map((item) => item.path),
+    [statePath(held.id, "state.json"), "index/inflight.json"],
+  );
 });
 
 test("consent is not forged by an anonymous request", async () => {
@@ -254,13 +310,18 @@ test("the health check says whether the service is up and nothing else", async (
   // It named the state repository, which is private and holds every record and
   // every pending intake. Anyone at all could ask an unauthenticated endpoint
   // for the name of the thing worth attacking.
-  stubState(await fixture());
+  let networkCalls = 0;
+  globalThis.fetch = async () => {
+    networkCalls += 1;
+    throw new Error("health check reached the shared GitHub API budget");
+  };
   for (const method of ["GET", "HEAD"]) {
     const response = await worker.fetch(request("/healthz", method), ENV);
     assert.equal(response.status, 200, `${method} did not answer`);
   }
   const body = await (await worker.fetch(request("/healthz"), ENV)).json();
   assert.deepEqual(body, { ok: true });
+  assert.equal(networkCalls, 0);
   assert.ok(!JSON.stringify(body).includes("PalomarSubmissionState"),
             "the health check still names the state repository");
 });
@@ -535,6 +596,87 @@ test("a scheduled pass that could not do its work does not report success", asyn
             "the pending sweep never ran");
 });
 
+test("the inflight index refuses obsolete and malformed shapes", async () => {
+  const { reconcile } = await import("../src/index.js");
+  const current = {
+    id: "a1b2c3d4e5f6",
+    owner: "example",
+    submitter: "someone",
+    at: "2026-08-01T00:00:00Z",
+  };
+  const cases = [
+    [{ open: [{ id: current.id, owner: current.owner, at: current.at }] },
+      /must contain exactly id, owner, submitter, and at/],
+    [{ open: [{ ...current, obsolete: true }] },
+      /must contain exactly id, owner, submitter, and at/],
+    [{ open: [{ ...current, id: "A1B2C3D4E5F6" }] },
+      /id must be a 12-character submission id/],
+    [{ open: [{ ...current, id: 123456789012 }] },
+      /id must be a 12-character submission id/],
+    [{ open: [{ ...current, owner: "example.name" }] },
+      /owner must be a GitHub login or null/],
+    [{ open: [{ ...current, submitter: "a".repeat(40) }] },
+      /submitter must be a GitHub login/],
+    [{ open: [{ ...current, submitter: null }] },
+      /submitter must be a GitHub login/],
+    [{ open: [{ ...current, at: "yesterday" }] },
+      /at must be a canonical UTC-seconds timestamp/],
+    [{ open: [{ ...current, at: "2026-08-01T00:00:00.000Z" }] },
+      /at must be a canonical UTC-seconds timestamp/],
+    [{ open: [{ ...current, at: "2026-02-30T00:00:00Z" }] },
+      /at must be a canonical UTC-seconds timestamp/],
+    [{ open: [current, { ...current }] }, /duplicates another inflight submission/],
+    [{ open: [], schema_version: 1 }, /exactly one top-level open array/],
+    [{ open: {} }, /exactly one top-level open array/],
+    [null, /exactly one top-level open array/],
+  ];
+
+  for (const [value, message] of cases) {
+    stubState(value === null ? {} : { "index/inflight.json": value }, []);
+    await assert.rejects(() => reconcile(ENV), message);
+  }
+
+  globalThis.fetch = async (url) => {
+    if (new URL(url).pathname.endsWith("/contents/index/inflight.json")) {
+      return Response.json({ content: Buffer.from("{").toString("base64"), sha: "bad-json" });
+    }
+    return new Response("", { status: 404 });
+  };
+  await assert.rejects(() => reconcile(ENV), /index\/inflight\.json must contain valid JSON/);
+});
+
+test("the current inflight contract accepts provider-safe ordinary and managed logins", async () => {
+  const { reconcile } = await import("../src/index.js");
+  const { store } = stubState({
+    "index/inflight.json": {
+      open: [
+        {
+          id: "a1b2c3d4e5f6", owner: null, submitter: "someone_octo",
+          at: "2026-08-01T00:00:00Z",
+        },
+        {
+          id: "b1b2c3d4e5f6", owner: "org--team", submitter: "someone__octo",
+          at: "2026-08-01T00:00:01Z",
+        },
+      ],
+    },
+  }, []);
+
+  assert.deepEqual(await reconcile(ENV), { released: 2, open: 0 });
+  assert.deepEqual(store.get("index/inflight.json"), { open: [] });
+});
+
+test("the checked-in state bootstrap is the exact empty current contract", async () => {
+  const inflight = JSON.parse(await readFile(
+    new URL("../state-bootstrap/index/inflight.json", import.meta.url), "utf8",
+  ));
+  const reviewer = JSON.parse(await readFile(
+    new URL("../state-bootstrap/index/open.json", import.meta.url), "utf8",
+  ));
+  assert.deepEqual(inflight, { open: [] });
+  assert.deepEqual(reviewer, { schema_version: 1, open: [] });
+});
+
 test("a commit that does not exist is answered, not treated as a fault", async () => {
   // GitHub answers 422 for a well-formed SHA it does not have, and 404 for a
   // malformed one. Both mean the same thing to a submitter.
@@ -674,6 +816,22 @@ test("the status page stops asking when nobody is looking at it", async () => {
   // And coming back to the tab asks straight away, rather than showing the
   // answer it stopped on until the backoff it had reached elapses again.
   assert.match(script, /pollDelay = 0;\s*\n\s*poll\(\);/);
+});
+
+test("a temporary status failure retries instead of pretending the record is missing", async () => {
+  const { pollFailureAction } = await import("../public/polling.js");
+  assert.equal(pollFailureAction(404), "missing");
+  for (const status of [401, 403]) {
+    assert.equal(pollFailureAction(status), "unauthorized", `${status} would retry forever`);
+  }
+  for (const status of [409, 429, 500, 503]) {
+    assert.equal(pollFailureAction(status), "retry", `${status} would stop status polling`);
+  }
+  const script = await readFile(new URL("../public/status.js", import.meta.url), "utf8");
+  assert.match(script, /const failure = pollFailureAction\(response\.status\)/);
+  assert.match(script, /failure === "missing"/);
+  assert.match(script, /failure === "unauthorized"[\s\S]*session has expired or is not authorized/);
+  assert.match(script, /Could not refresh this submission\. Retrying\.[\s\S]*askAgain\(lastStatus\)/);
 });
 
 test("a duration is only claimed once one has been measured", async () => {
@@ -837,10 +995,20 @@ test("the dispatch carries only a ref, so every reviewer input needs a default",
  * record does not carry `push_verified`. It was never exercised, so nothing
  * would have noticed it being inverted, skipped, or refactored away.
  */
-function stubOAuth({ push, files = {}, login = "someone" }) {
+function stubOAuth({
+  push,
+  files = {},
+  login = "someone",
+  inflight = { open: [] },
+  reviewer = { schema_version: 1, open: [] },
+}) {
   const written = [];
-  const store = new Map(Object.entries(files));
+  const initial = { ...files };
+  if (inflight !== null) initial["index/inflight.json"] = inflight;
+  if (reviewer !== null) initial["index/open.json"] = reviewer;
+  const store = new Map(Object.entries(initial));
   const deleted = [];
+  const dispatched = [];
   globalThis.fetch = async (url, init = {}) => {
     const target = new URL(url);
     const method = init.method ?? "GET";
@@ -858,7 +1026,10 @@ function stubOAuth({ push, files = {}, login = "someone" }) {
         permissions: { push },
       });
     }
-    if (target.pathname.includes("/actions/workflows/")) return Response.json({ ok: true });
+    if (target.pathname.includes("/actions/workflows/")) {
+      dispatched.push(target.pathname);
+      return Response.json({ ok: true });
+    }
     const path = decodeURI(
       target.pathname.replace(`/repos/${ENV.STATE_REPO}/contents/`, ""),
     );
@@ -876,7 +1047,7 @@ function stubOAuth({ push, files = {}, login = "someone" }) {
     store.set(path, JSON.parse(Buffer.from(body.content, "base64").toString("utf-8")));
     return Response.json({ content: {} });
   };
-  return { written, deleted, store };
+  return { written, deleted, dispatched, store };
 }
 
 // The browser half of the intake. `beginSubmission` mints this, keeps only its
@@ -936,6 +1107,66 @@ test("a submitter who can push is recorded as having proved it", async () => {
   assert.equal(record.value.submitter, "someone");
 });
 
+test("browser intake fails closed and visibly when inflight state is unusable", async () => {
+  for (const [name, inflight] of [
+    ["missing", null],
+    ["malformed", { open: "not-an-array" }],
+  ]) {
+    const nonce = name === "missing" ? "1".repeat(64) : "2".repeat(64);
+    const pendingPath = `pending/${await digest(nonce)}.json`;
+    const stub = stubOAuth({
+      push: true,
+      inflight,
+      files: { [pendingPath]: PENDING },
+    });
+
+    const response = await callback(nonce);
+    assert.equal(response.status, 503, `${name} state did not stop browser intake`);
+    assert.match(response.headers.get("content-type"), /text\/html/);
+    const body = await response.text();
+    assert.match(body, /Submission intake is temporarily unavailable/);
+    assert.match(body, /sign-in was spent/);
+    assert.match(body, /Start a new submission from the submission form/);
+    assert.doesNotMatch(body, /inflight|open array|state-contract/);
+    assert.match(response.headers.get("set-cookie"), /Max-Age=0/);
+    assert.deepEqual(stub.deleted, [pendingPath], "the proved nonce was not consumed once");
+    assert.deepEqual(
+      stub.written.filter((item) => !item.path.startsWith("pending/")),
+      [],
+      "a browser proof created durable submission state after admission failed",
+    );
+    assert.deepEqual(stub.dispatched, [], "a browser proof dispatched work after admission failed");
+  }
+});
+
+test("a browser capacity refusal says the completed sign-in was spent", async () => {
+  const nonce = "3".repeat(64);
+  const inflight = { open: Array.from({ length: 12 }, (_, index) => ({
+    id: index.toString(36).padStart(12, "0"),
+    owner: `owner${index}`,
+    submitter: `user${index}`,
+    at: "2026-08-01T00:00:00Z",
+  })) };
+  const stub = stubOAuth({
+    push: true,
+    inflight,
+    files: { [`pending/${await digest(nonce)}.json`]: PENDING },
+  });
+
+  const response = await callback(nonce);
+  assert.equal(response.status, 503);
+  const body = await response.text();
+  assert.match(body, /Palomar is at capacity/);
+  assert.match(body, /sign-in was spent/);
+  assert.match(body, /Start a new submission from the submission form/);
+  assert.match(response.headers.get("set-cookie"), /Max-Age=0/);
+  assert.deepEqual(
+    stub.written.filter((item) => !item.path.startsWith("pending/")),
+    [],
+  );
+  assert.deepEqual(stub.dispatched, []);
+});
+
 test("a refused submitter keeps what they typed, and the nonce", async () => {
   // Consuming the pending record first meant a failed proof destroyed the
   // whole submission, undoing the care the form takes to hand it back.
@@ -973,7 +1204,36 @@ test("an unattributable sign-in is refused rather than bucketed", async () => {
   });
   const response = await callback(nonce);
   assert.equal(response.status, 502);
+  const body = await response.text();
+  assert.match(body, /sign-in was spent/);
+  assert.match(body, /Start a new submission from the submission form/);
+  assert.match(response.headers.get("set-cookie"), /Max-Age=0/);
   assert.deepEqual(written.map((item) => item.path), []);
+});
+
+test("an unexpected failure after browser proof consumption is honest and terminal", async () => {
+  const nonce = "0".repeat(64);
+  const pendingPath = `pending/${await digest(nonce)}.json`;
+  const stub = stubOAuth({ push: true, files: { [pendingPath]: PENDING } });
+  const inner = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    const target = new URL(url);
+    if ((init.method ?? "GET") === "PUT" && target.pathname.includes("/contents/submissions/")) {
+      return new Response("upstream failure", { status: 502 });
+    }
+    return inner(url, init);
+  };
+
+  const response = await callback(nonce);
+  assert.equal(response.status, 500);
+  const body = await response.text();
+  assert.match(body, /could not be completed/);
+  assert.match(body, /sign-in was spent/);
+  assert.match(body, /Start a new submission from the submission form/);
+  assert.match(response.headers.get("set-cookie"), /Max-Age=0/);
+  assert.deepEqual(stub.deleted, [pendingPath]);
+  assert.deepEqual(stub.written, []);
+  assert.deepEqual(stub.dispatched, []);
 });
 
 /**
@@ -985,10 +1245,19 @@ test("an unattributable sign-in is refused rather than bucketed", async () => {
  * that carries an identity. Neither alone is enough and the record says so.
  */
 function stubAgent(config = {}) {
-  const state = { tag: {}, gist: {}, repoId: 987654321, ...config };
+  const {
+    inflight = { open: [] },
+    reviewer = { schema_version: 1, open: [] },
+    ...proofConfig
+  } = config;
+  const state = { tag: {}, gist: {}, repoId: 987654321, ...proofConfig };
   const written = [];
-  const store = new Map();
+  const initial = [];
+  if (inflight !== null) initial.push(["index/inflight.json", inflight]);
+  if (reviewer !== null) initial.push(["index/open.json", reviewer]);
+  const store = new Map(initial);
   const deleted = [];
+  const dispatched = [];
   globalThis.fetch = async (url, init = {}) => {
     const target = new URL(url);
     const method = init.method ?? "GET";
@@ -1014,7 +1283,10 @@ function stubAgent(config = {}) {
       });
     }
     if (target.pathname.includes("/commits/")) return Response.json({ sha: "1".repeat(40) });
-    if (target.pathname.includes("/actions/workflows/")) return Response.json({ ok: true });
+    if (target.pathname.includes("/actions/workflows/")) {
+      dispatched.push(target.pathname);
+      return Response.json({ ok: true });
+    }
     const path = decodeURI(target.pathname.replace(`/repos/${ENV.STATE_REPO}/contents/`, ""));
     if (method === "GET") {
       if (!store.has(path)) return new Response("", { status: 404 });
@@ -1027,7 +1299,7 @@ function stubAgent(config = {}) {
     store.set(path, value);
     return Response.json({ content: {} });
   };
-  return { written, deleted, store, state };
+  return { written, deleted, dispatched, store, state };
 }
 
 const AGENT_SUBMISSION = {
@@ -1093,6 +1365,72 @@ test("a tag and a gist together admit a submission", async () => {
   assert.equal(record.value.push_proof.principal.id, 4242);
 });
 
+test("agent intake fails closed and in JSON when admission indexes are unusable", async () => {
+  const cases = [
+    ["missing inflight", { inflight: null }],
+    ["malformed inflight", { inflight: { open: [{ id: "old" }] } }],
+    ["missing reviewer queue", { reviewer: null }],
+    ["malformed reviewer queue", { reviewer: { schema_version: 1, open: "bad" } }],
+  ];
+  for (const [name, config] of cases) {
+    const stub = stubAgent(config);
+    const begun = await agentSubmit();
+    stub.state.tag = { exists: true, sha: "1".repeat(40) };
+    stub.state.gist = { exists: true, content: begun.challenge };
+    const before = stub.written.length;
+
+    const response = await agentVerify({
+      pending_secret: begun.pending_secret,
+      gist_id: "abc123",
+    });
+    assert.equal(response.status, 503, `${name} did not stop agent intake`);
+    assert.match(response.headers.get("content-type"), /application\/json/);
+    const body = await response.json();
+    assert.deepEqual(body, {
+      error: "submission intake is temporarily unavailable",
+      proof_consumed: true,
+      restart: "This proof was consumed. Start a new submission and create a new proof.",
+    });
+    assert.ok(stub.deleted.some((path) => path.startsWith("pending/")),
+              `${name} did not consume the proved challenge exactly once`);
+    assert.deepEqual(
+      stub.written.slice(before).filter((item) => !item.path.startsWith("pending/")),
+      [],
+      `${name} created a state record or index`,
+    );
+    assert.deepEqual(stub.dispatched, [], `${name} dispatched verification`);
+  }
+});
+
+test("an agent capacity refusal says its accepted proof was consumed", async () => {
+  const inflight = { open: Array.from({ length: 12 }, (_, index) => ({
+    id: index.toString(36).padStart(12, "0"),
+    owner: `owner${index}`,
+    submitter: `user${index}`,
+    at: "2026-08-01T00:00:00Z",
+  })) };
+  const stub = stubAgent({ inflight });
+  const begun = await agentSubmit();
+  stub.state.tag = { exists: true, sha: "1".repeat(40) };
+  stub.state.gist = { exists: true, content: begun.challenge };
+  const before = stub.written.length;
+
+  const response = await agentVerify({
+    pending_secret: begun.pending_secret,
+    gist_id: "abc123",
+  });
+  assert.equal(response.status, 503);
+  const body = await response.json();
+  assert.equal(body.error, "Palomar is at capacity");
+  assert.equal(body.proof_consumed, true);
+  assert.match(body.restart, /Start a new submission and create a new proof/);
+  assert.deepEqual(
+    stub.written.slice(before).filter((item) => item.path.includes("submissions/")),
+    [],
+  );
+  assert.deepEqual(stub.dispatched, []);
+});
+
 test("an admitted submission is put where the reviewer will find it", async () => {
   // The reviewer used to find its work by listing `submissions/`, which is an
   // API call per submission per pass and stops at the thousand names the
@@ -1112,7 +1450,7 @@ test("an admitted submission is put where the reviewer will find it", async () =
   assert.deepEqual(index.value.open, [body.submission_id]);
 });
 
-test("indexing a submission keeps the entries and the rebuild clock beside it", async () => {
+test("indexing preserves reviewer-owned fields without interpreting them", async () => {
   // Written by two writers: this one appends, the reviewer prunes and records
   // when the whole file next needs rebuilding from the records. Dropping what
   // the other end put there would make the index look permanently overdue, and
@@ -1121,6 +1459,7 @@ test("indexing a submission keeps the entries and the rebuild clock beside it", 
   stub.store.set("index/open.json", {
     schema_version: 1,
     rebuild_after: "2099-01-01T00:00:00Z",
+    reviewer_owned: { format: "future", timestamp: "not-the-server's-contract" },
     open: ["aaaaaaaaaaaa"],
   });
   const begun = await agentSubmit();
@@ -1133,6 +1472,9 @@ test("indexing a submission keeps the entries and the rebuild clock beside it", 
   const index = stub.written.find((item) => item.path === "index/open.json");
   assert.deepEqual(index.value.open, ["aaaaaaaaaaaa", body.submission_id]);
   assert.equal(index.value.rebuild_after, "2099-01-01T00:00:00Z");
+  assert.deepEqual(index.value.reviewer_owned, {
+    format: "future", timestamp: "not-the-server's-contract",
+  });
 });
 
 test("a proof that does not hold admits nothing", async () => {
@@ -1221,7 +1563,10 @@ test("starting a submission doubles the wait, and only registering clears it", a
   // The second is refused, because the first has not been registered.
   const second = await submit();
   assert.equal(second.status, 429);
-  assert.match((await second.json()).error, /rate limit/);
+  const refused = await second.json();
+  assert.match(refused.error, /rate limit/);
+  assert.equal(refused.proof_consumed, true);
+  assert.match(refused.restart, /Start a new submission and create a new proof/);
 
   // Time passing lets it through, and doubles the wait again.
   const file = [...stub.store.keys()].find((path) => path.startsWith("index/rate/"));
@@ -1412,6 +1757,92 @@ test("the status read is guarded too, because it is not really a read", async ()
   assert.equal(written.length, 0, "a forged status read still moved the submission");
 });
 
+test("status refresh reports inflight contract failures as typed retryable 503s", async () => {
+  const run = {
+    id: 12345,
+    name: "Verify submission a1b2c3d4e5f6",
+    status: "completed",
+    conclusion: "success",
+    html_url: "https://example.test/run",
+    run_started_at: "2026-08-01T00:00:00Z",
+  };
+  const files = {
+    ...(await fixture({ status: "verifying" })),
+    "index/inflight.json": { open: "damaged" },
+  };
+  const { written } = stubState(files, [run]);
+  const response = await worker.fetch(request("/api/submission"), ENV);
+  assert.equal(response.status, 503);
+  assert.match(response.headers.get("content-type"), /application\/json/);
+  assert.deepEqual(await response.json(), {
+    error: "submission status is temporarily unavailable",
+  });
+  assert.deepEqual(written, [], "the malformed inflight index partially changed the record");
+});
+
+test("a broken reviewer queue leaves a completed verification held for a repaired retry", async () => {
+  const run = {
+    id: 12345,
+    name: "Verify submission a1b2c3d4e5f6",
+    status: "completed",
+    conclusion: "success",
+    html_url: "https://example.test/run",
+    run_started_at: "2026-08-01T00:00:00Z",
+  };
+  const held = {
+    id: "a1b2c3d4e5f6",
+    owner: "example",
+    submitter: "someone",
+    at: "2026-08-01T00:00:00Z",
+  };
+  const files = {
+    ...(await fixture({ status: "verifying" })),
+    "index/inflight.json": { open: [held] },
+    "index/open.json": { schema_version: 1, open: "damaged" },
+  };
+  const { written, store } = stubState(files, [run]);
+  const inner = globalThis.fetch;
+  const activity = [];
+  globalThis.fetch = async (url, init = {}) => {
+    const target = new URL(url);
+    const method = init.method ?? "GET";
+    if (method === "PUT" && target.pathname.endsWith("/index/open.json")) {
+      activity.push("open queue");
+    } else if (method === "POST" && target.pathname.includes("/actions/workflows/")) {
+      activity.push("dispatch reviewer");
+    } else if (method === "PUT" && target.pathname.endsWith("/index/inflight.json")) {
+      activity.push("release slot");
+    } else if (method === "PUT" && target.pathname.endsWith("/state.json")) {
+      activity.push("update record");
+    }
+    return inner(url, init);
+  };
+
+  const refreshEnv = { ...ENV, REVIEW_WORKFLOW: "reviewer.yml" };
+  const failed = await worker.fetch(request("/api/submission"), refreshEnv);
+  assert.equal(failed.status, 503);
+  assert.deepEqual(await failed.json(), {
+    error: "submission status is temporarily unavailable",
+  });
+  assert.deepEqual(store.get("index/inflight.json"), { open: [held] });
+  assert.deepEqual(written, [], "queue failure released capacity or changed the record");
+  assert.deepEqual(activity, [], "queue failure performed a partial transition");
+
+  store.set("index/open.json", { schema_version: 1, open: [] });
+  const retried = await worker.fetch(request("/api/submission"), refreshEnv);
+  assert.equal(retried.status, 200);
+  assert.equal((await retried.json()).status, "awaiting-review");
+  assert.deepEqual(store.get("index/open.json").open, ["a1b2c3d4e5f6"]);
+  assert.deepEqual(store.get("index/inflight.json"), { open: [] });
+  assert.equal(store.get(statePath("a1b2c3d4e5f6", "state.json")).status, "awaiting-review");
+  assert.deepEqual(activity, [
+    "open queue",
+    "dispatch reviewer",
+    "update record",
+    "release slot",
+  ]);
+});
+
 test("a pinned run is asked for by id, not searched for by name", async () => {
   // Searching by name and then refusing whatever came back would wedge a record
   // whose own run had simply fallen further down the list than the search
@@ -1458,7 +1889,9 @@ test("a run that nobody can find eventually gives its slot back", async () => {
   const old = "2026-01-01T00:00:00Z";
   const files = {
     ...(await fixture({ status: "verifying", created_at: old, run: undefined })),
-    "index/inflight.json": { open: [{ id: "a1b2c3d4e5f6", owner: "example", at: old }] },
+    "index/inflight.json": {
+      open: [{ id: "a1b2c3d4e5f6", owner: "example", submitter: "someone", at: old }],
+    },
   };
   const { written, store } = stubState(files, []);
 
@@ -1489,7 +1922,9 @@ test("a run that is merely queued is left alone however long it waits", async ()
   };
   const files = {
     ...(await fixture({ status: "verifying", created_at: old, run: { id: 999 } })),
-    "index/inflight.json": { open: [{ id: "a1b2c3d4e5f6", owner: "example", at: old }] },
+    "index/inflight.json": {
+      open: [{ id: "a1b2c3d4e5f6", owner: "example", submitter: "someone", at: old }],
+    },
   };
   const { store } = stubState(files, [queued]);
   await reconcile(ENV);
@@ -1510,7 +1945,12 @@ test("a second run carrying the same submission id cannot settle the record", as
   };
   const files = {
     ...(await fixture({ status: "verifying", run: { id: 12345 } })),
-    "index/inflight.json": { open: [{ id: "a1b2c3d4e5f6", owner: "example", at: "2026-08-01T00:00:00Z" }] },
+    "index/inflight.json": {
+      open: [{
+        id: "a1b2c3d4e5f6", owner: "example", submitter: "someone",
+        at: "2026-08-01T00:00:00Z",
+      }],
+    },
   };
   const { store } = stubState(files, [impostor]);
   await reconcile(ENV);
@@ -1531,13 +1971,53 @@ test("a submission that settles is put where the reviewer will find it", async (
   };
   const files = {
     ...(await fixture({ status: "verifying", run: { id: 12345 } })),
-    "index/inflight.json": { open: [{ id: "a1b2c3d4e5f6", owner: "example", at: "2026-08-01T00:00:00Z" }] },
+    "index/inflight.json": {
+      open: [{
+        id: "a1b2c3d4e5f6", owner: "example", submitter: "someone",
+        at: "2026-08-01T00:00:00Z",
+      }],
+    },
     "index/open.json": { schema_version: 1, open: [] },
   };
   const { store } = stubState(files, [done]);
   await reconcile(ENV);
   assert.equal(store.get(statePath("a1b2c3d4e5f6", "state.json")).status, "awaiting-review");
   assert.deepEqual(store.get("index/open.json").open, ["a1b2c3d4e5f6"]);
+});
+
+test("one malformed reviewer queue does not retain unrelated terminal slots", async () => {
+  const awaitingId = "a1b2c3d4e5f6";
+  const terminalId = "b1b2c3d4e5f6";
+  const done = {
+    id: 12345, name: `Verify submission ${awaitingId}`, status: "completed",
+    conclusion: "success", html_url: "https://example.test/run",
+    run_started_at: "2026-08-01T00:00:00Z",
+  };
+  const files = {
+    ...(await fixture({ status: "verifying", run: { id: 12345 } })),
+    "index/inflight.json": {
+      open: [
+        { id: awaitingId, owner: "example", submitter: "someone", at: "2026-08-01T00:00:00Z" },
+        { id: terminalId, owner: "other", submitter: "elsewhere", at: "2026-08-01T00:00:01Z" },
+      ],
+    },
+    "index/open.json": { schema_version: 1, open: "malformed" },
+    [statePath(terminalId, "state.json")]: {
+      schema_version: 1, id: terminalId, status: "verification-failed",
+    },
+  };
+  const { store } = stubState(files, [done]);
+
+  await assert.rejects(
+    () => worker.scheduled({}, ENV),
+    /reconcile.*index\/open\.json is unavailable; successful verification was not queued/,
+  );
+  assert.equal(
+    store.get(statePath(awaitingId, "state.json")).status,
+    "verifying",
+    "an unqueued successful verification was settled anyway",
+  );
+  assert.deepEqual(store.get("index/inflight.json").open, [files["index/inflight.json"].open[0]]);
 });
 
 test("a run past the first page is still found", async () => {
@@ -1598,7 +2078,10 @@ test("a run found again clears a miss recorded before it", async () => {
       run: undefined, run_misses: 1,
     })),
     "index/inflight.json": {
-      open: [{ id: "a1b2c3d4e5f6", owner: "example", at: "2026-01-01T00:00:00Z" }],
+      open: [{
+        id: "a1b2c3d4e5f6", owner: "example", submitter: "someone",
+        at: "2026-01-01T00:00:00Z",
+      }],
     },
   };
   const { store } = stubState(files, [queued]);

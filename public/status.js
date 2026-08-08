@@ -1,4 +1,4 @@
-import { SETTLED, nextPollDelay } from "/polling.js";
+import { SETTLED, nextPollDelay, pollFailureAction } from "/polling.js";
 
 // The access token lives in the URL fragment, which browsers never send to a
 // server. It is posted once in exchange for a short-lived cookie, then removed
@@ -239,7 +239,21 @@ async function poll() {
   let data;
   try {
     const response = await fetch("/api/submission", { credentials: "same-origin" });
-    if (!response.ok) { summary.textContent = "This submission could not be found."; return; }
+    if (!response.ok) {
+      const failure = pollFailureAction(response.status);
+      if (failure === "missing") {
+        summary.textContent = "This submission could not be found.";
+        return;
+      }
+      if (failure === "unauthorized") {
+        summary.textContent =
+          "This session has expired or is not authorized. Open the original submission link again.";
+        return;
+      }
+      summary.textContent = "Could not refresh this submission. Retrying.";
+      askAgain(lastStatus);
+      return;
+    }
     data = await response.json();
   } catch {
     // An unreachable server is a reason to ask less often, not a reason to

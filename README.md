@@ -113,12 +113,40 @@ pending/<digest>.json         # a one-time intake nonce, consumed at the OAuth
                               #   callback or at /api/verify, swept after an hour
 ```
 
+`index/inflight.json` has exactly one top-level field, `open`, and no versioned
+pre-launch variants. Each entry has exactly `id`, `owner`, `submitter`, and
+`at`. The id is the current 12-character lowercase submission id; owner and
+submitter are GitHub logins (`owner` may be `null`); and `at` is a UTC timestamp
+at whole-second precision. Duplicate ids, missing or extra fields, noncanonical
+timestamps, and a missing file stop admission and reconciliation visibly. They
+are not coerced to an empty list or treated as if the repository owner were the
+submitter.
+
+`index/open.json` is likewise required. The server consumes only its
+`schema_version: 1` marker and an `open` array of unique current submission ids.
+Every other top-level field belongs to the reviewer: the server preserves it on
+append without interpreting its shape or timestamp precision. A missing or
+malformed queue is never replaced as though it were empty.
+
+Before pointing a fresh or staging Worker at a new state repository, copy the
+two files in `state-bootstrap/index/` to `index/` and commit them. Deploying the
+Worker before that initialization deliberately leaves intake unavailable; it
+does not silently grant unbounded capacity.
+
+These files are separate GitHub commits, not a transaction. Validation and
+compare-and-swap writes prevent a known-bad index or a concurrent edit from
+being silently overwritten, but a conflict after an earlier commit can leave a
+partial admission or decision. A later request can retry an entry whose
+reservation remains in flight; other partial states require an operator.
+
 `index/open.json` holds every submission the reviewer is not yet finished with.
 This server adds an id when it admits one, and the reviewer drops one when the
 record says there is nothing left to do to it, so a reviewer pass costs the
-queue rather than the size of the registry. It is derived rather than
-authoritative: an index that is missing, damaged, or too old is rebuilt from
-every record, so losing this file costs one rebuild and no submissions.
+queue rather than the size of the registry. The reviewer can rebuild this
+derived queue from the records on its maintenance path, but the server does not
+silently reconstruct or overwrite it. A missing or malformed queue makes intake
+and affected status transitions unavailable until the reviewer or an operator
+restores it.
 
 `index/rate/<digest>.json` slows down a submitter who keeps starting and never
 finishes. Starting is the expensive act: it dispatches a verification run that
@@ -171,6 +199,12 @@ Pushes to `main` are deployed automatically after the test suite passes. The
 GitHub repository must provide `CLOUDFLARE_ACCOUNT_ID` and
 `CLOUDFLARE_API_TOKEN` as Actions secrets. CI uploads and promotes a version;
 it does not change the existing route or cron trigger.
+
+Before the first deployment against a State repository, commit both files from
+`state-bootstrap/index/` as described above. Admission and scheduled
+reconciliation validate the contracts before using them; `/healthz` stays a
+network-free configuration check so public monitoring cannot spend the shared
+GitHub API budget.
 
 To deploy manually:
 

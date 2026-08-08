@@ -97,9 +97,125 @@ const REQUIRED_SECRETS = [
 
 // The reviewer's queue: every submission it is not yet finished with. This end
 // adds one when it admits a submission; the reviewer drops one when the record
-// says there is nothing left to do to it, and rebuilds the whole file from the
-// records if it is missing, damaged, or too old to trust.
+// says there is nothing left to do to it. The reviewer can rebuild the derived
+// file from records; this server treats absence or damage as unavailable state.
 const OPEN_INDEX_PATH = "index/open.json";
+
+const SUBMISSION_ID_RE = /^[0-9a-z]{12}$/;
+// GitHub.com logins are at most 39 characters. Accept the provider's safe
+// alphanumeric/hyphen/underscore envelope rather than reimplementing its
+// evolving ordinary and managed-user naming rules after proof has succeeded.
+const GITHUB_LOGIN_RE = /^[A-Za-z0-9_-]{1,39}$/;
+const UTC_SECONDS_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
+
+class StateContractError extends Error {}
+
+function plainObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function hasExactlyKeys(value, expected) {
+  const actual = Object.keys(value).sort();
+  const wanted = [...expected].sort();
+  return actual.length === wanted.length && actual.every((key, index) => key === wanted[index]);
+}
+
+function canonicalUtcSeconds(value) {
+  if (typeof value !== "string" || !UTC_SECONDS_RE.test(value)) return false;
+  const parsed = new Date(value);
+  return !Number.isNaN(parsed.valueOf()) &&
+    parsed.toISOString().replace(/\.\d+Z$/, "Z") === value;
+}
+
+/**
+ * The one inflight-index shape this pre-launch server writes and reads.
+ *
+ * Treating an absent or malformed `open` as an empty list silently disables
+ * admission limits. Treating an entry without `submitter` as though its owner
+ * were the submitter invents an identity the record never established. State
+ * that predates this contract must be migrated explicitly instead.
+ */
+function inflightOpen(value) {
+  if (!plainObject(value) || !hasExactlyKeys(value, ["open"]) || !Array.isArray(value.open)) {
+    throw new StateContractError(
+      "index/inflight.json must contain exactly one top-level open array",
+    );
+  }
+
+  const ids = new Set();
+  for (const [index, item] of value.open.entries()) {
+    const prefix = `index/inflight.json open[${index}]`;
+    if (!plainObject(item) ||
+        !hasExactlyKeys(item, ["id", "owner", "submitter", "at"])) {
+      throw new StateContractError(
+        `${prefix} must contain exactly id, owner, submitter, and at`,
+      );
+    }
+    if (typeof item.id !== "string" || !SUBMISSION_ID_RE.test(item.id)) {
+      throw new StateContractError(`${prefix}.id must be a 12-character submission id`);
+    }
+    if (ids.has(item.id)) {
+      throw new StateContractError(`${prefix}.id duplicates another inflight submission`);
+    }
+    ids.add(item.id);
+    if (item.owner !== null &&
+        (typeof item.owner !== "string" || !GITHUB_LOGIN_RE.test(item.owner))) {
+      throw new StateContractError(`${prefix}.owner must be a GitHub login or null`);
+    }
+    if (typeof item.submitter !== "string" || !GITHUB_LOGIN_RE.test(item.submitter)) {
+      throw new StateContractError(`${prefix}.submitter must be a GitHub login`);
+    }
+    if (!canonicalUtcSeconds(item.at)) {
+      throw new StateContractError(`${prefix}.at must be a canonical UTC-seconds timestamp`);
+    }
+  }
+  return value.open;
+}
+
+/**
+ * The reviewer owns the rebuild timestamps beside this queue. The server owns
+ * appending ids. Both must refuse a missing or malformed queue instead of
+ * replacing it with the one id they happen to know about.
+ */
+function reviewerOpen(value) {
+  if (!plainObject(value) || value.schema_version !== 1 || !Array.isArray(value.open)) {
+    throw new StateContractError(
+      `${OPEN_INDEX_PATH} must be a schema-version 1 object with an open array`,
+    );
+  }
+  // The reviewer owns every other top-level field. Preserve those bytes on
+  // append, but do not validate data this server neither reads nor writes.
+  const ids = new Set();
+  for (const [index, id] of value.open.entries()) {
+    if (typeof id !== "string" || !SUBMISSION_ID_RE.test(id)) {
+      throw new StateContractError(`${OPEN_INDEX_PATH} open[${index}] is not a submission id`);
+    }
+    if (ids.has(id)) {
+      throw new StateContractError(`${OPEN_INDEX_PATH} open[${index}] is duplicated`);
+    }
+    ids.add(id);
+  }
+  return value.open;
+}
+
+async function readContractIndex(env, path, validate) {
+  let index;
+  try {
+    index = await readState(env, path);
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) throw error;
+    throw new StateContractError(`${path} must contain valid JSON`);
+  }
+  return { ...index, open: validate(index.value) };
+}
+
+function readInflightIndex(env) {
+  return readContractIndex(env, "index/inflight.json", inflightOpen);
+}
+
+function readReviewerIndex(env) {
+  return readContractIndex(env, OPEN_INDEX_PATH, reviewerOpen);
+}
 
 function isCurrentReview(review, submissionId) {
   return review !== null && typeof review === "object" && !Array.isArray(review) &&
@@ -195,6 +311,28 @@ function intakeUnavailable(env, machine) {
         ]),
         503,
       );
+}
+
+const CONSUMED_PROOF_RESTART =
+  "This proof was consumed. Start a new submission and create a new proof.";
+
+function consumedProofResponse(body, status) {
+  return json({
+    ...body,
+    proof_consumed: true,
+    restart: CONSUMED_PROOF_RESTART,
+  }, status);
+}
+
+function spentSignInProblems(problems = []) {
+  return [
+    ...problems,
+    "That GitHub sign-in was spent. Start a new submission from the submission form.",
+  ];
+}
+
+function reportStateContract(error) {
+  console.error("state-contract", error.message);
 }
 
 // Pending intake that may exist at once, across everybody. This limits ordinary
@@ -589,8 +727,14 @@ function describeInterval(seconds) {
  * alone never noticed, because a fresh organisation buys fresh slots.
  */
 async function admit(env, { owner, submitter }) {
-  const inflight = await readState(env, "index/inflight.json");
-  const open = Array.isArray(inflight.value?.open) ? inflight.value.open : [];
+  // Validate both shared indexes before creating a record. In particular, a
+  // damaged reviewer queue must not be replaced with this submission after
+  // the inflight write has already committed.
+  const [inflight] = await Promise.all([
+    readInflightIndex(env),
+    readReviewerIndex(env),
+  ]);
+  const open = inflight.open;
   if (open.length >= MAX_INFLIGHT_TOTAL) {
     return {
       refused: true, status: 503, title: "Palomar is at capacity",
@@ -606,9 +750,7 @@ async function admit(env, { owner, submitter }) {
       ],
     };
   }
-  // `item.submitter ?? item.owner` so entries written before this shipped are
-  // still counted as something rather than silently as nobody.
-  const mine = open.filter((item) => (item.submitter ?? item.owner) === submitter).length;
+  const mine = open.filter((item) => item.submitter === submitter).length;
   if (mine >= MAX_INFLIGHT_PER_SUBMITTER) {
     return {
       refused: true, status: 429, title: "You already have submissions in flight",
@@ -660,14 +802,21 @@ async function admitSubmission(env, { pending, owner, submitter, proof }) {
     token_sha256: await tokenDigest(env, token),
     events: [{ at: now(), status: "verifying", note: "Mechanical verification dispatched" }],
   };
+  const nextInflight = [...open, { id, owner, submitter, at: record.created_at }];
+  // Validate the bytes we are about to write as well as the bytes we read.
+  // Provider logins are untrusted input at this boundary.
+  inflightOpen({ open: nextInflight });
   await writeState(env, statePath(id, "state.json"), record, `Open submission ${id}`);
   await writeState(
     env,
     "index/inflight.json",
-    { open: [...open, { id, owner, submitter, at: record.created_at }] },
+    { open: nextInflight },
     `Admit ${id}`,
     inflight.sha,
   );
+  // Re-read after the two preceding commits. The first read above is the
+  // fail-closed precondition; this one avoids widening the optimistic-SHA race
+  // with the reviewer by carrying an older queue version across those writes.
   await openSubmission(env, id);
   await writeState(
     env,
@@ -796,27 +945,45 @@ async function verifySubmission(request, env) {
     return json({ error: "that submission could not be claimed; try again" }, 409);
   }
 
-  const admitted = await admitSubmission(env, {
-    pending: pending.value,
-    owner: repo?.owner?.login ?? null,
-    submitter: gist.principal.login,
-    proof: {
-      schema_version: 1,
-      method: "tag-and-gist",
-      binding: "separately-attested",
-      verified_at: now(),
-      repository_id: pending.value.repository_id,
-      commit,
-      challenge_sha256: await digest(challenge),
-      principal: gist.principal,
-    },
-  });
+  let admitted;
+  try {
+    admitted = await admitSubmission(env, {
+      pending: pending.value,
+      owner: repo?.owner?.login ?? null,
+      submitter: gist.principal.login,
+      proof: {
+        schema_version: 1,
+        method: "tag-and-gist",
+        binding: "separately-attested",
+        verified_at: now(),
+        repository_id: pending.value.repository_id,
+        commit,
+        challenge_sha256: await digest(challenge),
+        principal: gist.principal,
+      },
+    });
+  } catch (error) {
+    if (error instanceof StateContractError) {
+      reportStateContract(error);
+      return consumedProofResponse({
+        error: "submission intake is temporarily unavailable",
+      }, 503);
+    }
+    console.error("agent-admission", error?.stack ?? String(error));
+    return consumedProofResponse({
+      error: "submission intake could not be completed",
+    }, 500);
+  }
   if (admitted.refused) {
-    return json({ error: admitted.title, detail: admitted.detail }, admitted.status);
+    return consumedProofResponse(
+      { error: admitted.title, detail: admitted.detail },
+      admitted.status,
+    );
   }
   return json({
     submission_id: admitted.id,
     access_token: admitted.token,
+    proof_consumed: true,
     status_url: `${new URL(request.url).origin}/s#${admitted.token}`,
     next: [
       `Delete both artifacts now:`,
@@ -932,10 +1099,13 @@ async function completeSubmission(request, env) {
   if (!submitter) {
     // Every quota keys on this. Without it the old code bucketed submissions
     // under the empty string, where they throttled each other.
-    return html(errorPage(env, "GitHub did not say who you are", [
-      "Palomar could not read your GitHub login, and admits nothing it cannot",
-      "attribute. Please try again.",
-    ]), 502);
+    return html(
+      errorPage(env, "GitHub did not say who you are", spentSignInProblems([
+        "Palomar could not read your GitHub login, and admits nothing it cannot attribute.",
+      ])),
+      502,
+      { "set-cookie": await intakeCookie(nonce, null, { clear: true }) },
+    );
   }
 
   // Anyone who can prove push access to any public repository can reach this
@@ -944,22 +1114,44 @@ async function completeSubmission(request, env) {
   // exist. This is deliberately blunt: refusing a genuine submitter with a
   // clear message is recoverable, exhausting the runners is not.
   const owner = viewer.owner?.login ?? null;
-  const admitted = await admitSubmission(env, {
-    pending: pending.value,
-    owner,
-    submitter,
-    proof: {
-      schema_version: 1,
-      method: "oauth",
-      binding: "same-account",
-      verified_at: now(),
-      repository_id: viewer.id ?? null,
-      commit: pending.value.commit,
-      principal: { login: submitter, id: user?.id ?? null },
-    },
-  });
+  let admitted;
+  try {
+    admitted = await admitSubmission(env, {
+      pending: pending.value,
+      owner,
+      submitter,
+      proof: {
+        schema_version: 1,
+        method: "oauth",
+        binding: "same-account",
+        verified_at: now(),
+        repository_id: viewer.id ?? null,
+        commit: pending.value.commit,
+        principal: { login: submitter, id: user?.id ?? null },
+      },
+    });
+  } catch (error) {
+    const contractFailure = error instanceof StateContractError;
+    if (contractFailure) reportStateContract(error);
+    else console.error("browser-admission", error?.stack ?? String(error));
+    return html(
+      errorPage(
+        env,
+        contractFailure
+          ? "Submission intake is temporarily unavailable"
+          : "Submission intake could not be completed",
+        spentSignInProblems(["This is ours to fix, not yours."]),
+      ),
+      contractFailure ? 503 : 500,
+      { "set-cookie": await intakeCookie(nonce, null, { clear: true }) },
+    );
+  }
   if (admitted.refused) {
-    return html(errorPage(env, admitted.title, admitted.detail), admitted.status);
+    return html(
+      errorPage(env, admitted.title, spentSignInProblems(admitted.detail)),
+      admitted.status,
+      { "set-cookie": await intakeCookie(nonce, null, { clear: true }) },
+    );
   }
   const { token } = admitted;
   return new Response(null, {
@@ -1073,7 +1265,10 @@ async function refresh(env, entry) {
     ];
   }
   if (next.status !== "verifying" && record.status === "verifying") {
-    await release(env, record.id);
+    // Validate the capacity contract before another index can be changed. The
+    // release itself deliberately re-reads after queueing, so it does not carry
+    // this older optimistic SHA across the intervening work.
+    await assertInflightContract(env);
   }
   if (next.status === "awaiting-review") {
     // Before the record says `awaiting-review`, and not caught. A submission
@@ -1083,7 +1278,13 @@ async function refresh(env, entry) {
     // looks like it needs anything. Failing leaves it `verifying`, which the
     // next pass retries.
     await openSubmission(env, record.id);
-    // Failing to ask only costs the schedule's latency, so it is not fatal.
+    // `openSubmission` is idempotent, so a failed pass can safely retry it.
+    // Dispatch itself may be repeated on a retry, but each reviewer invocation
+    // reads the same queue with this id present and converges on the same
+    // record; the schedule is also a backstop. Failing to ask only costs that
+    // schedule's latency, so it is not fatal. Crucially, the slot remains held
+    // until both steps have been attempted, so a malformed queue cannot strand
+    // a verifying record outside reconciliation.
     await dispatchReviewer(env).catch(() => false);
   }
   if (JSON.stringify(next) !== JSON.stringify(record)) {
@@ -1094,6 +1295,14 @@ async function refresh(env, entry) {
       `Update ${record.id}: ${next.status}`,
       entry.sha,
     );
+  }
+  if (next.status !== "verifying" && record.status === "verifying") {
+    // Commit the terminal state before releasing capacity. If the fresh
+    // compare-and-swap release then fails, scheduled reconciliation sees the
+    // non-verifying record and drops the stale reservation. Releasing first
+    // could instead leave a verifying record outside the only set reconciliation
+    // walks.
+    await release(env, record.id);
   }
   return next;
 }
@@ -1110,26 +1319,33 @@ async function refresh(env, entry) {
  * Only the reviewer removes entries, once the record says it is finished with
  * one. Adding has to happen here, because a submission the index never hears
  * about is a submission nothing reviews until the index is next rebuilt from
- * scratch. Written under the sha it was read at, like every other index: two
- * admissions landing together must not lose one of themselves.
+ * scratch. Written under the sha it was read at, like every other index, so a
+ * concurrent change is surfaced instead of overwritten. That compare-and-swap
+ * does not make the record, inflight index, and reviewer queue one transaction;
+ * a conflict after an earlier write can still leave a partial admission.
  */
 async function openSubmission(env, id) {
-  const index = await readState(env, OPEN_INDEX_PATH);
-  const open = Array.isArray(index.value?.open) ? index.value.open : [];
+  const index = await readReviewerIndex(env);
+  const open = index.open;
   if (open.includes(id)) return;
   await writeState(
     env,
     OPEN_INDEX_PATH,
-    { schema_version: 1, ...(index.value ?? {}), open: [...open, id] },
+    { ...index.value, open: [...open, id] },
     `Open ${id}`,
     index.sha,
   );
 }
 
+async function assertInflightContract(env) {
+  await readInflightIndex(env);
+}
+
 async function release(env, id) {
-  const inflight = await readState(env, "index/inflight.json");
-  const open = Array.isArray(inflight.value?.open) ? inflight.value.open : [];
-  if (!open.some((item) => item.id === id)) return;
+  const inflight = await readInflightIndex(env);
+  const open = inflight.open;
+  const changed = open.some((item) => item.id === id);
+  if (!changed) return;
   await writeState(env, "index/inflight.json",
                    { open: open.filter((item) => item.id !== id) },
                    `Release ${id}`, inflight.sha);
@@ -1141,15 +1357,18 @@ async function release(env, id) {
  * Slots used to be released only when the submitter's page polled, so closing
  * the tab held one forever and enough abandoned submissions would wedge
  * intake. This runs on a schedule instead, so nothing depends on a browser
- * staying open.
+ * staying open. It may throw after committing safe partial progress: in
+ * particular it releases unrelated terminal reservations, then fails the run
+ * if a malformed reviewer queue kept a successful verification from settling.
  */
 // Exported for the tests, like `sweepPending`. Nothing else calls it: it is the
 // cron path, and driving it directly is the only way to test the case where
 // nobody is watching.
 export async function reconcile(env) {
-  const inflight = await readState(env, "index/inflight.json");
-  const open = Array.isArray(inflight.value?.open) ? inflight.value.open : [];
+  const inflight = await readInflightIndex(env);
+  const open = inflight.open;
   const still = [];
+  let reviewerQueueUnavailable = false;
   for (const item of open) {
     const record = await readState(env, statePath(item.id, "state.json"));
     if (!record.value) continue;               // vanished: do not hold its slot
@@ -1194,7 +1413,21 @@ export async function reconcile(env) {
       // thing that gets retried is a submission still in flight. The reviewer's
       // weekly sweep would rebuild the whole index eventually, but a week is
       // not a repair for a submitter waiting on a review.
-      if (settled === "awaiting-review") await openSubmission(env, item.id);
+      if (settled === "awaiting-review") {
+        if (reviewerQueueUnavailable) {
+          still.push(item);
+          continue;
+        }
+        try {
+          await openSubmission(env, item.id);
+        } catch (error) {
+          if (!(error instanceof StateContractError)) throw error;
+          reportStateContract(error);
+          reviewerQueueUnavailable = true;
+          still.push(item);
+          continue;
+        }
+      }
       const done = {
         ...record.value,
         run,
@@ -1207,9 +1440,9 @@ export async function reconcile(env) {
                        `Reconcile ${item.id}`, record.sha);
       if (settled === "awaiting-review") {
         // Idempotent and cheap. A submission that settles without an entry here
-        // is one the reviewer's pass never looks at, and nothing rebuilds this
-        // file for a single missing id: it is rebuilt when it is absent,
-        // damaged, or stale, and one short is none of those.
+        // is one the reviewer's pass never looks at. The reviewer can rebuild
+        // the derived queue on its maintenance path, but this server never
+        // treats a missing id or malformed queue as an empty one.
         await dispatchReviewer(env).catch(() => false);
       }
       continue;
@@ -1257,6 +1490,11 @@ export async function reconcile(env) {
   if (still.length !== open.length) {
     await writeState(env, "index/inflight.json", { open: still },
                      "Reconcile admissions", inflight.sha);
+  }
+  if (reviewerQueueUnavailable) {
+    throw new StateContractError(
+      `${OPEN_INDEX_PATH} is unavailable; successful verification was not queued`,
+    );
   }
   return { released: open.length - still.length, open: still.length };
 }
@@ -1423,6 +1661,19 @@ export default {
         if (CLOSED.has(entry.record.status)) {
           return json({ error: `already ${entry.record.status}` }, 409);
         }
+        // Verifying records are the ones expected to hold admission capacity.
+        // A later state can temporarily retain a stale slot after a failed
+        // release, but scheduled reconciliation owns that repair; withdrawal
+        // must remain available despite unrelated capacity-index damage.
+        if (entry.record.status === "verifying") {
+          try {
+            await assertInflightContract(env);
+          } catch (error) {
+            if (!(error instanceof StateContractError)) throw error;
+            reportStateContract(error);
+            return json({ error: "submission decisions are temporarily unavailable" }, 503);
+          }
+        }
         const next = {
           ...entry.record,
           status: "withdrawn",
@@ -1431,7 +1682,7 @@ export default {
         };
         await writeState(env, statePath(next.id, "state.json"), next,
                          `Withdraw ${next.id}`, entry.sha);
-        await release(env, next.id);
+        if (entry.record.status === "verifying") await release(env, next.id);
         return json({ ok: true });
       }
       if (request.method === "GET" && url.pathname === "/api/review") {
@@ -1529,7 +1780,14 @@ export default {
         // depending on the render CSP for that is the point of this change.
         const entry = await caller(env, request, { mutating: true });
         if (entry instanceof Response) return entry;
-        const record = await refresh(env, entry);
+        let record;
+        try {
+          record = await refresh(env, entry);
+        } catch (error) {
+          if (!(error instanceof StateContractError)) throw error;
+          reportStateContract(error);
+          return json({ error: "submission status is temporarily unavailable" }, 503);
+        }
         return json({
           id: record.id,
           status: record.status,
@@ -1557,7 +1815,7 @@ export default {
       console.error("unhandled", url.pathname, String(error?.stack ?? error));
       return html(
         errorPage(env, "Palomar could not complete that just now", [
-          "Nothing was lost. Try again in a moment.",
+          "Try again in a moment. If you were making a decision, check its current status first.",
         ]),
         500,
       );

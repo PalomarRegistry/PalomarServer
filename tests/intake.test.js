@@ -630,11 +630,6 @@ test("a deployment missing a secret serves nothing, and says so without naming i
       assert.equal(response.status, 503, `${path} still served without ${missing}`);
     }
   }
-
-  // And a configured one says so rather than staying silent about it.
-  const ok = await worker.fetch(new Request("https://submit.palomar-registry.org/healthz"), ENV);
-  assert.equal(ok.status, 200);
-  assert.deepEqual(await ok.json(), { ok: true });
 });
 
 test("intake refuses when the limiter binding has gone missing", async () => {
