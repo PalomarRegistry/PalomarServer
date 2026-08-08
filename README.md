@@ -1,7 +1,8 @@
 # Palomar submission server
 
-A Cloudflare Worker that takes submissions, proves the submitter can push to
-the repository they are submitting, and keeps every durable fact in GitHub.
+A Cloudflare Worker that takes submissions, establishes that whoever submitted
+can push to the repository they submitted, and keeps every durable fact in
+GitHub.
 
 Live at <https://submit.palomar-registry.org>.
 
@@ -29,14 +30,28 @@ assume:
 
 ## Identity
 
-There is no account. The submitter signs in with GitHub once, purely so the
-server can check `permissions.push` on the repository being submitted, and the
-token is discarded immediately. Afterwards the only way back to a submission
-is the link, whose secret lives in the URL fragment so it never reaches a
-server log or a `Referer` header.
+There is no account. There are two ways in, and a record says which one it came
+through, because they do not prove the same thing.
 
-The key is carried after the `#` because a browser leaves that part out of the
-requests it makes, so it does not reach an access log or a `Referer` header.
+A person signs in with GitHub once, so the server can check `permissions.push`
+on the repository being submitted and read the login it is answering for. The
+token is discarded immediately and written nowhere; the login is kept, because
+it is what the quotas count against. GitHub answered for the same account that
+authorised Palomar, so one account both can push and identified itself.
+
+An agent has no browser, and drives a tag at the submitted commit plus a secret
+gist carrying the same challenge. Creating a ref needs the same write access;
+the gist supplies an identity, because a ref records no author and a third party
+cannot ask GitHub who has push. That establishes that someone who can push
+submitted the repository and that an account named itself, which are not
+provably the same account, so the record carries `separately-attested` rather
+than `same-account` and the two are not treated as equivalent anywhere.
+
+Afterwards the only way back to a submission is its access token. On the agent
+path there is no link to put it in, so `/api/verify` returns it in the response
+body. On the browser path it is carried after the `#`, because a browser leaves
+that part out of the requests it makes, so it does not reach an access log or a
+`Referer` header.
 The status page does send it to Palomar once, in the body of a `POST`, to
 exchange it for a short-lived cookie. Saying it is "never sent to a server"
 would be wrong, and the page does not say so: it says to treat the link like a
@@ -55,8 +70,8 @@ and never appear in the repository:
 | --- | --- | --- |
 | `OAUTH_CLIENT_ID` | GitHub OAuth App client id, for the push-access check | — |
 | `OAUTH_CLIENT_SECRET` | its client secret | — |
-| `GITHUB_TOKEN` | writes submission state and asks the reviewer to run | `PalomarSubmissionState`, contents and actions |
-| `SUBMISSION_TOKEN` | starts and reads verification runs | `PalomarSubmission`, actions |
+| `GITHUB_TOKEN` | writes submission state, asks the reviewer to run, and reads public repository metadata for the repository being submitted | `PalomarSubmissionState`, contents and actions, plus public reads |
+| `SUBMISSION_TOKEN` | starts and reads verification runs, and reads the submitter's public ref and gist while checking a proof | `PalomarSubmission`, actions, plus public reads |
 | `TOKEN_PEPPER` | so a leaked state repository does not yield live links | — |
 
 Two GitHub tokens, not one, because a fine-grained token grants the same
@@ -90,9 +105,12 @@ review contract can be registered; an older in-flight review must be rerun.
 submissions/<id>/state.json   # the record: status, source, authorization, run, consent
 submissions/<id>/review.json  # the private review, once delivered
 index/tokens/<digest>.json    # access token digest to submission id
+index/rate/<digest>.json      # how long this submitter waits before starting again
 index/inflight.json           # admission slots, released by cron reconciliation
 index/open.json               # the reviewer's queue: added here, pruned there
-pending/<digest>.json         # a one-time intake nonce, consumed at OAuth callback
+index/review-timing.json      # how long recent reviews took, for the estimate
+pending/<digest>.json         # a one-time intake nonce, consumed at the OAuth
+                              #   callback or at /api/verify, swept after an hour
 ```
 
 `index/open.json` holds every submission the reviewer is not yet finished with.
@@ -102,20 +120,50 @@ queue rather than the size of the registry. It is derived rather than
 authoritative: an index that is missing, damaged, or too old is rebuilt from
 every record, so losing this file costs one rebuild and no submissions.
 
+`index/rate/<digest>.json` slows down a submitter who keeps starting and never
+finishes. Starting is the expensive act: it dispatches a verification run that
+takes a quarter of an hour of somebody's runners whether or not anything comes
+of it. So the interval is sixty seconds to begin with, doubles every time a
+submission is started, and is put back to that floor only by a completed
+registration. A submission that fails verification, or is withdrawn, leaves it
+where it is, because those are exactly the loops worth slowing down.
+
+There is no ceiling, and that is deliberate rather than an omission to fix.
+Twenty starts with nothing registered is already years; nobody submitting in
+good faith reaches it, and the failure worth designing for is the other one, a
+person locked out with no way back on their own. The escape hatch is an operator
+deleting one file, which is why the file records the login and the time beside
+the interval even though its name is a peppered digest of the principal. The
+name is a digest for the same reason `index/tokens/` is: listing the directory
+should not enumerate everyone who has ever submitted.
+
+This server applies the reset, not the reviewer, even though the reviewer is
+what registers. It sees the reset when a status refresh finds the submission
+settled at `registered`, so the good news and the reset arrive on the same
+request. Letting the reviewer do it would put `TOKEN_PEPPER` in reviewer CI, and
+that pepper exists so a leaked state repository yields no live links. Somebody
+who closes the tab between consenting and that poll waits longer once, and
+opening the link again fixes it.
+
 ## Operating a submission
 
-The scheduled workflow in the private PalomarSubmissionState repository
-normally runs these steps. The commands below are the manual and recovery
-interface for the same pipeline.
+The scheduled workflow in the private PalomarSubmissionState repository runs
+`palomar-review auto`, which is one command that advances everything in the
+queue. The commands below are the manual and recovery interface for the same
+pipeline, one submission at a time.
 
 ```bash
 palomar-review list                                  # what is awaiting review
-palomar-review run --submission <id> --engine codex  # dry run; nothing changes
+palomar-review run --submission <id> --engine codex  # writes no state
 palomar-review run --submission <id> --engine codex --apply   # deliver privately
 # the submitter decides, on their status page
 palomar-review register --submission <id>             # only after consent
 palomar-review finalize --submission <id> --pr <n>   # after the database PR merges
 ```
+
+`run` without `--apply` still runs the review: it calls the model, spends money,
+and writes a workspace. What it does not do is touch the state repository, which
+is the only thing `--apply` adds.
 
 ## Deploying
 

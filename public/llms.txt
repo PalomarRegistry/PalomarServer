@@ -52,8 +52,9 @@ a claim about *them*, not about the code, and it is recorded permanently.
     5. gh api -X DELETE repos/OWNER/REPO/git/refs/tags/palomar-verify-CHALLENGE
        gh api -X DELETE gists/GIST_ID
 
-If five calls where you expected one looks like a badly designed service, it is
-not: each one is load-bearing, and there is no shorter route to the same proof.
+That is five steps and six calls, because step 5 is two deletes. If six calls
+where you expected one looks like a badly designed service, it is not: each one
+is load-bearing, and there is no shorter route to the same proof.
 
 Creating a ref requires the same write access the browser sign-in checks for,
 which is what makes step 2 a proof rather than a formality. A ref records no
@@ -88,15 +89,26 @@ With the token you can drive the rest over plain HTTP. `POST /session` once with
   issue, before it is registered.
 - `POST /withdraw` — abandon the submission.
 
+`POST /session` reads a form, not JSON. A JSON body gets you an HTML error page
+rather than a useful one, which is the wrong way to learn this. The cookie lasts
+twelve hours, so a long-running agent exchanges the token again rather than
+assuming it still holds.
+
 Poll `GET /api/submission` at a human pace; a submission takes minutes, not
 seconds. Once a minute is fast enough while something is running, and once
-every five minutes while the status is `awaiting-review`, because the next
-thing that happens there is a scheduled reviewer pass. Every ask spends several
+every five minutes while the status is `awaiting-review` or `review-ready`,
+whose next move is on a clock nobody here controls. Every ask spends several
 calls of one GitHub budget shared by every submission there is, so a tight loop
 does not fail your submission faster, it fails everybody's. The status page
-keeps to the same schedule. It is settled at `registered`, `withdrawn`,
-`verification-failed`, or `review-failed`. A `revise` decision means read the review, help fix what it
-found, and submit the corrected commit as a new submission.
+starts faster than that and backs off to the same ceiling, and stops asking
+altogether while nobody is looking at it.
+
+A submission is settled at `registered`, `withdrawn`, `verification-failed`, or
+`review-failed`. `GET /api/review` tells you whether the review passed and what
+it asked for; it does not tell you whether the decision was `revise` or
+`reject`, and reading `"passed": false` as either would be reading something
+that is not there. If `requested_changes` describes something you and your user
+can correct, correct it and submit the corrected commit as a new submission.
 
 ## Registration is not monitoring
 
@@ -114,8 +126,24 @@ press it, that is fine; deciding for them is not.
 
 ## Practical notes
 
-- One owner may have a small number of submissions verifying at once; further
-  ones are refused with 429 until those finish.
-- Errors come back as JSON `{"error": "..."}` with a meaningful status.
+- One repository owner, and separately one submitter, may have a small number of
+  submissions verifying at once; further ones are refused with 429 until those
+  finish. When Palomar as a whole is at capacity the refusal is 503. Neither is
+  a reason to retry immediately.
+- There is also an interval between starting one submission and starting the
+  next. A 429 that says you started one too recently says how long to wait;
+  wait that long rather than probing for the boundary.
+- `/api/verify` allows a bounded number of failed proofs and then refuses and
+  discards the intake. Fix the tag or the gist before retrying, rather than
+  retrying the same broken proof.
+- Errors on the `/api/` routes come back as JSON `{"error": "..."}` with a
+  meaningful status, sometimes with `problems` or `detail` beside it. An unknown
+  path, a wrong method, and an unhandled failure give you an HTML page instead,
+  so parse defensively.
 - `GET /healthz` if you want to know the service is up.
 - Fields, and their validation, are visible in the form at `/`.
+- The registry's own data is at `https://data.palomar-registry.org`, read-only
+  and separate from this host. There is no whole-registry document: ask for what
+  is new at `/recent.json`, for one result's versions at `/versions/<id>.json`,
+  and for one record at `/entries/<id>-v<n>.json`. A query string is refused
+  with 404 there, so do not add cache-busting parameters.
