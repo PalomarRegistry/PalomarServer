@@ -1481,6 +1481,58 @@ test("an agent capacity refusal says its accepted proof was consumed", async () 
   assert.deepEqual(stub.dispatched, []);
 });
 
+test("agent admission applies owner and submitter caps after proof", async () => {
+  const cases = [
+    [
+      "owner",
+      Array.from({ length: 2 }, (_, index) => ({
+        id: `${index}`.padStart(12, "0"),
+        owner: "example",
+        submitter: `user${index}`,
+        at: "2026-08-01T00:00:00Z",
+      })),
+      "That repository already has submissions in flight",
+    ],
+    [
+      "submitter",
+      Array.from({ length: 2 }, (_, index) => ({
+        id: `${index}`.padStart(12, "0"),
+        owner: `owner${index}`,
+        submitter: "someone",
+        at: "2026-08-01T00:00:00Z",
+      })),
+      "You already have submissions in flight",
+    ],
+  ];
+
+  for (const [name, open, error] of cases) {
+    const stub = stubAgent({ inflight: { open } });
+    const begun = await agentSubmit();
+    stub.state.tag = { exists: true, sha: "1".repeat(40) };
+    stub.state.gist = { exists: true, content: begun.challenge };
+    const before = stub.written.length;
+
+    const response = await agentVerify({
+      pending_secret: begun.pending_secret,
+      gist_id: "abc123",
+    });
+    const body = await response.json();
+    assert.equal(response.status, 429, `${name} cap returned the wrong status`);
+    assert.equal(body.error, error);
+    assert.equal(body.proof_consumed, true, `${name} cap ran before proof consumption`);
+    assert.ok(
+      stub.deleted.some((path) => path.startsWith("pending/")),
+      `${name} cap left the proved challenge reusable`,
+    );
+    assert.deepEqual(
+      stub.written.slice(before).filter((item) => item.path.includes("submissions/")),
+      [],
+      `${name} cap wrote a submission record`,
+    );
+    assert.deepEqual(stub.dispatched, [], `${name} cap dispatched verification`);
+  }
+});
+
 test("an admitted submission is put where the reviewer will find it", async () => {
   // The reviewer used to find its work by listing `submissions/`, which is an
   // API call per submission per pass and stops at the thousand names the

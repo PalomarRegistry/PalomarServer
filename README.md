@@ -129,6 +129,7 @@ append without interpreting its shape or timestamp precision. A missing or
 malformed queue is never replaced as though it were empty.
 
 The pure intake normalization and validation live in `src/intake-contract.js`;
+admission caps and rate-record projection live in `src/admission-contract.js`;
 the checks for these indexes, the current review marker, and the
 submitter-visible review projection live in `src/state-contract.js`. The Worker
 in `src/index.js` remains the composition root for body decoding, responses,
