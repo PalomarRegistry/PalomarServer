@@ -336,12 +336,14 @@ async function rateLimit(env, principal) {
   if (wait > 0) {
     return {
       refused: true, status: 429, wait,
-      title: "You have started a submission too recently",
-      detail: [
-        `Palomar asks for ${describeInterval(interval)} between submissions from one`,
-        `person, and doubles it each time one is started without a registration.`,
-        `Try again in ${describeInterval(wait)}.`,
-      ],
+      // What a person can act on is the wait. The interval is theirs
+      // personally, having doubled with their own starts, so naming it read as
+      // a policy Palomar applies to everybody and was wrong in the only way
+      // that matters: somebody comparing notes with a colleague would find
+      // they had been told different rules. The doubling is in the source for
+      // anybody who wants it.
+      title: "You have hit a submission rate limit",
+      detail: [`Please try again in ${describeInterval(wait)}.`],
     };
   }
   return { refused: false, path, sha: current.sha, interval, starts: Number(current.value?.starts ?? 0) };
