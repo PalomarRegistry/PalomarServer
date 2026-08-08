@@ -102,11 +102,10 @@ const REQUIRED_SECRETS = [
 const OPEN_INDEX_PATH = "index/open.json";
 
 const SUBMISSION_ID_RE = /^[0-9a-z]{12}$/;
-// GitHub.com logins are at most 39 characters. Ordinary accounts use
-// alphanumerics and single hyphens; managed-user accounts append one
-// `_SHORT-CODE` suffix. Preserve provider casing rather than normalising it.
-const GITHUB_LOGIN_RE =
-  /^(?!.*--)(?!.*_.*_)[A-Za-z0-9](?:[A-Za-z0-9_-]{0,37}[A-Za-z0-9])?$/;
+// GitHub.com logins are at most 39 characters. Accept the provider's safe
+// alphanumeric/hyphen/underscore envelope rather than reimplementing its
+// evolving ordinary and managed-user naming rules after proof has succeeded.
+const GITHUB_LOGIN_RE = /^[A-Za-z0-9_-]{1,39}$/;
 const UTC_SECONDS_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
 
 class StateContractError extends Error {}
@@ -184,15 +183,8 @@ function reviewerOpen(value) {
       `${OPEN_INDEX_PATH} must be a schema-version 1 object with an open array`,
     );
   }
-  const allowed = new Set(["schema_version", "open", "rebuilt_at", "rebuild_after"]);
-  if (Object.keys(value).some((key) => !allowed.has(key))) {
-    throw new StateContractError(`${OPEN_INDEX_PATH} contains an unknown top-level field`);
-  }
-  for (const field of ["rebuilt_at", "rebuild_after"]) {
-    if (Object.hasOwn(value, field) && !canonicalUtcSeconds(value[field])) {
-      throw new StateContractError(`${OPEN_INDEX_PATH}.${field} must be a canonical timestamp`);
-    }
-  }
+  // The reviewer owns every other top-level field. Preserve those bytes on
+  // append, but do not validate data this server neither reads nor writes.
   const ids = new Set();
   for (const [index, id] of value.open.entries()) {
     if (typeof id !== "string" || !SUBMISSION_ID_RE.test(id)) {
@@ -955,7 +947,10 @@ async function verifySubmission(request, env) {
   } catch (error) {
     if (!(error instanceof StateContractError)) throw error;
     reportStateContract(error);
-    return intakeUnavailable(env, true);
+    return json({
+      error: "submission intake is temporarily unavailable",
+      detail: "This proof was consumed. Start a new submission and create a new proof.",
+    }, 503);
   }
   if (admitted.refused) {
     return json({ error: admitted.title, detail: admitted.detail }, admitted.status);
@@ -1263,8 +1258,10 @@ async function refresh(env, entry) {
  * Only the reviewer removes entries, once the record says it is finished with
  * one. Adding has to happen here, because a submission the index never hears
  * about is a submission nothing reviews until the index is next rebuilt from
- * scratch. Written under the sha it was read at, like every other index: two
- * admissions landing together must not lose one of themselves.
+ * scratch. Written under the sha it was read at, like every other index, so a
+ * concurrent change is surfaced instead of overwritten. That compare-and-swap
+ * does not make the record, inflight index, and reviewer queue one transaction;
+ * a conflict after an earlier write can still leave a partial admission.
  */
 async function openSubmission(env, id) {
   const index = await readReviewerIndex(env);
@@ -1582,9 +1579,10 @@ export default {
           return json({ error: `already ${entry.record.status}` }, 409);
         }
         // Validate and reserve the exact inflight version before recording the
-        // decision. The two files cannot be committed atomically through the
-        // contents API, but malformed capacity state must never leave a record
-        // saying `withdrawn` while this request reports that release failed.
+        // decision, so an index that is already malformed stops before the
+        // status write. The files are not atomic: a concurrent inflight change
+        // after this read can still make release fail after `withdrawn` lands;
+        // the scheduled reconciliation then removes that terminal record.
         let reservation;
         try {
           reservation = await releaseReservation(env, entry.record.id);
@@ -1699,7 +1697,14 @@ export default {
         // depending on the render CSP for that is the point of this change.
         const entry = await caller(env, request, { mutating: true });
         if (entry instanceof Response) return entry;
-        const record = await refresh(env, entry);
+        let record;
+        try {
+          record = await refresh(env, entry);
+        } catch (error) {
+          if (!(error instanceof StateContractError)) throw error;
+          reportStateContract(error);
+          return json({ error: "submission status is temporarily unavailable" }, 503);
+        }
         return json({
           id: record.id,
           status: record.status,

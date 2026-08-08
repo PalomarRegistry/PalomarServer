@@ -568,11 +568,9 @@ test("the inflight index refuses obsolete and malformed shapes", async () => {
       /id must be a 12-character submission id/],
     [{ open: [{ ...current, id: 123456789012 }] },
       /id must be a 12-character submission id/],
-    [{ open: [{ ...current, owner: "-example" }] },
+    [{ open: [{ ...current, owner: "example.name" }] },
       /owner must be a GitHub login or null/],
-    [{ open: [{ ...current, submitter: "some--one" }] },
-      /submitter must be a GitHub login/],
-    [{ open: [{ ...current, submitter: "some_one_extra" }] },
+    [{ open: [{ ...current, submitter: "a".repeat(40) }] },
       /submitter must be a GitHub login/],
     [{ open: [{ ...current, submitter: null }] },
       /submitter must be a GitHub login/],
@@ -602,18 +600,24 @@ test("the inflight index refuses obsolete and malformed shapes", async () => {
   await assert.rejects(() => reconcile(ENV), /index\/inflight\.json must contain valid JSON/);
 });
 
-test("the current inflight contract permits a missing repository owner", async () => {
+test("the current inflight contract accepts provider-safe ordinary and managed logins", async () => {
   const { reconcile } = await import("../src/index.js");
   const { store } = stubState({
     "index/inflight.json": {
-      open: [{
-        id: "a1b2c3d4e5f6", owner: null, submitter: "someone_octo",
-        at: "2026-08-01T00:00:00Z",
-      }],
+      open: [
+        {
+          id: "a1b2c3d4e5f6", owner: null, submitter: "someone_octo",
+          at: "2026-08-01T00:00:00Z",
+        },
+        {
+          id: "b1b2c3d4e5f6", owner: "org--team", submitter: "someone__octo",
+          at: "2026-08-01T00:00:01Z",
+        },
+      ],
     },
   }, []);
 
-  assert.deepEqual(await reconcile(ENV), { released: 1, open: 0 });
+  assert.deepEqual(await reconcile(ENV), { released: 2, open: 0 });
   assert.deepEqual(store.get("index/inflight.json"), { open: [] });
 });
 
@@ -767,6 +771,17 @@ test("the status page stops asking when nobody is looking at it", async () => {
   // And coming back to the tab asks straight away, rather than showing the
   // answer it stopped on until the backoff it had reached elapses again.
   assert.match(script, /pollDelay = 0;\s*\n\s*poll\(\);/);
+});
+
+test("a temporary status failure retries instead of pretending the record is missing", async () => {
+  const { pollFailureAction } = await import("../public/polling.js");
+  assert.equal(pollFailureAction(404), "missing");
+  for (const status of [409, 429, 500, 503]) {
+    assert.equal(pollFailureAction(status), "retry", `${status} would stop status polling`);
+  }
+  const script = await readFile(new URL("../public/status.js", import.meta.url), "utf8");
+  assert.match(script, /pollFailureAction\(response\.status\) === "missing"/);
+  assert.match(script, /Could not refresh this submission\. Retrying\.[\s\S]*askAgain\(lastStatus\)/);
 });
 
 test("a duration is only claimed once one has been measured", async () => {
@@ -1261,7 +1276,10 @@ test("agent intake fails closed and in JSON when admission indexes are unusable"
     assert.equal(response.status, 503, `${name} did not stop agent intake`);
     assert.match(response.headers.get("content-type"), /application\/json/);
     const body = await response.json();
-    assert.deepEqual(body, { error: "submission intake is temporarily unavailable" });
+    assert.deepEqual(body, {
+      error: "submission intake is temporarily unavailable",
+      detail: "This proof was consumed. Start a new submission and create a new proof.",
+    });
     assert.ok(stub.deleted.some((path) => path.startsWith("pending/")),
               `${name} did not consume the proved challenge exactly once`);
     assert.deepEqual(
@@ -1292,7 +1310,7 @@ test("an admitted submission is put where the reviewer will find it", async () =
   assert.deepEqual(index.value.open, [body.submission_id]);
 });
 
-test("indexing a submission keeps the entries and the rebuild clock beside it", async () => {
+test("indexing preserves reviewer-owned fields without interpreting them", async () => {
   // Written by two writers: this one appends, the reviewer prunes and records
   // when the whole file next needs rebuilding from the records. Dropping what
   // the other end put there would make the index look permanently overdue, and
@@ -1301,6 +1319,7 @@ test("indexing a submission keeps the entries and the rebuild clock beside it", 
   stub.store.set("index/open.json", {
     schema_version: 1,
     rebuild_after: "2099-01-01T00:00:00Z",
+    reviewer_owned: { format: "future", timestamp: "not-the-server's-contract" },
     open: ["aaaaaaaaaaaa"],
   });
   const begun = await agentSubmit();
@@ -1313,6 +1332,9 @@ test("indexing a submission keeps the entries and the rebuild clock beside it", 
   const index = stub.written.find((item) => item.path === "index/open.json");
   assert.deepEqual(index.value.open, ["aaaaaaaaaaaa", body.submission_id]);
   assert.equal(index.value.rebuild_after, "2099-01-01T00:00:00Z");
+  assert.deepEqual(index.value.reviewer_owned, {
+    format: "future", timestamp: "not-the-server's-contract",
+  });
 });
 
 test("a proof that does not hold admits nothing", async () => {
@@ -1590,6 +1612,31 @@ test("the status read is guarded too, because it is not really a read", async ()
   );
   assert.equal(forged.status, 403);
   assert.equal(written.length, 0, "a forged status read still moved the submission");
+});
+
+test("status refresh reports admission-index contract failures as typed retryable 503s", async () => {
+  const run = {
+    id: 12345,
+    name: "Verify submission a1b2c3d4e5f6",
+    status: "completed",
+    conclusion: "success",
+    html_url: "https://example.test/run",
+    run_started_at: "2026-08-01T00:00:00Z",
+  };
+  for (const [name, broken] of [
+    ["release", { "index/inflight.json": { open: "damaged" } }],
+    ["review queue", { "index/open.json": { schema_version: 1, open: "damaged" } }],
+  ]) {
+    const files = { ...(await fixture({ status: "verifying" })), ...broken };
+    const { written } = stubState(files, [run]);
+    const response = await worker.fetch(request("/api/submission"), ENV);
+    assert.equal(response.status, 503, `${name} failure was not typed`);
+    assert.match(response.headers.get("content-type"), /application\/json/);
+    assert.deepEqual(await response.json(), {
+      error: "submission status is temporarily unavailable",
+    });
+    assert.deepEqual(written, [], `${name} failure partially changed the record in this case`);
+  }
 });
 
 test("a pinned run is asked for by id, not searched for by name", async () => {

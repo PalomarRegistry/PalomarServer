@@ -122,15 +122,21 @@ timestamps, and a missing file stop admission and reconciliation visibly. They
 are not coerced to an empty list or treated as if the repository owner were the
 submitter.
 
-`index/open.json` is likewise required. It is a schema-version 1 queue whose
-`open` array contains unique current submission ids; the reviewer may also
-record its `rebuilt_at` and `rebuild_after` timestamps. A missing or malformed
-queue is never overwritten with the one id the server happens to be appending.
+`index/open.json` is likewise required. The server consumes only its
+`schema_version: 1` marker and an `open` array of unique current submission ids.
+Every other top-level field belongs to the reviewer: the server preserves it on
+append without interpreting its shape or timestamp precision. A missing or
+malformed queue is never replaced as though it were empty.
 
 Before pointing a fresh or staging Worker at a new state repository, copy the
 two files in `state-bootstrap/index/` to `index/` and commit them. Deploying the
 Worker before that initialization deliberately leaves intake unavailable; it
 does not silently grant unbounded capacity.
+
+These files are separate GitHub commits, not a transaction. Validation and
+compare-and-swap writes prevent a known-bad index or a concurrent edit from
+being silently overwritten, but a conflict after an earlier commit can leave a
+partial admission or decision for reconciliation or an operator to repair.
 
 `index/open.json` holds every submission the reviewer is not yet finished with.
 This server adds an id when it admits one, and the reviewer drops one when the
