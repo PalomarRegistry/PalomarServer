@@ -1083,7 +1083,7 @@ test("starting a submission doubles the wait, and only registering clears it", a
   // The second is refused, because the first has not been registered.
   const second = await submit();
   assert.equal(second.status, 429);
-  assert.match((await second.json()).error, /too recently/);
+  assert.match((await second.json()).error, /rate limit/);
 
   // Time passing lets it through, and doubles the wait again.
   const file = [...stub.store.keys()].find((path) => path.startsWith("index/rate/"));
