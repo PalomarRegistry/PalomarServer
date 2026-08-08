@@ -25,7 +25,9 @@ import { page, intakeForm, statusPage, errorPage } from "./html.js";
 import {
   admissionDecision,
   nextRateRecord,
+  RateContractError,
   rateDecision,
+  rateRecord,
   resetRateRecord,
 } from "./admission-contract.js";
 import { authorizationRelationshipLabel, validateIntake } from "./intake-contract.js";
@@ -214,6 +216,14 @@ function spentSignInProblems(problems = []) {
 
 function reportStateContract(error) {
   console.error("state-contract", error.message);
+}
+
+function isDurableContractError(error) {
+  return error instanceof StateContractError || error instanceof RateContractError;
+}
+
+function reportDurableContract(error) {
+  console.error(error instanceof RateContractError ? "rate-contract" : "state-contract", error.message);
 }
 
 // Pending intake that may exist at once, across everybody. This limits ordinary
@@ -483,7 +493,11 @@ async function rateLimit(env, principal) {
   if (!principal?.id) return { refused: false, record: null, path: null };
   const path = await ratePath(env, principal.id);
   const current = await readState(env, path);
-  const decision = rateDecision(current.value);
+  // A missing file means this principal has not started before. A present JSON
+  // null (or any other malformed document) is damaged state, not the same
+  // absence and not permission to fall through to the floor.
+  const value = current.sha === null ? null : rateRecord(current.value).value;
+  const decision = rateDecision(value);
   return decision.refused ? decision : { ...decision, path, sha: current.sha };
 }
 
@@ -540,6 +554,15 @@ async function admitSubmission(env, { pending, owner, submitter, proof }) {
     token_sha256: await tokenDigest(env, token),
     events: [{ at: now(), status: "verifying", note: "Mechanical verification dispatched" }],
   };
+  // Project and validate the complete rate write before the first durable
+  // admission write. A corrupt interval must not fail only after the record,
+  // capacity slot, queue entry, and access-token index have committed.
+  const nextRate = limit.path ? nextRateRecord({
+    login: proof.principal.login,
+    starts: limit.starts,
+    interval: limit.interval,
+    startedAt: record.created_at,
+  }) : null;
   const nextInflight = [...open, { id, owner, submitter, at: record.created_at }];
   // Validate the bytes we are about to write as well as the bytes we read.
   // Provider logins are untrusted input at this boundary.
@@ -563,12 +586,8 @@ async function admitSubmission(env, { pending, owner, submitter, proof }) {
     `Index submission ${id}`,
   );
   if (limit.path) {
-    await writeState(env, limit.path, nextRateRecord({
-      login: proof.principal.login,
-      starts: limit.starts,
-      interval: limit.interval,
-      startedAt: record.created_at,
-    }), `Record a submission start`, limit.sha).catch(() => {});
+    await writeState(env, limit.path, nextRate, `Record a submission start`, limit.sha)
+      .catch(() => {});
   }
   await dispatchVerification(env, {
     repositoryName: record.repository,
@@ -697,8 +716,8 @@ async function verifySubmission(request, env) {
       },
     });
   } catch (error) {
-    if (error instanceof StateContractError) {
-      reportStateContract(error);
+    if (isDurableContractError(error)) {
+      reportDurableContract(error);
       return consumedProofResponse({
         error: "submission intake is temporarily unavailable",
       }, 503);
@@ -865,8 +884,8 @@ async function completeSubmission(request, env) {
       },
     });
   } catch (error) {
-    const contractFailure = error instanceof StateContractError;
-    if (contractFailure) reportStateContract(error);
+    const contractFailure = isDurableContractError(error);
+    if (contractFailure) reportDurableContract(error);
     else console.error("browser-admission", error?.stack ?? String(error));
     return html(
       errorPage(
@@ -966,14 +985,20 @@ async function refresh(env, entry) {
   if (record.status === "registered" && !record.rate_reset_at && record.push_proof?.principal?.id) {
     const path = await ratePath(env, record.push_proof.principal.id);
     const current = await readState(env, path);
-    await writeState(
-      env,
-      path,
-      resetRateRecord(current.value, now()),
-      "Reset after a registration",
-      current.sha,
-    ).catch(() => {});
-    const reset = { ...record, rate_reset_at: now() };
+    const resetAt = now();
+    // Absence already admits the next start at the floor. Do not synthesize a
+    // partial document without the historical fields required of every
+    // present rate record; a malformed present document fails closed.
+    if (current.sha !== null) {
+      await writeState(
+        env,
+        path,
+        resetRateRecord(current.value, resetAt),
+        "Reset after a registration",
+        current.sha,
+      ).catch(() => {});
+    }
+    const reset = { ...record, rate_reset_at: resetAt };
     await writeState(env, statePath(record.id, "state.json"), reset,
                      `Reset the interval for ${record.id}`, entry.sha).catch(() => {});
     return reset;
@@ -1520,8 +1545,8 @@ export default {
         try {
           record = await refresh(env, entry);
         } catch (error) {
-          if (!(error instanceof StateContractError)) throw error;
-          reportStateContract(error);
+          if (!isDurableContractError(error)) throw error;
+          reportDurableContract(error);
           return json({ error: "submission status is temporarily unavailable" }, 503);
         }
         return json({

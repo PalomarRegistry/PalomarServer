@@ -9,6 +9,10 @@
 const MAX_INFLIGHT_TOTAL = 12;
 const MAX_INFLIGHT_PER_OWNER = 2;
 const MAX_INFLIGHT_PER_SUBMITTER = 2;
+const GITHUB_LOGIN = /^[A-Za-z0-9_-]{1,39}$/;
+const UTC_SECONDS = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
+
+export class RateContractError extends Error {}
 
 /**
  * How long this submitter must wait before starting another submission.
@@ -29,17 +33,61 @@ const MAX_INFLIGHT_PER_SUBMITTER = 2;
 const RATE_FLOOR_SECONDS = 60;
 
 function describeInterval(seconds) {
-  if (seconds < 90) return `${Math.max(1, Math.round(seconds))} seconds`;
+  if (seconds < 90) {
+    const rounded = Math.max(1, Math.round(seconds));
+    return `${rounded} ${rounded === 1 ? "second" : "seconds"}`;
+  }
   const minutes = Math.round(seconds / 60);
   if (minutes < 90) return `${minutes} minutes`;
   const hours = Math.round(minutes / 60);
   return hours < 48 ? `${hours} hours` : `${Math.round(hours / 24)} days`;
 }
 
+function fail(message) {
+  throw new RateContractError(`rate record ${message}`);
+}
+
+function timestamp(value, field) {
+  if (typeof value !== "string" || !UTC_SECONDS.test(value)) {
+    fail(`${field} must be a canonical UTC-seconds timestamp`);
+  }
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed) || new Date(parsed).toISOString().replace(/\.\d+Z$/, "Z") !== value) {
+    fail(`${field} must be a real UTC date and time`);
+  }
+  return parsed;
+}
+
+/** Validate one present Server-owned rate document under its current contract. */
+export function rateRecord(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    fail("must be a JSON object");
+  }
+  if (value.schema_version !== 1) fail("schema_version must be 1");
+  if (typeof value.login !== "string" || !GITHUB_LOGIN.test(value.login)) {
+    fail("login must be a GitHub login");
+  }
+  if (!Number.isSafeInteger(value.starts) || value.starts < 1) {
+    fail("starts must be a positive safe integer");
+  }
+  if (!Number.isSafeInteger(value.interval_seconds) ||
+      value.interval_seconds < RATE_FLOOR_SECONDS) {
+    fail(`interval_seconds must be a safe integer of at least ${RATE_FLOOR_SECONDS}`);
+  }
+  const lastStart = timestamp(value.last_start_at, "last_start_at");
+  const nextAllowed = timestamp(value.next_allowed_at, "next_allowed_at");
+  if (nextAllowed < lastStart) {
+    fail("next_allowed_at must not precede last_start_at");
+  }
+  return { value, nextAllowed };
+}
+
 /** Interpret the current rate record at one explicit instant. */
 export function rateDecision(value, at = Date.now()) {
-  const interval = Number(value?.interval_seconds ?? RATE_FLOOR_SECONDS);
-  const nextAllowed = Date.parse(value?.next_allowed_at ?? 0) || 0;
+  if (!Number.isFinite(at)) fail("decision time must be finite");
+  const current = value === null ? null : rateRecord(value);
+  const interval = current?.value.interval_seconds ?? RATE_FLOOR_SECONDS;
+  const nextAllowed = current?.nextAllowed ?? 0;
   const wait = Math.ceil((nextAllowed - at) / 1000);
   if (wait > 0) {
     return {
@@ -58,31 +106,55 @@ export function rateDecision(value, at = Date.now()) {
   return {
     refused: false,
     interval,
-    starts: Number(value?.starts ?? 0),
+    starts: current?.value.starts ?? 0,
   };
 }
 
 /** Project the rate record written after one accepted admission. */
 export function nextRateRecord({ login, starts, interval, startedAt, at = Date.now() }) {
+  if (typeof login !== "string" || !GITHUB_LOGIN.test(login)) {
+    fail("login must be a GitHub login");
+  }
+  if (!Number.isSafeInteger(starts) || starts < 0) {
+    fail("starts must be a non-negative safe integer before an admission");
+  }
+  if (!Number.isSafeInteger(interval) || interval < RATE_FLOOR_SECONDS) {
+    fail(`interval_seconds must be a safe integer of at least ${RATE_FLOOR_SECONDS}`);
+  }
+  timestamp(startedAt, "last_start_at");
+  if (!Number.isFinite(at)) fail("admission time must be finite");
   const nextInterval = starts === 0 ? RATE_FLOOR_SECONDS : interval * 2;
-  return {
+  if (!Number.isSafeInteger(nextInterval)) {
+    fail("next interval_seconds is not a safe integer");
+  }
+  const nextAllowed = at + nextInterval * 1000;
+  if (!Number.isFinite(nextAllowed) || Math.abs(nextAllowed) > 8.64e15) {
+    fail("next_allowed_at is outside the representable date range");
+  }
+  const result = {
     schema_version: 1,
     login,
     starts: starts + 1,
     interval_seconds: nextInterval,
     last_start_at: startedAt,
-    next_allowed_at: new Date(at + nextInterval * 1000).toISOString()
+    next_allowed_at: new Date(nextAllowed).toISOString()
       .replace(/\.\d+Z$/, "Z"),
   };
+  rateRecord(result);
+  return result;
 }
 
 /** Project the existing rate record after a completed registration. */
 export function resetRateRecord(value, resetAt) {
-  return {
-    ...(value ?? { schema_version: 1 }),
+  const current = rateRecord(value).value;
+  timestamp(resetAt, "next_allowed_at");
+  const result = {
+    ...current,
     interval_seconds: RATE_FLOOR_SECONDS,
     next_allowed_at: resetAt,
   };
+  rateRecord(result);
+  return result;
 }
 
 /**
