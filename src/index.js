@@ -24,6 +24,7 @@ import {
   resolveCommit,
   writeState,
 } from "./github.js";
+import { endorsementPolicy, requireEndorsement } from "./endorsement.js";
 import { page, intakeForm, statusPage, errorPage } from "./html.js";
 // One vocabulary for "this submission has stopped moving", shared with the
 // status page, which asks a slightly different question of the same words.
@@ -632,6 +633,18 @@ async function admit(env, { owner, submitter }) {
 async function admitSubmission(env, { pending, owner, submitter, proof }) {
   const limit = await rateLimit(env, proof?.principal);
   if (limit.refused) return limit;
+  // Between the two, deliberately. After the rate limit, because that is one
+  // read and this is up to thirty-five requests, and somebody who has been
+  // asked to wait should not spend them. Before the caps, because those say
+  // "later" and this says "not this repository": telling a person to come back
+  // in an hour for a submission that will be refused every hour is the wrong
+  // answer given confidently, and the eligibility question is the one they can
+  // actually act on.
+  const endorsed = await requireEndorsement(env, {
+    repositoryName: pending.repository,
+    principal: proof?.principal,
+  });
+  if (endorsed.refused) return endorsed;
   const admission = await admit(env, { owner, submitter });
   if (admission.refused) return admission;
   const { inflight, open } = admission;
@@ -656,6 +669,12 @@ async function admitSubmission(env, { pending, owner, submitter, proof }) {
       },
     }),
     push_proof: proof,
+    // Only when the rule was on, so a record carrying nothing means it was off
+    // rather than that it passed. What it says includes `unchecked`, because a
+    // submission admitted because GitHub would not answer is a different thing
+    // from one admitted because somebody had starred it, and six months later
+    // the record is the only place that difference still exists.
+    ...(endorsed.endorsement ? { endorsement: endorsed.endorsement } : {}),
     created_at: now(),
     token_sha256: await tokenDigest(env, token),
     events: [{ at: now(), status: "verifying", note: "Mechanical verification dispatched" }],
@@ -1327,7 +1346,16 @@ export default {
         // The limiter counts here too. Intake refuses without it, so a
         // deployment that has lost it is not serving its main purpose, and a
         // health endpoint that answered `ok` would be the last place that knew.
-        const ok = missing.length === 0 && Boolean(env.INTAKE_LIMITER);
+        //
+        // So does a submission rule nobody can honour. `SUBMISSION_ENDORSEMENT`
+        // naming nothing this understands is a typo, and a typo there is not
+        // inert: without this it would read as the rule being off, which is
+        // indistinguishable from the rule working until somebody notices it
+        // has been open for a month. Still only `ok`, like everything else
+        // here. What is wrong is in the log, where an operator can read it and
+        // a stranger cannot.
+        const ok = missing.length === 0 && Boolean(env.INTAKE_LIMITER) &&
+          endorsementPolicy(env).ok;
         return json({ ok }, ok ? 200 : 503);
       }
 
@@ -1335,8 +1363,14 @@ export default {
       // it is a deployment that should not be serving. Refusing everything is
       // also what makes the pepper's absence impossible to miss, which is the
       // whole reason it stopped defaulting to the empty string.
-      if (missing.length) {
-        console.error("configuration", `missing: ${missing.join(", ")}`);
+      // A submission rule this cannot honour counts as the same thing, and is
+      // refused here rather than where it would be applied. `SUBMISSION_ENDORSEMENT`
+      // asking for something and naming nothing real leaves the rule off, which
+      // is not a narrower rule but no rule: a deployment that believed it had
+      // switched one on would admit everybody and say nothing. Refusing costs a
+      // typo an outage; the alternative costs it a silence.
+      if (missing.length || !endorsementPolicy(env).ok) {
+        if (missing.length) console.error("configuration", `missing: ${missing.join(", ")}`);
         return html(
           errorPage(env, "Palomar is not configured", [
             "This deployment is missing something it needs and is not accepting",

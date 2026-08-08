@@ -66,6 +66,21 @@ export async function repository(token, name) {
 }
 
 /**
+ * One page of a repository's listings, always as an array.
+ *
+ * The caller is intersecting a page against a set, so a missing list and an
+ * empty one mean the same thing to it and an object where an array was expected
+ * means the same again. What it must still be able to tell apart is any of that
+ * from a request that failed, which is why this returns rather than swallows:
+ * `call` throws, and a rate limit reaching the endorsement check as `[]` would
+ * read there as "nobody", which is the one wrong answer.
+ */
+export async function repositoryPage(token, path) {
+  const data = await call(token, path);
+  return Array.isArray(data) ? data : [];
+}
+
+/**
  * Read a JSON file from the state repository.
  *
  * Returns the parsed contents together with the blob sha, because every write

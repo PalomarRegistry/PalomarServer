@@ -61,10 +61,68 @@ Push access is not authorship. It does not establish approval from the
 responsible authors of a substantive formalization, and does not replace the
 declaration a submitter makes about that.
 
+## Who may submit
+
+Push access, and nothing else, today.
+
+There is a second rule in the source, off in `wrangler.jsonc` and switched on by
+naming the signals it should count. It asks that somebody who has already
+registered a result in Palomar has been near the repository being submitted: a
+star, a fork, an issue, a pull request, a comment, or a commit, any one of them
+from any one of those people. Push access says a submitter may speak for a
+repository; this asks whether the repository exists outside the submission. It
+is a limit on how fast Palomar opens up rather than a judgement about anything,
+and it is meant to come off.
+
+Somebody who has already registered a result is not asked again, which is what
+`SUBMISSION_ENDORSEMENT_SELF` is for: `exempt` is that, and `excluded` keeps
+asking them and stops their own star being the answer. The trade is that under
+`exempt` one registered result unlocks every repository its author can push to,
+for good, and under `excluded` a returning submitter with a new repository
+nobody has found yet is turned away.
+
+Who counts is `index/endorsers.json` in the state repository, which has two
+halves. `registered` is derived: `palomar-review` adds a submitter when their
+result registers, and `palomar-review rebuild-endorsers` rederives the whole
+thing from the records less anything the database has taken down. A takedown is
+the registry's retraction and nothing propagates it back to the private record,
+so until that sweep runs a withdrawn result still lets repositories in. Run it
+after a takedown.
+
+`allowed` is written by hand and nothing derives it. It is how somebody counts
+before they have registered anything, and it is not a nicety: with `registered`
+empty the rule refuses everybody, including the people whose submissions would
+have filled it in. So a rule that is on with nobody to name is treated as a
+deployment fault and answers 503, whether the file is missing or merely empty,
+rather than telling every submitter in turn that their repository is the
+problem. The same goes for a signal name that does not exist: it would leave the
+rule off, which is not a narrower rule but no rule at all, so it stops the
+deployment instead.
+
+An entry is a `login`, an `id`, or both. Prefer both. A login is renameable and
+the account that later takes an abandoned one is a different person with the
+same name, so the id is what makes an entry survive a rename; a login alone is
+matched by name, without regard to case, which is what makes the hand-written
+half usable by somebody who has a name and not a number.
+
+Reading is bounded: five pages of a hundred per list, run together, stopping at
+the first person found. A list GitHub will not answer, or one longer than that,
+is not an absence: the submission is admitted and its record says `unchecked`
+and why. Turning a bad minute at GitHub into a refusal aimed at somebody who did
+nothing wrong is the worse failure, and the rate limit and the admission caps
+are still in front of whatever comes next.
+
 ## Configuration
 
-Variables live in `wrangler.jsonc`. Secrets are set with `wrangler secret put`
-and never appear in the repository:
+Variables live in `wrangler.jsonc`, each with the reason for its value beside
+it. Two of them decide policy rather than naming a repository:
+
+| Variable | What it does |
+| --- | --- |
+| `SUBMISSION_ENDORSEMENT` | which kinds of engagement let a repository be submitted at all, from `star`, `fork`, `issue`, `pull-request`, `comment`, `commit`. Empty is off, and off is what Palomar runs. A name that is not on that list fails `/healthz`, so a typo cannot look like the rule working |
+| `SUBMISSION_ENDORSEMENT_SELF` | `exempt` to stop asking somebody who has already registered a result, or `excluded` to keep asking and to stop their own engagement being the answer |
+
+Secrets are set with `wrangler secret put` and never appear in the repository:
 
 | Secret | What it is | Reach |
 | --- | --- | --- |

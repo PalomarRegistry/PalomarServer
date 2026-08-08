@@ -837,10 +837,14 @@ test("the dispatch carries only a ref, so every reviewer input needs a default",
  * record does not carry `push_verified`. It was never exercised, so nothing
  * would have noticed it being inverted, skipped, or refactored away.
  */
-function stubOAuth({ push, files = {}, login = "someone" }) {
+function stubOAuth({ push, files = {}, login = "someone", id = 4242, engagement = null }) {
   const written = [];
   const store = new Map(Object.entries(files));
   const deleted = [];
+  // Which of the submitted repository's lists were asked for. The endorsement
+  // rule is off unless configured, and "off" has to mean no requests rather
+  // than requests whose answers are ignored.
+  const listed = [];
   globalThis.fetch = async (url, init = {}) => {
     const target = new URL(url);
     const method = init.method ?? "GET";
@@ -848,7 +852,7 @@ function stubOAuth({ push, files = {}, login = "someone" }) {
       return Response.json({ access_token: "the-submitter-token" });
     }
     if (target.pathname === "/user") {
-      return Response.json({ login, id: 4242 });
+      return Response.json({ login, id });
     }
     if (target.pathname === "/repos/example/project") {
       return Response.json({
@@ -857,6 +861,19 @@ function stubOAuth({ push, files = {}, login = "someone" }) {
         owner: { login: "example" },
         permissions: { push },
       });
+    }
+    // Every list the endorsement rule reads, keyed by what follows the
+    // repository. `engagement` gives the first page and nothing after it, which
+    // is what an ordinary repository looks like; a value of `"unreadable"`
+    // answers 500, which is what a rate limit looks like from here.
+    const list = /^\/repos\/example\/project\/(.+)$/.exec(target.pathname);
+    if (list && engagement) {
+      const resource = list[1];
+      listed.push(resource);
+      const answer = engagement[resource];
+      if (answer === "unreadable") return new Response("no", { status: 500 });
+      const page = Number(target.searchParams.get("page") ?? "1");
+      return Response.json(page === 1 ? (answer ?? []) : []);
     }
     if (target.pathname.includes("/actions/workflows/")) return Response.json({ ok: true });
     const path = decodeURI(
@@ -876,7 +893,7 @@ function stubOAuth({ push, files = {}, login = "someone" }) {
     store.set(path, JSON.parse(Buffer.from(body.content, "base64").toString("utf-8")));
     return Response.json({ content: {} });
   };
-  return { written, deleted, store };
+  return { written, deleted, store, listed };
 }
 
 // The browser half of the intake. `beginSubmission` mints this, keeps only its
@@ -897,13 +914,13 @@ const PENDING = {
   created_at: "2026-08-01T00:00:00Z",
 };
 
-async function callback(nonce, { binding = BINDING } = {}) {
+async function callback(nonce, { binding = BINDING, env = ENV } = {}) {
   const name = `palomar_intake_${(await digest(nonce)).slice(0, 16)}`;
   return worker.fetch(
     new Request(`https://submit.palomar-registry.org/oauth/callback?code=c&state=${nonce}`, {
       headers: binding ? { cookie: `${name}=${binding}` } : {},
     }),
-    ENV,
+    env,
   );
 }
 
@@ -1730,5 +1747,296 @@ test("a gist that anybody could have found is not identity", async () => {
     });
     assert.equal(response.status, 403);
     assert.match((await response.json()).gist, reason);
+  }
+});
+
+/**
+ * The endorsement rule: whether anybody Palomar already trusts has been near
+ * the repository being submitted.
+ *
+ * It is off in `wrangler.jsonc`, so the first thing worth testing is that off
+ * costs nothing and changes nothing. The rest is what happens when a deployment
+ * turns it on, including the two ways it can be wrong at this end rather than
+ * the submitter's.
+ */
+const ENDORSERS = "index/endorsers.json";
+
+function endorsing(env) {
+  return { ...ENV, SUBMISSION_ENDORSEMENT: "star,fork,issue,pull-request,comment,commit", ...env };
+}
+
+async function pending(nonce) {
+  return { [`pending/${await digest(nonce)}.json`]: PENDING };
+}
+
+test("with no endorsement rule configured, nothing about the repository is read", async () => {
+  const nonce = "e1".padEnd(64, "0");
+  const stub = stubOAuth({ push: true, files: await pending(nonce), engagement: {} });
+  const response = await callback(nonce);
+
+  assert.equal(response.status, 303);
+  assert.deepEqual(stub.listed, [], "an unconfigured rule still spent requests");
+  const record = stub.written.find((item) => item.path.endsWith("state.json"));
+  // Absent rather than present-and-passing, so a record from a deployment that
+  // never had the rule cannot be misread as one that cleared it.
+  assert.equal(record.value.endorsement, undefined);
+});
+
+test("a star from somebody who has registered a result admits the submission", async () => {
+  const nonce = "e2".padEnd(64, "0");
+  const stub = stubOAuth({
+    push: true,
+    files: {
+      ...(await pending(nonce)),
+      [ENDORSERS]: { schema_version: 1, allowed: [], registered: [{ login: "trusted", id: 77 }] },
+    },
+    engagement: { stargazers: [{ login: "trusted", id: 77 }] },
+  });
+  const response = await callback(nonce, { env: endorsing() });
+
+  assert.equal(response.status, 303);
+  const record = stub.written.find((item) => item.path.endsWith("state.json"));
+  assert.equal(record.value.endorsement.outcome, "endorsed");
+  assert.equal(record.value.endorsement.signal, "star");
+  assert.equal(record.value.endorsement.by, "trusted");
+});
+
+test("a repository nobody trusted has touched is refused, and nothing is written", async () => {
+  const nonce = "e3".padEnd(64, "0");
+  const stub = stubOAuth({
+    push: true,
+    files: {
+      ...(await pending(nonce)),
+      [ENDORSERS]: { schema_version: 1, allowed: [], registered: [{ login: "trusted", id: 77 }] },
+    },
+    engagement: { stargazers: [{ login: "a-stranger", id: 5 }] },
+  });
+  const response = await callback(nonce, { env: endorsing() });
+
+  assert.equal(response.status, 403);
+  const body = await response.text();
+  assert.match(body, /no connection to Palomar yet/);
+  // The refusal names what would have counted, in the words the configuration
+  // used, because "some engagement" is not something anybody can act on.
+  assert.match(body, /a star, a fork, an issue, a pull request, a comment, or a commit/);
+  assert.deepEqual(stub.written.map((item) => item.path), []);
+});
+
+test("each kind of engagement counts, and only the ones configured", async () => {
+  const cases = [
+    ["star", "stargazers", [{ login: "trusted", id: 77 }]],
+    ["fork", "forks", [{ owner: { login: "trusted", id: 77 } }]],
+    ["issue", "issues", [{ user: { login: "trusted", id: 77 } }]],
+    ["pull-request", "pulls", [{ user: { login: "trusted", id: 77 } }]],
+    ["comment", "issues/comments", [{ user: { login: "trusted", id: 77 } }]],
+    ["comment", "pulls/comments", [{ user: { login: "trusted", id: 77 } }]],
+    ["commit", "commits", [{ author: { login: "trusted", id: 77 } }]],
+  ];
+  for (const [signal, resource, items] of cases) {
+    const nonce = `e4${resource.replace(/\W/g, "")}`.padEnd(64, "0");
+    const files = {
+      ...(await pending(nonce)),
+      [ENDORSERS]: { schema_version: 1, registered: [{ login: "trusted", id: 77 }] },
+    };
+    const found = stubOAuth({ push: true, files, engagement: { [resource]: items } });
+    const admitted = await callback(nonce, { env: endorsing({ SUBMISSION_ENDORSEMENT: signal }) });
+    assert.equal(admitted.status, 303, `${resource} did not admit under ${signal}`);
+    assert.equal(
+      found.written.find((item) => item.path.endsWith("state.json")).value.endorsement.signal,
+      signal,
+    );
+
+    // The same engagement, under a rule that did not ask for it.
+    const other = signal === "commit" ? "star" : "commit";
+    stubOAuth({ push: true, files, engagement: { [resource]: items } });
+    const refused = await callback(nonce, { env: endorsing({ SUBMISSION_ENDORSEMENT: other }) });
+    assert.equal(refused.status, 403, `${resource} admitted under ${other}, which never asked`);
+  }
+});
+
+test("a pull request is not an issue", async () => {
+  // `/issues` answers with pull requests in it. A deployment asking for `issue`
+  // and getting `pull-request` for free would be a wider rule than the one it
+  // wrote down.
+  const nonce = "e5".padEnd(64, "0");
+  stubOAuth({
+    push: true,
+    files: {
+      ...(await pending(nonce)),
+      [ENDORSERS]: { schema_version: 1, registered: [{ login: "trusted", id: 77 }] },
+    },
+    engagement: {
+      issues: [{ user: { login: "trusted", id: 77 }, pull_request: { url: "..." } }],
+    },
+  });
+  const response = await callback(nonce, { env: endorsing({ SUBMISSION_ENDORSEMENT: "issue" }) });
+
+  assert.equal(response.status, 403);
+});
+
+test("somebody who has already registered a result is not asked again", async () => {
+  const nonce = "e6".padEnd(64, "0");
+  const stub = stubOAuth({
+    push: true,
+    login: "trusted",
+    id: 77,
+    files: {
+      ...(await pending(nonce)),
+      [ENDORSERS]: { schema_version: 1, registered: [{ login: "trusted", id: 77 }] },
+    },
+    engagement: {},
+  });
+  const response = await callback(nonce, { env: endorsing() });
+
+  assert.equal(response.status, 303);
+  assert.deepEqual(stub.listed, [], "a prior submitter's repository was read anyway");
+  const record = stub.written.find((item) => item.path.endsWith("state.json"));
+  assert.equal(record.value.endorsement.outcome, "prior-submitter");
+});
+
+test("under `excluded`, a submitter's own star is not the answer", async () => {
+  const nonce = "e7".padEnd(64, "0");
+  const files = {
+    ...(await pending(nonce)),
+    [ENDORSERS]: {
+      schema_version: 1,
+      registered: [{ login: "trusted", id: 77 }, { login: "another", id: 78 }],
+    },
+  };
+  const env = endorsing({ SUBMISSION_ENDORSEMENT_SELF: "excluded" });
+
+  stubOAuth({
+    push: true, login: "trusted", id: 77, files,
+    engagement: { stargazers: [{ login: "trusted", id: 77 }] },
+  });
+  assert.equal((await callback(nonce, { env })).status, 403);
+
+  // Somebody else having starred it is, and the submitter having registered a
+  // result does not stop mattering: it is what makes them an endorser for
+  // everybody else's repositories.
+  const stub = stubOAuth({
+    push: true, login: "trusted", id: 77, files,
+    engagement: { stargazers: [{ login: "trusted", id: 77 }, { login: "another", id: 78 }] },
+  });
+  assert.equal((await callback(nonce, { env })).status, 303);
+  assert.equal(
+    stub.written.find((item) => item.path.endsWith("state.json")).value.endorsement.by,
+    "another",
+  );
+});
+
+test("an allowlisted login counts before its holder has ever submitted", async () => {
+  // The launch case: the rule has nobody to name until somebody registers a
+  // result, and nobody can register one until the rule has somebody to name.
+  const nonce = "e8".padEnd(64, "0");
+  const stub = stubOAuth({
+    push: true,
+    files: {
+      ...(await pending(nonce)),
+      [ENDORSERS]: {
+        schema_version: 1,
+        allowed: [{ login: "Early-Reader", note: "asked to look before launch" }],
+        registered: [],
+      },
+    },
+    // Written with different capitalisation, because GitHub logins are matched
+    // without regard to it and an operator typing a name should not have to
+    // know that.
+    engagement: { forks: [{ owner: { login: "early-reader", id: 9001 } }] },
+  });
+  const response = await callback(nonce, { env: endorsing() });
+
+  assert.equal(response.status, 303);
+  assert.equal(
+    stub.written.find((item) => item.path.endsWith("state.json")).value.endorsement.signal,
+    "fork",
+  );
+});
+
+test("an endorser who has been renamed is still recognised", async () => {
+  // A login is renameable and the account that later takes an abandoned one is
+  // somebody else, so what was recorded when they registered is the id.
+  const nonce = "e9".padEnd(64, "0");
+  const stub = stubOAuth({
+    push: true,
+    files: {
+      ...(await pending(nonce)),
+      [ENDORSERS]: { schema_version: 1, registered: [{ login: "old-name", id: 77 }] },
+    },
+    engagement: { stargazers: [{ login: "new-name", id: 77 }] },
+  });
+
+  assert.equal((await callback(nonce, { env: endorsing() })).status, 303);
+  const record = stub.written.find((item) => item.path.endsWith("state.json"));
+  assert.equal(record.value.endorsement.outcome, "endorsed");
+  assert.equal(record.value.endorsement.by, "new-name");
+});
+
+test("a list GitHub will not answer admits, and says so in the record", async () => {
+  // A rate limit is not an absence. Refusing on one would turn a bad minute at
+  // GitHub into a submitter being told their repository is the problem.
+  const nonce = "ea".padEnd(64, "0");
+  const stub = stubOAuth({
+    push: true,
+    files: {
+      ...(await pending(nonce)),
+      [ENDORSERS]: { schema_version: 1, registered: [{ login: "trusted", id: 77 }] },
+    },
+    engagement: { stargazers: "unreadable" },
+  });
+  const response = await callback(nonce, { env: endorsing({ SUBMISSION_ENDORSEMENT: "star" }) });
+
+  assert.equal(response.status, 303);
+  const record = stub.written.find((item) => item.path.endsWith("state.json"));
+  assert.equal(record.value.endorsement.outcome, "unchecked");
+  assert.match(record.value.endorsement.reason, /stargazers/);
+});
+
+test("the rule turned on with nobody to check against is our fault, not theirs", async () => {
+  // Absent and present-but-empty are the same failure: the rule can never
+  // answer yes, so every submitter would be told their repository is the
+  // problem. The way out is the hand-written `allowed` list, which is there
+  // because the derived half starts empty and cannot fill itself.
+  const stored = [
+    null,
+    { schema_version: 1, allowed: [], registered: [] },
+    { schema_version: 1 },
+  ];
+  for (const [index, endorsers] of stored.entries()) {
+    const nonce = `eb${index}`.padEnd(64, "0");
+    const files = await pending(nonce);
+    if (endorsers) files[ENDORSERS] = endorsers;
+    const stub = stubOAuth({ push: true, files, engagement: {} });
+    const response = await callback(nonce, { env: endorsing() });
+
+    assert.equal(response.status, 503, `${JSON.stringify(endorsers)} was not refused`);
+    const body = await response.text();
+    assert.match(body, /Palomar is not configured/);
+    assert.doesNotMatch(body, /no connection to Palomar yet/);
+    assert.deepEqual(stub.written.map((item) => item.path), []);
+  }
+});
+
+test("a rule that names nothing real stops the deployment rather than itself", async () => {
+  // The typo that matters. It leaves the rule off, which is not a narrower rule
+  // but no rule at all, on a deployment that believes it switched one on. So it is
+  // refused where a missing secret is refused, and it fails the health check
+  // for the same reason: everything else here would look like it was working.
+  const health = (env) =>
+    worker.fetch(new Request("https://submit.palomar-registry.org/healthz"), env);
+  const form = (env) =>
+    worker.fetch(new Request("https://submit.palomar-registry.org/"), env);
+
+  for (const [configured, status] of [
+    [undefined, 200],
+    ["star,fork,issue,pull-request,comment,commit", 200],
+    // One good name and one bad one still runs, on the good one.
+    ["star,forks", 200],
+    ["stars", 503],
+    [",,", 503],
+  ]) {
+    const env = configured === undefined ? ENV : endorsing({ SUBMISSION_ENDORSEMENT: configured });
+    assert.equal((await health(env)).status, status, `healthz on ${configured}`);
+    assert.equal((await form(env)).status, status, `the form on ${configured}`);
   }
 });

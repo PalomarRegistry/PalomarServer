@@ -164,6 +164,14 @@ press it, that is fine; deciding for them is not.
 - `/api/verify` allows a bounded number of failed proofs and then refuses and
   discards the intake. Fix the tag or the gist before retrying, rather than
   retrying the same broken proof.
+- Palomar may be configured to accept only repositories that somebody who has
+  already registered a result has engaged with: starred, forked, raised an
+  issue or pull request on, commented on, or committed to. Where that is on, a
+  repository nobody like that has been near is refused with 403 after the proof
+  succeeds, and the refusal says which kinds of engagement would have counted.
+  It is not about the repository's quality and retrying will not change it: tell
+  your user what was refused and why, and do not go looking for someone to star
+  it. Somebody who has registered a result before is not asked again.
 - Errors on the `/api/` routes come back as JSON `{"error": "..."}` with a
   meaningful status, sometimes with `problems` or `detail` beside it. An unknown
   path, a wrong method, and an unhandled failure give you an HTML page instead,

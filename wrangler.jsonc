@@ -25,6 +25,27 @@
     "STATE_REPO": "PalomarRegistry/PalomarSubmissionState",
     "VERIFY_WORKFLOW": "submission.yml",
     "REVIEW_WORKFLOW": "reviewer.yml",
-    "SITE_URL": "https://palomar-registry.org"
+    "SITE_URL": "https://palomar-registry.org",
+    // Which kinds of engagement, by somebody who has already registered a
+    // result, let a repository be submitted at all. Empty is off, and off is
+    // what Palomar runs today: push access is the whole eligibility rule until
+    // this names something.
+    //
+    // Turning it on means listing the signals that count, from `star`, `fork`,
+    // `issue`, `pull-request`, `comment`, `commit`. Naming a signal that does
+    // not exist fails `/healthz` rather than quietly narrowing the list, so a
+    // typo here cannot look like the rule working. Set it and check that
+    // `index/endorsers.json` exists in the state repository first: with the
+    // rule on and that file absent, intake refuses everything as misconfigured,
+    // which is loud on purpose but is still an outage.
+    "SUBMISSION_ENDORSEMENT": "",
+    // What somebody who has already registered a result has to do to submit
+    // again. `exempt` is Palomar's answer: having registered one is the thing
+    // the rule is asking for evidence of, so it does not ask them again.
+    // `excluded` keeps asking, and stops their own engagement from being the
+    // answer, so every repository needs somebody other than the submitter. The
+    // reason to want that is that under `exempt` one registered result unlocks
+    // every repository its author can push to, for good.
+    "SUBMISSION_ENDORSEMENT_SELF": "exempt"
   }
 }
