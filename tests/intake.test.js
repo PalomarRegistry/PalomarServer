@@ -166,8 +166,9 @@ test("one word for one thing, in the code as well as the copy", async () => {
   // exists not to be. Keeping it in field names and routes while the copy says
   // registration is how a codebase ends up with two words for one idea, and
   // how a field gets read under one name and written under the other.
-  const files = ["../src/index.js", "../src/html.js", "../src/submission.js",
-                 "../src/github.js", "../public/status.js", "../public/intake.js",
+  const files = ["../src/index.js", "../src/html.js", "../src/intake-contract.js",
+                 "../src/submission.js", "../src/github.js", "../public/status.js",
+                 "../public/intake.js",
                  "../public/polling.js", "../public/statuses.js"];
   for (const file of files) {
     const source = await readFile(new URL(file, import.meta.url), "utf8");
@@ -324,6 +325,51 @@ test("a submission must select one Comparator configuration explicitly", async (
   );
   assert.equal(response.status, 400);
   assert.match(await response.text(), /Comparator configuration is required/);
+});
+
+test("agent intake returns all contract problems before spending a GitHub call", async () => {
+  const previous = globalThis.fetch;
+  let githubCalls = 0;
+  globalThis.fetch = async () => {
+    githubCalls += 1;
+    throw new Error("invalid intake reached GitHub");
+  };
+  try {
+    const response = await worker.fetch(
+      new Request("https://submit.palomar-registry.org/api/submit", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          repository: "not-a-repository",
+          commit: "short",
+          existing_id: "not-an-id",
+          authorization_relationship: "delegated",
+          project_path: "/proof",
+          comparator_config_path: "../comparator.json",
+          formalization_metadata_path: "docs//formalization.yaml",
+        }),
+      }),
+      ENV,
+    );
+
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), {
+      error: "that submission was refused",
+      problems: [
+        "Repository must be a GitHub owner/name or URL.",
+        "Commit must be a full 40-character SHA. Branches and tags move.",
+        "Existing Palomar ID is malformed.",
+        "Say whether you maintain this formalization or have approval to submit it.",
+        "Comparator configuration is required. Give the repository-relative path to the one configuration this entry records.",
+        "Project directory must be a path inside the repository, written with forward slashes.",
+        "Comparator configuration must be a path inside the repository, written with forward slashes.",
+        "Formalization metadata must be a path inside the repository, written with forward slashes.",
+      ],
+    });
+    assert.equal(githubCalls, 0);
+  } finally {
+    globalThis.fetch = previous;
+  }
 });
 
 test("the layout is worked out from the repository rather than asked for", async () => {
