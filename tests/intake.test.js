@@ -166,9 +166,9 @@ test("one word for one thing, in the code as well as the copy", async () => {
   // exists not to be. Keeping it in field names and routes while the copy says
   // registration is how a codebase ends up with two words for one idea, and
   // how a field gets read under one name and written under the other.
-  const files = ["../src/index.js", "../src/html.js", "../src/intake-contract.js",
-                 "../src/submission.js", "../src/github.js", "../public/status.js",
-                 "../public/intake.js",
+  const files = ["../src/index.js", "../src/html.js", "../src/admission-contract.js",
+                 "../src/intake-contract.js", "../src/submission.js", "../src/github.js",
+                 "../public/status.js", "../public/intake.js",
                  "../public/polling.js", "../public/statuses.js"];
   for (const file of files) {
     const source = await readFile(new URL(file, import.meta.url), "utf8");
