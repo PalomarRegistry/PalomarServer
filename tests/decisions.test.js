@@ -220,12 +220,9 @@ test("a submission whose review could not be completed is still the submitter's 
   // to act on. It does not: the submitter is left with a submission that is
   // going nowhere and no way to take it back.
   const files = await fixture({ status: "review-failed" });
-  files["index/inflight.json"] = { open: [{
-    id: "a1b2c3d4e5f6",
-    owner: "example",
-    submitter: "someone",
-    at: "2026-08-01T00:00:00Z",
-  }] };
+  // This record no longer holds a slot. An unrelated damaged capacity index
+  // must not take away the submitter's last way to stop it.
+  files["index/inflight.json"] = { open: "damaged" };
   const { written } = stubState(files);
   const inner = globalThis.fetch;
   let inflightReads = 0;
@@ -241,16 +238,16 @@ test("a submission whose review could not be completed is still the submitter's 
   const state = written.find((item) => item.path.endsWith("state.json"));
   assert.equal(state.value.status, "withdrawn");
   assert.equal(state.value.events.at(-1).note, "Withdrawn by the submitter");
-  assert.equal(inflightReads, 2, "release reused the pre-validation read and its older SHA");
+  assert.equal(inflightReads, 0, "a record without a slot consulted unrelated capacity state");
   assert.deepEqual(
     written.map((item) => item.path),
-    [statePath("a1b2c3d4e5f6", "state.json"), "index/inflight.json"],
-    "withdrawal did not commit the record before releasing its slot",
+    [statePath("a1b2c3d4e5f6", "state.json")],
+    "withdrawal changed capacity state for a record that held no slot",
   );
 });
 
 test("withdrawal validates the inflight reservation before changing the record", async () => {
-  const files = await fixture({ status: "review-failed" });
+  const files = await fixture({ status: "verifying" });
   files["index/inflight.json"] = { open: "damaged" };
   const { written } = stubState(files);
 
@@ -292,33 +289,20 @@ test("the health check says whether the service is up and nothing else", async (
   // It named the state repository, which is private and holds every record and
   // every pending intake. Anyone at all could ask an unauthenticated endpoint
   // for the name of the thing worth attacking.
-  stubState(await fixture());
+  let networkCalls = 0;
+  globalThis.fetch = async () => {
+    networkCalls += 1;
+    throw new Error("health check reached the shared GitHub API budget");
+  };
   for (const method of ["GET", "HEAD"]) {
     const response = await worker.fetch(request("/healthz", method), ENV);
     assert.equal(response.status, 200, `${method} did not answer`);
   }
   const body = await (await worker.fetch(request("/healthz"), ENV)).json();
   assert.deepEqual(body, { ok: true });
+  assert.equal(networkCalls, 0);
   assert.ok(!JSON.stringify(body).includes("PalomarSubmissionState"),
             "the health check still names the state repository");
-});
-
-test("the health check fails closed when either admission index is unusable", async () => {
-  for (const [name, mutate] of [
-    ["missing inflight", (files) => files.delete("index/inflight.json")],
-    ["malformed inflight", (files) => files.set("index/inflight.json", { open: "bad" })],
-    ["missing reviewer queue", (files) => files.delete("index/open.json")],
-    ["malformed reviewer queue", (files) => files.set("index/open.json", { open: "bad" })],
-  ]) {
-    const files = new Map(Object.entries(await fixture()));
-    mutate(files);
-    stubState(Object.fromEntries(files));
-    const response = await worker.fetch(request("/healthz"), ENV);
-    assert.equal(response.status, 503, `${name} was reported healthy`);
-    const body = await response.json();
-    assert.deepEqual(body, { ok: false });
-    assert.ok(!JSON.stringify(body).includes("index"), `${name} leaked private state detail`);
-  }
 });
 
 test("a health check sent as anything but a read is no such page", async () => {
@@ -1833,8 +1817,8 @@ test("a broken reviewer queue leaves a completed verification held for a repaire
   assert.deepEqual(activity, [
     "open queue",
     "dispatch reviewer",
-    "release slot",
     "update record",
+    "release slot",
   ]);
 });
 
@@ -1981,7 +1965,6 @@ test("a submission that settles is put where the reviewer will find it", async (
 });
 
 test("one malformed reviewer queue does not retain unrelated terminal slots", async () => {
-  const { reconcile } = await import("../src/index.js");
   const awaitingId = "a1b2c3d4e5f6";
   const terminalId = "b1b2c3d4e5f6";
   const done = {
@@ -2004,7 +1987,10 @@ test("one malformed reviewer queue does not retain unrelated terminal slots", as
   };
   const { store } = stubState(files, [done]);
 
-  assert.deepEqual(await reconcile(ENV), { released: 1, open: 1 });
+  await assert.rejects(
+    () => worker.scheduled({}, ENV),
+    /reconcile.*index\/open\.json is unavailable; successful verification was not queued/,
+  );
   assert.equal(
     store.get(statePath(awaitingId, "state.json")).status,
     "verifying",

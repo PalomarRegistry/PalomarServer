@@ -201,9 +201,10 @@ GitHub repository must provide `CLOUDFLARE_ACCOUNT_ID` and
 it does not change the existing route or cron trigger.
 
 Before the first deployment against a State repository, commit both files from
-`state-bootstrap/index/` as described above. `/healthz` verifies those two
-required index contracts as well as configuration, and remains 503 until the
-State bootstrap is valid.
+`state-bootstrap/index/` as described above. Admission and scheduled
+reconciliation validate the contracts before using them; `/healthz` stays a
+network-free configuration check so public monitoring cannot spend the shared
+GitHub API budget.
 
 To deploy manually:
 

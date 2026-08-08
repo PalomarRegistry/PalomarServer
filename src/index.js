@@ -1268,7 +1268,7 @@ async function refresh(env, entry) {
     // Validate the capacity contract before another index can be changed. The
     // release itself deliberately re-reads after queueing, so it does not carry
     // this older optimistic SHA across the intervening work.
-    await releaseReservation(env, record.id);
+    await assertInflightContract(env);
   }
   if (next.status === "awaiting-review") {
     // Before the record says `awaiting-review`, and not caught. A submission
@@ -1287,9 +1287,6 @@ async function refresh(env, entry) {
     // a verifying record outside reconciliation.
     await dispatchReviewer(env).catch(() => false);
   }
-  if (next.status !== "verifying" && record.status === "verifying") {
-    await release(env, record.id);
-  }
   if (JSON.stringify(next) !== JSON.stringify(record)) {
     await writeState(
       env,
@@ -1298,6 +1295,14 @@ async function refresh(env, entry) {
       `Update ${record.id}: ${next.status}`,
       entry.sha,
     );
+  }
+  if (next.status !== "verifying" && record.status === "verifying") {
+    // Commit the terminal state before releasing capacity. If the fresh
+    // compare-and-swap release then fails, scheduled reconciliation sees the
+    // non-verifying record and drops the stale reservation. Releasing first
+    // could instead leave a verifying record outside the only set reconciliation
+    // walks.
+    await release(env, record.id);
   }
   return next;
 }
@@ -1332,14 +1337,14 @@ async function openSubmission(env, id) {
   );
 }
 
-async function releaseReservation(env, id) {
-  const inflight = await readInflightIndex(env);
-  const open = inflight.open;
-  return { inflight, open, changed: open.some((item) => item.id === id) };
+async function assertInflightContract(env) {
+  await readInflightIndex(env);
 }
 
 async function release(env, id) {
-  const { inflight, open, changed } = await releaseReservation(env, id);
+  const inflight = await readInflightIndex(env);
+  const open = inflight.open;
+  const changed = open.some((item) => item.id === id);
   if (!changed) return;
   await writeState(env, "index/inflight.json",
                    { open: open.filter((item) => item.id !== id) },
@@ -1484,6 +1489,11 @@ export async function reconcile(env) {
     await writeState(env, "index/inflight.json", { open: still },
                      "Reconcile admissions", inflight.sha);
   }
+  if (reviewerQueueUnavailable) {
+    throw new StateContractError(
+      `${OPEN_INDEX_PATH} is unavailable; successful verification was not queued`,
+    );
+  }
   return { released: open.length - still.length, open: still.length };
 }
 
@@ -1553,15 +1563,7 @@ export default {
         // The limiter counts here too. Intake refuses without it, so a
         // deployment that has lost it is not serving its main purpose, and a
         // health endpoint that answered `ok` would be the last place that knew.
-        let ok = missing.length === 0 && Boolean(env.INTAKE_LIMITER);
-        if (ok) {
-          try {
-            await Promise.all([readInflightIndex(env), readReviewerIndex(env)]);
-          } catch (error) {
-            console.error("health-state", error?.stack ?? String(error));
-            ok = false;
-          }
-        }
+        const ok = missing.length === 0 && Boolean(env.INTAKE_LIMITER);
         return json({ ok }, ok ? 200 : 503);
       }
 
@@ -1657,18 +1659,17 @@ export default {
         if (CLOSED.has(entry.record.status)) {
           return json({ error: `already ${entry.record.status}` }, 409);
         }
-        // Validate the inflight contract before recording the decision, so an
-        // index that is already malformed stops before the status write. This
-        // read is only a precondition: release re-reads after the record commit
-        // rather than carrying an older optimistic SHA across it. The files are
-        // still not atomic; a conflict after `withdrawn` lands can leave the
-        // slot for scheduled reconciliation or an operator to remove.
-        try {
-          await releaseReservation(env, entry.record.id);
-        } catch (error) {
-          if (!(error instanceof StateContractError)) throw error;
-          reportStateContract(error);
-          return json({ error: "submission decisions are temporarily unavailable" }, 503);
+        // Only verifying records hold admission capacity. Validate that shared
+        // contract before changing such a record; later states must remain
+        // withdrawable even when an unrelated capacity index needs repair.
+        if (entry.record.status === "verifying") {
+          try {
+            await assertInflightContract(env);
+          } catch (error) {
+            if (!(error instanceof StateContractError)) throw error;
+            reportStateContract(error);
+            return json({ error: "submission decisions are temporarily unavailable" }, 503);
+          }
         }
         const next = {
           ...entry.record,
@@ -1678,7 +1679,7 @@ export default {
         };
         await writeState(env, statePath(next.id, "state.json"), next,
                          `Withdraw ${next.id}`, entry.sha);
-        await release(env, next.id);
+        if (entry.record.status === "verifying") await release(env, next.id);
         return json({ ok: true });
       }
       if (request.method === "GET" && url.pathname === "/api/review") {
