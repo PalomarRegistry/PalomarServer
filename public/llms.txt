@@ -119,7 +119,14 @@ can correct, correct it and submit the corrected commit as a new submission.
 
 `POST /register` consents to making the repository, commit and review public
 during Palomar's pre-launch testing, and creates immutable
-source-preservation tags. Your user's GitHub identity is not made public: a
+source-preservation tags. Send the digest of the review you were shown:
+
+    {"review_sha256": "<the review_sha256 from GET /api/review>"}
+
+A registration that names a different review, or names none, is refused with
+409. Consent is to the review your user read, not to whichever one is current
+when the call arrives: a review can be replaced between the two, and the
+comments in it become public on registration. Your user's GitHub identity is not made public: a
 registered record carries the submission and its authorization basis, and the
 schema has no field for the person who sent it. Until public launch the database itself may
 still be reshaped; after launch its registered records are append-only.

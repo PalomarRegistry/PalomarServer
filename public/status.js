@@ -80,6 +80,9 @@ function paragraphs(heading, items) {
 
 let reviewShown = false;
 let reviewNeedsRerun = false;
+// The digest of the review on the page, sent back with a registration so that
+// consent names the bytes that were read.
+let reviewDigest = null;
 
 async function showReview() {
   if (reviewShown) return;
@@ -102,6 +105,7 @@ async function showReview() {
   const review = await response.json();
   reviewNeedsRerun = false;
   reviewShown = true;
+  reviewDigest = review.review_sha256 ?? null;
   reviewSummary.replaceChildren();
   reviewBody.replaceChildren();
   row("Decision", review.passed ? "Passed" : "Did not pass", reviewSummary);
@@ -123,12 +127,18 @@ async function showReview() {
   registerButton.hidden = !review.passed;
 }
 
-async function decide(button, path, confirmation) {
+async function decide(button, path, confirmation, body = null) {
   if (!window.confirm(confirmation)) return;
   registerButton.disabled = true;
   withdrawButton.disabled = true;
   decisionStatus.textContent = "Working…";
-  const response = await fetch(path, { method: "POST", credentials: "same-origin" });
+  const response = await fetch(path, {
+    method: "POST",
+    credentials: "same-origin",
+    ...(body
+      ? { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }
+      : {}),
+  });
   if (!response.ok) {
     const problem = await response.json().catch(() => ({}));
     decisionStatus.textContent = `That did not work: ${problem.error ?? response.status}`;
@@ -148,6 +158,9 @@ registerButton?.addEventListener("click", () =>
       "public during testing, and immutable source-preservation tags are " +
       "created. Your GitHub identity is not made public. The database may still " +
       "be reshaped until launch. Register?",
+    // Which review this consents to, rather than whichever one is current when
+    // the click arrives.
+    { review_sha256: reviewDigest },
   ),
 );
 withdrawButton?.addEventListener("click", () =>
