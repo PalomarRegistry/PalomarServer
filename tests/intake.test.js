@@ -168,6 +168,7 @@ test("one word for one thing, in the code as well as the copy", async () => {
   // how a field gets read under one name and written under the other.
   const files = ["../src/index.js", "../src/html.js", "../src/admission-contract.js",
                  "../src/intake-contract.js", "../src/submission.js", "../src/github.js",
+                 "../src/submission-lifecycle.js",
                  "../public/status.js", "../public/intake.js",
                  "../public/polling.js", "../public/statuses.js"];
   for (const file of files) {

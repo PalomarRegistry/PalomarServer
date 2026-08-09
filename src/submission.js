@@ -46,6 +46,11 @@ export async function tokenDigest(env, token) {
   return digest(`${pepper(env)}:${token}`);
 }
 
+/** A canonical whole-second timestamp for durable record fields and events. */
+export function recordedAt() {
+  return new Date().toISOString().replace(/\.\d+Z$/, "Z");
+}
+
 // Defined in one place and shared with the browser, so the form, its live
 // checks and this server cannot disagree about what a submitted value means.
 export {

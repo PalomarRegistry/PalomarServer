@@ -178,3 +178,29 @@ test("the real callback rejects duplicate intake credentials before I/O", async 
   );
   expect(outbound).not.toHaveBeenCalled();
 });
+
+test("the real scheduled handler runs both lifecycle maintenance reads", async () => {
+  const requests = [];
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+    const request = new Request(input, init);
+    requests.push(request);
+    if (new URL(request.url).pathname.endsWith("/contents/index/inflight.json")) {
+      return Response.json({
+        content: btoa(`${JSON.stringify({ open: [] })}\n`),
+        sha: "b".repeat(40),
+      });
+    }
+    return new Response(null, { status: 404 });
+  });
+
+  await exports.default.scheduled({});
+
+  expect(requests.map((request) => new URL(request.url).pathname)).toEqual([
+    "/repos/PalomarRegistry/PalomarSubmissionState/contents/index/inflight.json",
+    "/repos/PalomarRegistry/PalomarSubmissionState/contents/pending",
+  ]);
+  for (const request of requests) {
+    expect(request.method).toBe("GET");
+    expect(request.headers.get("authorization")).toBe("Bearer runtime-test-state-token");
+  }
+});

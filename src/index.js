@@ -4,6 +4,7 @@ import {
   newSubmissionId,
   newRecord,
   pepper,
+  recordedAt,
   statePath,
   tokenDigest,
 } from "./submission.js";
@@ -43,11 +44,17 @@ import {
   INFLIGHT_INDEX_PATH,
   inflightOpen,
   isCurrentReview,
-  OPEN_INDEX_PATH,
-  reviewerOpen,
   StateContractError,
   submitterReview,
 } from "./state-contract.js";
+import {
+  assertInflightContract,
+  assertReviewerContract,
+  openSubmission,
+  readInflightIndex,
+  release,
+  scheduledMaintenance,
+} from "./submission-lifecycle.js";
 // One vocabulary for "this submission has stopped moving", shared with the
 // status page, which asks a slightly different question of the same words.
 import { CLOSED } from "../public/statuses.js";
@@ -88,11 +95,6 @@ function json(value, status = 200, extra = {}) {
 }
 
 const MAX_VERIFY_ATTEMPTS = 10;
-// How old a `verifying` submission must be before a run nobody can find is
-// treated as lost. Generous by three orders of magnitude: a dispatched run is
-// listed within seconds, and this only ever applies to one that cannot be found
-// at all.
-const LOST_RUN_MS = 3600_000;
 
 // Without any one of these the server cannot do the thing it claims to do, and
 // two of them fail silently rather than loudly if they are missing: TOKEN_PEPPER
@@ -106,31 +108,8 @@ const REQUIRED_SECRETS = [
   "OAUTH_CLIENT_SECRET",
 ];
 
-async function readContractIndex(env, path, validate) {
-  let index;
-  try {
-    index = await readState(env, path);
-  } catch (error) {
-    if (!(error instanceof SyntaxError)) throw error;
-    throw new StateContractError(`${path} must contain valid JSON`);
-  }
-  return { ...index, open: validate(index.value) };
-}
-
-function readInflightIndex(env) {
-  return readContractIndex(env, INFLIGHT_INDEX_PATH, inflightOpen);
-}
-
-function readReviewerIndex(env) {
-  return readContractIndex(env, OPEN_INDEX_PATH, reviewerOpen);
-}
-
 function obsoleteReview() {
   return json({ error: "the review uses an obsolete or invalid contract and must be rerun" }, 409);
-}
-
-function now() {
-  return new Date().toISOString().replace(/\.\d+Z$/, "Z");
 }
 
 /** Ours to fix, not the submitter's, and never phrased as though it were. */
@@ -161,10 +140,6 @@ function spentSignInProblems(problems = []) {
     ...problems,
     "That GitHub sign-in was spent. Start a new submission from the submission form.",
   ];
-}
-
-function reportStateContract(error) {
-  console.error("state-contract", error.message);
 }
 
 function isDurableContractError(error) {
@@ -366,7 +341,7 @@ async function beginSubmission(request, env, { machine = false } = {}) {
     requested_paths: requestedPaths,
     authorization_relationship: relationship,
     authorization_evidence: evidence,
-    created_at: now(),
+    created_at: recordedAt(),
   };
   try {
     await writeState(
@@ -448,7 +423,7 @@ async function admit(env, { owner, submitter }) {
   // the inflight write has already committed.
   const [inflight] = await Promise.all([
     readInflightIndex(env),
-    readReviewerIndex(env),
+    assertReviewerContract(env),
   ]);
   const open = inflight.open;
   const decision = admissionDecision(open, { owner, submitter });
@@ -490,9 +465,9 @@ async function admitSubmission(env, { pending, owner, submitter, proof }) {
       },
     }),
     push_proof: proof,
-    created_at: now(),
+    created_at: recordedAt(),
     token_sha256: await tokenDigest(env, token),
-    events: [{ at: now(), status: "verifying", note: "Mechanical verification dispatched" }],
+    events: [{ at: recordedAt(), status: "verifying", note: "Mechanical verification dispatched" }],
   };
   // Project and validate the complete rate write before the first durable
   // admission write. A corrupt interval must not fail only after the record,
@@ -648,7 +623,7 @@ async function verifySubmission(request, env) {
         schema_version: 1,
         method: "tag-and-gist",
         binding: "separately-attested",
-        verified_at: now(),
+        verified_at: recordedAt(),
         repository_id: pending.value.repository_id,
         commit,
         challenge_sha256: await digest(challenge),
@@ -830,7 +805,7 @@ async function completeSubmission(request, env) {
         schema_version: 1,
         method: "oauth",
         binding: "same-account",
-        verified_at: now(),
+        verified_at: recordedAt(),
         repository_id: viewer.id ?? null,
         commit: pending.value.commit,
         principal: { login: submitter, id: user?.id ?? null },
@@ -937,7 +912,7 @@ async function refresh(env, entry) {
   // live links.
   if (record.status === "registered" && !record.rate_reset_at && record.push_proof?.principal?.id) {
     const path = await ratePath(env, record.push_proof.principal.id);
-    const resetAt = now();
+    const resetAt = recordedAt();
     // Absence already admits the next start at the floor. Do not synthesize a
     // partial document without the historical fields required of every
     // present rate record; a malformed present document fails closed.
@@ -990,7 +965,7 @@ async function refresh(env, entry) {
     next.status = run.conclusion === "success" ? "awaiting-review" : "verification-failed";
     next.events = [
       ...record.events,
-      { at: now(), status: next.status, note: `Verification ${run.conclusion}` },
+      { at: recordedAt(), status: next.status, note: `Verification ${run.conclusion}` },
     ];
   }
   if (next.status !== "verifying" && record.status === "verifying") {
@@ -1036,244 +1011,15 @@ async function refresh(env, entry) {
   return next;
 }
 
-/**
- * Say that a submission has work outstanding.
- *
- * The reviewer's pass used to find its work by listing `submissions/`, which is
- * an API call per submission per pass however few of them are moving, and which
- * stops working altogether at the thousand names the contents API will list.
- * It reads `index/open.json` instead, so a pass costs the queue rather than the
- * size of the registry.
- *
- * Only the reviewer removes entries, once the record says it is finished with
- * one. Adding has to happen here, because a submission the index never hears
- * about is a submission nothing reviews until the index is next rebuilt from
- * scratch. Written under the sha it was read at, like every other index, so a
- * concurrent change is surfaced instead of overwritten. That compare-and-swap
- * does not make the record, inflight index, and reviewer queue one transaction;
- * a conflict after an earlier write can still leave a partial admission.
- */
-async function openSubmission(env, id) {
-  const index = await readReviewerIndex(env);
-  const open = index.open;
-  if (open.includes(id)) return;
-  await writeState(
-    env,
-    OPEN_INDEX_PATH,
-    { ...index.value, open: [...open, id] },
-    `Open ${id}`,
-    index.sha,
-  );
-}
-
-async function assertInflightContract(env) {
-  await readInflightIndex(env);
-}
-
-async function release(env, id) {
-  const inflight = await readInflightIndex(env);
-  const open = inflight.open;
-  const changed = open.some((item) => item.id === id);
-  if (!changed) return;
-  await writeState(env, INFLIGHT_INDEX_PATH,
-                   { open: open.filter((item) => item.id !== id) },
-                   `Release ${id}`, inflight.sha);
-}
-
-/**
- * Free admission slots whose submissions have finished.
- *
- * Slots used to be released only when the submitter's page polled, so closing
- * the tab held one forever and enough abandoned submissions would wedge
- * intake. This runs on a schedule instead, so nothing depends on a browser
- * staying open. It may throw after committing safe partial progress: in
- * particular it releases unrelated terminal reservations, then fails the run
- * if a malformed reviewer queue kept a successful verification from settling.
- */
-// Exported for the tests, like `sweepPending`. Nothing else calls it: it is the
-// cron path, and driving it directly is the only way to test the case where
-// nobody is watching.
-export async function reconcile(env) {
-  const inflight = await readInflightIndex(env);
-  const open = inflight.open;
-  const still = [];
-  let reviewerQueueUnavailable = false;
-  for (const item of open) {
-    const record = await readState(env, statePath(item.id, "state.json"));
-    if (!record.value) continue;               // vanished: do not hold its slot
-    if (record.value.status !== "verifying") continue;
-    const pinned = record.value.run?.id ?? null;
-    const { run, complete } = await findVerificationRun(env, item.id, {
-      pinnedRunId: pinned,
-      since: record.value.created_at,
-    });
-
-    // The same pinning `refresh` documents, and for the same reason: the
-    // submission id is in a public run name, so a second run carrying it must
-    // not settle this record. Missing here before, and this is the path that
-    // runs with nobody watching.
-    if (pinned && run && run.id !== pinned) {
-      still.push(item);
-      continue;
-    }
-
-    // Pin a run that is not finished yet, and forget any miss recorded before it
-    // was found. Waiting for a run to complete before writing it down meant
-    // every pass searched by name again, and meant a miss recorded an hour ago
-    // still counted against a run that has been answering ever since.
-    //
-    // Only for a run still going: a completed one is written by the settle
-    // below, in the same commit as the status it produced, and writing it twice
-    // here would leave the second write holding a sha the first one replaced.
-    if (run && run.status !== "completed" && (!pinned || record.value.run_misses)) {
-      const seen = { ...record.value, run };
-      delete seen.run_misses;
-      await writeState(env, statePath(item.id, "state.json"), seen,
-                       `Pin the run for ${item.id}`, record.sha);
-      still.push(item);
-      continue;
-    }
-
-    if (run?.status === "completed") {
-      const settled =
-        run.conclusion === "success" ? "awaiting-review" : "verification-failed";
-      // Before the record stops saying `verifying`, and not caught. A failure
-      // here has to leave something that will be tried again, and the only
-      // thing that gets retried is a submission still in flight. The reviewer's
-      // weekly sweep would rebuild the whole index eventually, but a week is
-      // not a repair for a submitter waiting on a review.
-      if (settled === "awaiting-review") {
-        if (reviewerQueueUnavailable) {
-          still.push(item);
-          continue;
-        }
-        try {
-          await openSubmission(env, item.id);
-        } catch (error) {
-          if (!(error instanceof StateContractError)) throw error;
-          reportStateContract(error);
-          reviewerQueueUnavailable = true;
-          still.push(item);
-          continue;
-        }
-      }
-      const done = {
-        ...record.value,
-        run,
-        status: settled,
-        events: [...record.value.events,
-                 { at: now(), status: settled, note: `Verification ${run.conclusion}` }],
-      };
-      delete done.run_misses;
-      await writeState(env, statePath(item.id, "state.json"), done,
-                       `Reconcile ${item.id}`, record.sha);
-      if (settled === "awaiting-review") {
-        // Idempotent and cheap. A submission that settles without an entry here
-        // is one the reviewer's pass never looks at. The reviewer can rebuild
-        // the derived queue on its maintenance path, but this server never
-        // treats a missing id or malformed queue as an empty one.
-        await dispatchReviewer(env).catch(() => false);
-      }
-      continue;
-    }
-
-    // A run nothing can find is not a run this record is waiting for. With the
-    // search bounded by time rather than by count this should not happen, which
-    // is exactly why it needs a floor: a submission stuck in `verifying` holds
-    // three separate quotas and nothing else releases it, so a bug here used to
-    // mean a registry that quietly stopped accepting submissions and an
-    // operator editing private state by hand.
-    //
-    // Two misses rather than one, because a single empty answer is as likely to
-    // be GitHub having a moment as a genuinely lost run, and this ends a
-    // submission somebody is waiting on. Finding the run clears the count, so
-    // the two have to be consecutive. A run that is merely queued is found, and
-    // is left alone however long it waits.
-    //
-    // Only when the search actually established that there is no such run. A
-    // search that ran out of pages says where it stopped looking and nothing
-    // more, and reading that as absence is how a live run loses its slot.
-    if (!run && complete) {
-      const missed = (record.value.run_misses ?? 0) + 1;
-      const age = Date.now() - (Date.parse(record.value.created_at) || Date.now());
-      if (missed >= 2 && age > LOST_RUN_MS) {
-        await writeState(env, statePath(item.id, "state.json"), {
-          ...record.value,
-          status: "dispatch-lost",
-          run_misses: missed,
-          events: [...record.value.events, {
-            at: now(), status: "dispatch-lost",
-            note: "Palomar could not find the verification run it started, and released the slot",
-          }],
-        }, `Release ${item.id}: its run was never found`, record.sha);
-        continue;                              // dropped from `still`: slot back
-      }
-      if (missed !== (record.value.run_misses ?? 0)) {
-        await writeState(env, statePath(item.id, "state.json"),
-                         { ...record.value, run_misses: missed },
-                         `Note a missing run for ${item.id}`, record.sha).catch(() => {});
-      }
-    }
-    still.push(item);
-  }
-  if (still.length !== open.length) {
-    await writeState(env, INFLIGHT_INDEX_PATH, { open: still },
-                     "Reconcile admissions", inflight.sha);
-  }
-  if (reviewerQueueUnavailable) {
-    throw new StateContractError(
-      `${OPEN_INDEX_PATH} is unavailable; successful verification was not queued`,
-    );
-  }
-  return { released: open.length - still.length, open: still.length };
-}
-
-/**
- * Discard intake records nobody came back for.
- *
- * A pending record is written before the submitter is sent to GitHub. Most are
- * consumed seconds later; the ones from an abandoned sign-in are never
- * consumed at all, and without this they accumulate for the life of the
- * registry. They hold what somebody typed, so they are not kept indefinitely
- * for no reason.
- */
-export async function sweepPending(env, now = Date.now()) {
-  let removed = 0;
-  for (const item of await listState(env, "pending")) {
-    if (item.type !== "file" || !item.name.endsWith(".json")) continue;
-    const record = await readState(env, `pending/${item.name}`);
-    const created = Date.parse(record.value?.created_at ?? "");
-    // An hour is far longer than a sign-in takes and short enough that an
-    // abandoned one does not linger.
-    if (Number.isFinite(created) && now - created < 3600_000) continue;
-    if (await deleteState(env, `pending/${item.name}`, item.sha, "Discard an abandoned intake")) {
-      removed += 1;
-    }
-  }
-  return removed;
-}
-
 export default {
   /**
-   * The two things nothing else does, and what happens when one of them throws.
-   *
    * A cron handler has no submitter waiting on it and no response anyone reads,
-   * so a throw here was an unreported failure: admission slots stopped being
-   * freed and abandoned intake stopped being discarded, and the only sign of it
-   * was intake wedging some hours later. Both are attempted whatever the other
-   * does, and the run is failed at the end so the platform records it.
+   * so delegate to maintenance that attempts every task and throws after any
+   * failure. The platform can then record a failure instead of silently letting
+   * admission slots or abandoned intake accumulate.
    */
   async scheduled(event, env) {
-    const failures = [];
-    for (const [what, task] of [["reconcile", reconcile], ["sweepPending", sweepPending]]) {
-      try {
-        await task(env);
-      } catch (error) {
-        console.error("scheduled", what, String(error?.stack ?? error));
-        failures.push(`${what}: ${error}`);
-      }
-    }
-    if (failures.length) throw new Error(`the scheduled pass failed: ${failures.join("; ")}`);
+    await scheduledMaintenance(env);
   },
 
   async fetch(request, env) {
@@ -1399,7 +1145,7 @@ export default {
             await assertInflightContract(env);
           } catch (error) {
             if (!(error instanceof StateContractError)) throw error;
-            reportStateContract(error);
+            reportDurableContract(error);
             return json({ error: "submission decisions are temporarily unavailable" }, 503);
           }
         }
@@ -1407,7 +1153,7 @@ export default {
           ...entry.record,
           status: "withdrawn",
           events: [...entry.record.events,
-                   { at: now(), status: "withdrawn", note: "Withdrawn by the submitter" }],
+                   { at: recordedAt(), status: "withdrawn", note: "Withdrawn by the submitter" }],
         };
         await writeState(env, statePath(next.id, "state.json"), next,
                          `Withdraw ${next.id}`, entry.sha);
@@ -1490,9 +1236,9 @@ export default {
           ...entry.record,
           registration_consent: true,
           registration_consent_review_sha256: reviewed,
-          registration_consent_at: now(),
+          registration_consent_at: recordedAt(),
           events: [...entry.record.events,
-                   { at: now(), status: entry.record.status,
+                   { at: recordedAt(), status: entry.record.status,
                      note: "The submitter asked for this result to be registered" }],
         };
         await writeState(env, statePath(next.id, "state.json"), next,
