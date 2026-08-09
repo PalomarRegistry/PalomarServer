@@ -4,8 +4,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   bearerToken,
-  intakeBinding,
   intakeCookie,
+  intakeCredential,
   madeByThisSite,
   sessionCookie,
   sessionToken,
@@ -86,34 +86,57 @@ test("origin classification prefers fetch metadata and otherwise requires the ex
 test("an intake cookie is scoped to one nonce and clears with the same attributes", async () => {
   const nonce = "7".repeat(64);
   const binding = "b".repeat(64);
-  const name = `palomar_intake_${(await digest(nonce)).slice(0, 16)}`;
-  const attributes = "Path=/oauth/callback; HttpOnly; Secure; SameSite=Lax";
+  const name = `__Host-palomar_intake_${(await digest(nonce)).slice(0, 16)}`;
+  const attributes = "Path=/; HttpOnly; Secure; SameSite=Lax";
 
-  assert.equal(
-    await intakeCookie(nonce, binding),
-    `${name}=${binding}; ${attributes}; Max-Age=900`,
-  );
-  assert.equal(
-    await intakeCookie(nonce, null, { clear: true }),
-    `${name}=; ${attributes}; Max-Age=0`,
-  );
+  const active = await intakeCookie(nonce, binding);
+  const cleared = await intakeCookie(nonce, null, { clear: true });
+  assert.equal(active, `${name}=${binding}; ${attributes}; Max-Age=900`);
+  assert.equal(cleared, `${name}=; ${attributes}; Max-Age=0`);
+  assert.doesNotMatch(active, /(?:^|;)\s*Domain=/i);
+  assert.doesNotMatch(cleared, /(?:^|;)\s*Domain=/i);
 });
 
-test("an intake binding accepts only the exact nonce-scoped lowercase value", async () => {
+test("an intake credential accepts only one exact nonce-scoped lowercase value", async () => {
   const nonceDigest = await digest("nonce");
   const binding = "b".repeat(64);
-  const name = `palomar_intake_${nonceDigest.slice(0, 16)}`;
+  const other = "c".repeat(64);
+  const name = `__Host-palomar_intake_${nonceDigest.slice(0, 16)}`;
+  const legacy = `palomar_intake_${nonceDigest.slice(0, 16)}`;
 
-  assert.equal(intakeBinding(request({
-    cookie: `unrelated=1; ${name}=${binding}; trailing=2`,
-  }), nonceDigest), binding);
-  assert.equal(intakeBinding(request({
-    cookie: `${name}=${binding.toUpperCase()}`,
-  }), nonceDigest), null);
-  assert.equal(intakeBinding(request({
-    cookie: `${name}=${binding.slice(1)}`,
-  }), nonceDigest), null);
-  assert.equal(intakeBinding(request({
-    cookie: `${name}=${binding}`,
-  }), await digest("different nonce")), null);
+  assert.deepEqual(intakeCredential(request({
+    cookie: `unrelated=1; ${legacy}=${other}; ${name}=${binding}; trailing=2`,
+  }), nonceDigest), { kind: "valid", value: binding });
+  assert.deepEqual(intakeCredential(request({ cookie: `${legacy}=${binding}` }), nonceDigest), {
+    kind: "absent",
+  });
+  assert.deepEqual(intakeCredential(request({ cookie: `${name}=${binding}` }),
+    await digest("different nonce")), { kind: "absent" });
+  assert.deepEqual(intakeCredential(request({
+    cookie: `\u00a0${name}=${binding}`,
+  }), nonceDigest), { kind: "absent" });
+
+  for (const cookie of [
+    `${name}=${binding}; ${name}=${binding}`,
+    `${name}=${binding}; ${name}=${other}`,
+    `${name} =${binding}; ${name}=${other}`,
+    `${name}=${binding}; ${name} =${other}`,
+    `${name.replace("__Host-", "__host-")}=${binding}`,
+  ]) {
+    assert.deepEqual(intakeCredential(request({ cookie }), nonceDigest), {
+      kind: "ambiguous",
+    }, cookie);
+  }
+
+  for (const cookie of [
+    `${name}=${binding.toUpperCase()}`,
+    `${name}=${binding.slice(1)}`,
+    `${name}=${binding}b`,
+    name,
+    `${name}="${binding}"`,
+  ]) {
+    assert.deepEqual(intakeCredential(request({ cookie }), nonceDigest), {
+      kind: "invalid",
+    }, cookie);
+  }
 });

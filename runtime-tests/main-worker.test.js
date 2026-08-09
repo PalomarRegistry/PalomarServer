@@ -5,6 +5,12 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+async function hexDigest(value) {
+  return Array.from(new Uint8Array(
+    await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value)),
+  ), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
 test("the real Worker serves its network-free health contract", async () => {
   const outbound = vi.spyOn(globalThis, "fetch").mockImplementation(() => {
     throw new Error("health check attempted outbound traffic");
@@ -118,5 +124,57 @@ test("the real Worker rejects legacy and duplicate session cookies before I/O", 
     expect(response.status).toBe(404);
     expect(await response.json()).toEqual({ error: "not found" });
   }
+  expect(outbound).not.toHaveBeenCalled();
+});
+
+test("the real callback refuses a planted legacy intake cookie", async () => {
+  const nonce = "6".repeat(64);
+  const binding = "9".repeat(64);
+  const nonceDigest = await hexDigest(nonce);
+  const outbound = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+    const request = new Request(input, init);
+    if (request.method === "GET") {
+      const value = { binding_sha256: await hexDigest(binding) };
+      return Response.json({
+        content: btoa(`${JSON.stringify(value)}\n`),
+        sha: "b".repeat(40),
+      });
+    }
+    if (request.method === "DELETE") return Response.json({ ok: true });
+    throw new Error(`legacy intake reached ${request.method} ${request.url}`);
+  });
+
+  const response = await exports.default.fetch(new Request(
+    `https://submit.palomar-registry.org/oauth/callback?code=c&state=${nonce}`,
+    { headers: { cookie: `palomar_intake_${nonceDigest.slice(0, 16)}=${binding}` } },
+  ));
+
+  expect(response.status).toBe(400);
+  expect(await response.text()).toContain("That sign-in did not begin here");
+  expect(response.headers.get("set-cookie")).toBe(
+    `__Host-palomar_intake_${nonceDigest.slice(0, 16)}=; ` +
+      "Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0",
+  );
+  expect(outbound.mock.calls.map(([, init]) => init?.method ?? "GET")).toEqual(["GET", "DELETE"]);
+});
+
+test("the real callback rejects duplicate intake credentials before I/O", async () => {
+  const outbound = vi.spyOn(globalThis, "fetch").mockImplementation(() => {
+    throw new Error("an ambiguous intake reached a provider");
+  });
+  const nonce = "5".repeat(64);
+  const nonceDigest = await hexDigest(nonce);
+  const name = `__Host-palomar_intake_${nonceDigest.slice(0, 16)}`;
+
+  const response = await exports.default.fetch(new Request(
+    `https://submit.palomar-registry.org/oauth/callback?code=c&state=${nonce}`,
+    { headers: { cookie: `${name}=${"8".repeat(64)}; ${name}=${"9".repeat(64)}` } },
+  ));
+
+  expect(response.status).toBe(400);
+  expect(await response.text()).toContain("That sign-in did not begin here");
+  expect(response.headers.get("set-cookie")).toBe(
+    `${name}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0`,
+  );
   expect(outbound).not.toHaveBeenCalled();
 });

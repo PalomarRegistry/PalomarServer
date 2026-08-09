@@ -33,8 +33,8 @@ import {
 import { authorizationRelationshipLabel, validateIntake } from "./intake-contract.js";
 import {
   bearerToken,
-  intakeBinding,
   intakeCookie,
+  intakeCredential,
   madeByThisSite,
   sessionCookie,
   sessionToken,
@@ -689,6 +689,18 @@ async function verifySubmission(request, env) {
   });
 }
 
+/** Answer one structurally unusable browser binding without touching State. */
+async function refusedIntakeCredential(env, nonce) {
+  return html(
+    errorPage(env, "That sign-in did not begin here", [
+      "Palomar completes a sign-in only in the browser that started it.",
+      "If this was you, start again from the submission form.",
+    ]),
+    400,
+    { "set-cookie": await intakeCookie(nonce, null, { clear: true }) },
+  );
+}
+
 /**
  * Prove the submitter can push to the repository they are submitting.
  *
@@ -703,6 +715,14 @@ async function completeSubmission(request, env) {
   if (!code || !nonce) return html(errorPage(env, "That sign-in did not complete", []), 400);
 
   const nonceDigest = await digest(nonce);
+  const credential = intakeCredential(request, nonceDigest);
+  // A malformed or ambiguous protected name can only come from a raw client,
+  // proxy corruption, or a broken cookie implementation. It has no authority
+  // to consume the pending proof, so stop before even reading durable State.
+  // The pending record remains available for a legitimate callback or sweep.
+  if (credential.kind === "invalid" || credential.kind === "ambiguous") {
+    return refusedIntakeCredential(env, nonce);
+  }
   const pendingPath = `pending/${nonceDigest}.json`;
   const pending = await readState(env, pendingPath);
   if (!pending.value) {
@@ -717,7 +737,7 @@ async function completeSubmission(request, env) {
   // minutes went by or the browser was told to keep no cookies, which is not.
   // Both get the same answer: there is no way to tell them apart from here,
   // and guessing at which it was would only make the message worse.
-  const presented = intakeBinding(request, nonceDigest);
+  const presented = credential.kind === "valid" ? credential.value : null;
   const expected = pending.value.binding_sha256;
   if (!expected || !presented || (await digest(presented)) !== expected) {
     // Consuming it stops the same link being offered to the next person, and
@@ -730,14 +750,7 @@ async function completeSubmission(request, env) {
                             "Discard an intake finished elsewhere"))) {
       console.error("pending", `could not discard ${pendingPath}`);
     }
-    return html(
-      errorPage(env, "That sign-in did not begin here", [
-        "Palomar completes a sign-in only in the browser that started it.",
-        "If this was you, start again from the submission form.",
-      ]),
-      400,
-      { "set-cookie": await intakeCookie(nonce, null, { clear: true }) },
-    );
+    return refusedIntakeCredential(env, nonce);
   }
 
   const tokenResponse = await fetch("https://github.com/login/oauth/access_token", {
