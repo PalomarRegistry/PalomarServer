@@ -23,6 +23,9 @@ jobs:
       # and deploy graph still handles source and production credentials.
       # Keep low-or-higher advisories in that complete dev graph a hard gate.
       - run: npm run audit:dependencies
+      # ESLint covers the shipped Worker/browser modules and both test layers.
+      # It is a static correctness gate; the tests below remain separate.
+      - run: npm run lint
       - run: npm test
       # Exercise both deployed Workers in workerd after the fast pure and
       # route-contract suite. Deployment depends on this job, so neither Worker
