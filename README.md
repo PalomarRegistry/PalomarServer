@@ -237,8 +237,8 @@ is the only thing `--apply` adds.
 Pushes to `main` are deployed automatically after the test suite passes. The
 GitHub repository must provide `CLOUDFLARE_ACCOUNT_ID` and
 `CLOUDFLARE_API_TOKEN` as Actions secrets. Before uploading a version, CI
-reapplies the reviewed routes, cron trigger, and hostname policy from
-`wrangler.jsonc`; it then uploads and promotes that version.
+reapplies the reviewed Worker hostname policy; it then uploads and promotes that
+version. The version workflow does not change the existing route or cron trigger.
 
 The Worker imports no package from npm at runtime. The locked npm graph is
 development tooling: Wrangler and the official Vitest pool's Miniflare/workerd
@@ -293,8 +293,9 @@ curl -s https://submit.palomar-registry.org/healthz
 Both Worker configurations explicitly disable `workers.dev` and versioned or
 aliased preview URLs. The reviewed hostnames are their only public routes; do
 not enable another hostname without giving it the same exposure review. The
-main deployment applies this policy before every version upload, while the
-redirect deployment applies it through `wrangler deploy`.
+main deployment applies just this account-level hostname policy before every
+version upload, while the redirect deployment applies its complete configuration
+through `wrangler deploy`.
 
 The separate, secret-free `palomar-domain-redirect` Worker owns
 `palomarregistry.org` and `www.palomarregistry.org`. It permanently redirects
