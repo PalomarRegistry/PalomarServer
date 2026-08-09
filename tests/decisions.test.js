@@ -2023,6 +2023,35 @@ test("the session exchange refuses a cross-site caller", async () => {
   assert.equal(response.headers.get("set-cookie"), null);
 });
 
+test("the session exchange accepts an exact-origin fallback without fetch metadata", async () => {
+  stubState(await fixture());
+  const stateFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url, init = {}) => {
+    calls.push({ method: init.method ?? "GET", path: new URL(url).pathname });
+    return stateFetch(url, init);
+  };
+
+  const response = await worker.fetch(
+    new Request("https://submit.palomar-registry.org/session", {
+      method: "POST",
+      headers: { origin: "https://submit.palomar-registry.org" },
+      body: new URLSearchParams({ token: TOKEN }),
+    }),
+    ENV,
+  );
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { ok: true });
+  assert.equal(
+    response.headers.get("set-cookie"),
+    `palomar_session=${TOKEN}; Path=/; Max-Age=43200; HttpOnly; Secure; SameSite=Strict`,
+  );
+  assert.deepEqual(calls.map(({ method }) => method), ["GET", "GET"]);
+  assert.match(calls[0].path, /\/contents\/index\/tokens\/[0-9a-f]{64}\.json$/);
+  assert.match(calls[1].path, /\/contents\/submissions\/a1b2c3d4e5f6\/state\.json$/);
+});
+
 test("the status read is guarded too, because it is not really a read", async () => {
   // `refresh` writes records, releases capacity, spends the shared GitHub
   // budget and dispatches reviewer work. A same-site sibling could cause all of

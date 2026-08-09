@@ -131,10 +131,12 @@ malformed queue is never replaced as though it were empty.
 The pure intake normalization and validation live in `src/intake-contract.js`;
 admission caps and rate-record projection live in `src/admission-contract.js`;
 the checks for these indexes, the current review marker, and the
-submitter-visible review projection live in `src/state-contract.js`. The Worker
-in `src/index.js` remains the composition root for body decoding, responses,
-reads, optimistic writes, authorization, and ordering; contract code does not
-perform I/O.
+submitter-visible review projection live in `src/state-contract.js`; and exact
+request credential transport and origin classification live in
+`src/request-credentials.js`. The Worker in `src/index.js` remains the
+composition root: it decides which routes require those credentials and owns
+body decoding, responses, reads, optimistic writes, authorization, and
+ordering. These four modules do not perform I/O.
 
 Before pointing a fresh or staging Worker at a new state repository, copy the
 two files in `state-bootstrap/index/` to `index/` and commit them. Deploying the
