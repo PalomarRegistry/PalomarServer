@@ -104,7 +104,7 @@ async function fixture(overrides = {}, reviewOverrides = {}) {
 // What a browser on Palomar's own pages sends. The mutating endpoints refuse a
 // cookie that did not come from this site, so a helper that omitted this would
 // be testing the refusal rather than the endpoint.
-function request(path, method = "GET", cookie = `palomar_session=${TOKEN}`, extra = {}) {
+function request(path, method = "GET", cookie = `__Host-palomar_session=${TOKEN}`, extra = {}) {
   return new Request(`https://submit.palomar-registry.org${path}`, {
     method,
     headers: { "sec-fetch-site": "same-origin", ...(cookie ? { cookie } : {}), ...extra },
@@ -126,7 +126,7 @@ test("the review is delivered only to whoever holds the access token", async () 
   assert.equal(anonymous.status, 404);
 
   const wrongToken = await worker.fetch(
-    request("/api/review", "GET", `palomar_session=${"b".repeat(64)}`),
+    request("/api/review", "GET", `__Host-palomar_session=${"b".repeat(64)}`),
     ENV,
   );
   assert.equal(wrongToken.status, 404);
@@ -394,7 +394,7 @@ test("a well-formed form body is still read exactly as it was", async () => {
     ENV,
   );
   assert.equal(response.status, 200);
-  assert.match(response.headers.get("set-cookie"), new RegExp(`palomar_session=${TOKEN}`));
+  assert.match(response.headers.get("set-cookie"), new RegExp(`__Host-palomar_session=${TOKEN}`));
 });
 
 test("the verification run is pinned once, and a later namesake cannot take it", async () => {
@@ -746,7 +746,7 @@ test("the session exchange actually sets the cookie it promises", async () => {
   assert.equal(response.status, 200);
   const cookie = response.headers.get("set-cookie");
   assert.ok(cookie, "no cookie was set");
-  assert.match(cookie, new RegExp(`palomar_session=${TOKEN}`));
+  assert.match(cookie, new RegExp(`__Host-palomar_session=${TOKEN}`));
   for (const attribute of ["HttpOnly", "Secure", "SameSite=Strict", "Path=/"]) {
     assert.match(cookie, new RegExp(attribute), `cookie lacks ${attribute}`);
   }
@@ -767,7 +767,12 @@ test("the cookie the exchange sets is the one the status page is read with", asy
   const cookie = exchange.headers.get("set-cookie").split(";")[0];
   const status = await worker.fetch(
     new Request("https://submit.palomar-registry.org/api/submission", {
-      headers: { cookie, "sec-fetch-site": "same-origin" },
+      headers: {
+        // A sibling may leave the retired Domain-cookie name in the browser.
+        // It cannot shadow the host-prefixed credential or authenticate alone.
+        cookie: `palomar_session=${"b".repeat(64)}; ${cookie}`,
+        "sec-fetch-site": "same-origin",
+      },
     }),
     ENV,
   );
@@ -1970,7 +1975,7 @@ test("a mutating call that did not come from this site is refused", async () => 
       const response = await worker.fetch(
         new Request(`https://submit.palomar-registry.org${path}`, {
           method: "POST",
-          headers: { cookie: `palomar_session=${TOKEN}`, ...headers },
+          headers: { cookie: `__Host-palomar_session=${TOKEN}`, ...headers },
         }),
         ENV,
       );
@@ -1987,7 +1992,13 @@ test("an agent presenting the token as a header needs no cookie and no origin", 
   const response = await worker.fetch(
     new Request("https://submit.palomar-registry.org/register", {
       method: "POST",
-      headers: { authorization: `Bearer ${TOKEN}` },
+      headers: {
+        authorization: `Bearer ${TOKEN}`,
+        // Cookie ambiguity cannot turn a presented non-ambient credential into
+        // an anonymous request.
+        cookie:
+          `__Host-palomar_session=${TOKEN}; __Host-palomar_session=${"b".repeat(64)}`,
+      },
       body: JSON.stringify({ review_sha256: "f".repeat(64) }),
     }),
     ENV,
@@ -2045,7 +2056,8 @@ test("the session exchange accepts an exact-origin fallback without fetch metada
   assert.deepEqual(await response.json(), { ok: true });
   assert.equal(
     response.headers.get("set-cookie"),
-    `palomar_session=${TOKEN}; Path=/; Max-Age=43200; HttpOnly; Secure; SameSite=Strict`,
+    `__Host-palomar_session=${TOKEN}; Path=/; Max-Age=43200; HttpOnly; Secure; ` +
+      "SameSite=Strict",
   );
   assert.deepEqual(calls.map(({ method }) => method), ["GET", "GET"]);
   assert.match(calls[0].path, /\/contents\/index\/tokens\/[0-9a-f]{64}\.json$/);
@@ -2062,7 +2074,7 @@ test("the status read is guarded too, because it is not really a read", async ()
   const forged = await worker.fetch(
     new Request("https://submit.palomar-registry.org/api/submission", {
       headers: {
-        cookie: `palomar_session=${TOKEN}`,
+        cookie: `__Host-palomar_session=${TOKEN}`,
         origin: "https://data.palomar-registry.org",
       },
     }),
@@ -2421,7 +2433,10 @@ test("consent names the review it was given for", async () => {
   const stale = await worker.fetch(
     new Request("https://submit.palomar-registry.org/register", {
       method: "POST",
-      headers: { "sec-fetch-site": "same-origin", cookie: `palomar_session=${TOKEN}` },
+      headers: {
+        "sec-fetch-site": "same-origin",
+        cookie: `__Host-palomar_session=${TOKEN}`,
+      },
       body: JSON.stringify({ review_sha256: "f".repeat(64) }),
     }),
     ENV,
@@ -2435,7 +2450,10 @@ test("consent names the review it was given for", async () => {
   const empty = await worker.fetch(
     new Request("https://submit.palomar-registry.org/register", {
       method: "POST",
-      headers: { "sec-fetch-site": "same-origin", cookie: `palomar_session=${TOKEN}` },
+      headers: {
+        "sec-fetch-site": "same-origin",
+        cookie: `__Host-palomar_session=${TOKEN}`,
+      },
     }),
     ENV,
   );

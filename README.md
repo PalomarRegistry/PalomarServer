@@ -57,6 +57,11 @@ exchange it for a short-lived cookie. Saying it is "never sent to a server"
 would be wrong, and the page does not say so: it says to treat the link like a
 password, which is the part a submitter can act on.
 
+Browser status sessions use a `__Host-` cookie: it is secure, scoped to `/`,
+and has no `Domain` attribute. Browsers therefore do not let a sibling host set
+or shadow that credential, and the server refuses an ambiguous request carrying
+the session-cookie name more than once.
+
 Push access is not authorship. It does not establish approval from the
 responsible authors of a substantive formalization, and does not replace the
 declaration a submitter makes about that.

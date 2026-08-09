@@ -20,15 +20,18 @@ function request(headers = {}) {
 }
 
 test("the session cookie has the exact host credential attributes", () => {
-  assert.deepEqual(sessionCookie(TOKEN), {
+  const headers = sessionCookie(TOKEN);
+  assert.deepEqual(headers, {
     "set-cookie":
-      `palomar_session=${TOKEN}; Path=/; Max-Age=43200; HttpOnly; Secure; SameSite=Strict`,
+      `__Host-palomar_session=${TOKEN}; Path=/; Max-Age=43200; HttpOnly; Secure; ` +
+      "SameSite=Strict",
   });
+  assert.doesNotMatch(headers["set-cookie"], /(?:^|;)\s*Domain=/i);
 });
 
 test("session and bearer credentials accept only exact lowercase tokens", () => {
   assert.equal(sessionToken(request({
-    cookie: `unrelated=1; palomar_session=${TOKEN}; trailing=2`,
+    cookie: `unrelated=1; __Host-palomar_session=${TOKEN}; trailing=2`,
   })), TOKEN);
   assert.equal(bearerToken(request({ authorization: `Bearer ${TOKEN}` })), TOKEN);
 
@@ -37,12 +40,29 @@ test("session and bearer credentials accept only exact lowercase tokens", () => 
     TOKEN.slice(1),
     `${TOKEN}a`,
   ]) {
-    assert.equal(sessionToken(request({ cookie: `palomar_session=${value}` })), null);
+    assert.equal(sessionToken(request({ cookie: `__Host-palomar_session=${value}` })), null);
     assert.equal(bearerToken(request({ authorization: `Bearer ${value}` })), null);
   }
-  assert.equal(sessionToken(request({ cookie: `not_palomar_session=${TOKEN}` })), null);
+  assert.equal(sessionToken(request({ cookie: `not___Host-palomar_session=${TOKEN}` })), null);
   assert.equal(bearerToken(request({ authorization: `bearer ${TOKEN}` })), null);
   assert.equal(bearerToken(request({ authorization: `Bearer  ${TOKEN}` })), null);
+});
+
+test("legacy and duplicate session-cookie names fail closed", () => {
+  const name = "__Host-palomar_session";
+  const other = "b".repeat(64);
+  assert.equal(sessionToken(request({ cookie: `palomar_session=${TOKEN}` })), null);
+  assert.equal(sessionToken(request({ cookie: `__host-palomar_session=${TOKEN}` })), null);
+  for (const cookie of [
+    `${name}=${TOKEN}; ${name}=${TOKEN}`,
+    `${name}=${other}; ${name}=${TOKEN}`,
+    `${name}=${TOKEN}; ${name}=${other}`,
+    `${name}=${TOKEN}; ${name}`,
+    `${name} =${other}; ${name}=${TOKEN}`,
+    `${name} =${TOKEN}`,
+  ]) {
+    assert.equal(sessionToken(request({ cookie })), null, cookie);
+  }
 });
 
 test("origin classification prefers fetch metadata and otherwise requires the exact origin", () => {

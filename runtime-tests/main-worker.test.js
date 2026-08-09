@@ -70,3 +70,53 @@ test("the real Worker reaches GitHub only through the mocked runtime boundary", 
     expect(request.headers.get("x-github-api-version")).toBe("2022-11-28");
   }
 });
+
+test("the real session exchange issues only the host-prefixed credential", async () => {
+  const outbound = vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+    const value = outbound.mock.calls.length === 1
+      ? { id: "a1b2c3d4e5f6" }
+      : { id: "a1b2c3d4e5f6", status: "verifying" };
+    return Response.json({
+      content: btoa(`${JSON.stringify(value)}\n`),
+      sha: "b".repeat(40),
+    });
+  });
+  const token = "a".repeat(64);
+
+  const response = await exports.default.fetch(new Request(
+    "https://submit.palomar-registry.org/session",
+    {
+      method: "POST",
+      headers: { "sec-fetch-site": "same-origin" },
+      body: new URLSearchParams({ token }),
+    },
+  ));
+
+  expect(response.status).toBe(200);
+  expect(await response.json()).toEqual({ ok: true });
+  expect(response.headers.get("set-cookie")).toBe(
+    `__Host-palomar_session=${token}; Path=/; Max-Age=43200; HttpOnly; Secure; ` +
+      "SameSite=Strict",
+  );
+  expect(outbound).toHaveBeenCalledTimes(2);
+});
+
+test("the real Worker rejects legacy and duplicate session cookies before I/O", async () => {
+  const outbound = vi.spyOn(globalThis, "fetch").mockImplementation(() => {
+    throw new Error("an ambiguous session reached durable state");
+  });
+  const token = "a".repeat(64);
+
+  for (const cookie of [
+    `palomar_session=${token}`,
+    `__Host-palomar_session=${token}; __Host-palomar_session=${token}`,
+  ]) {
+    const response = await exports.default.fetch(new Request(
+      "https://submit.palomar-registry.org/api/submission",
+      { headers: { cookie, "sec-fetch-site": "same-origin" } },
+    ));
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: "not found" });
+  }
+  expect(outbound).not.toHaveBeenCalled();
+});
