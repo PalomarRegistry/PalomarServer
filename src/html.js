@@ -198,15 +198,21 @@ export function statusPage(env) {
       <p class="hint">
         This is an automated review of whether your formal statements agree
         with the informal account of them, and whether the result is plausibly
-        of interest. No person read it. It is private: nobody but you and the
-        Palomar moderation team can see it, and it stays that way unless you
-        register.
+        of interest. No person read it.
+      </p>
+      <p class="hint" id="review-privacy">
+        It is private: nobody but you and the Palomar moderation team can see
+        it, and it stays that way unless you register.
       </p>
       <dl class="details" id="review-summary"></dl>
       <div id="review-body"></div>
+    </section>
+
+    <div id="decision-section" hidden>
+      <h2>Your decision</h2>
       <div class="decision">
-        <button type="button" id="register">Register this result</button>
-        <button type="button" id="withdraw" class="secondary">Withdraw the submission</button>
+        <button type="button" id="register" aria-describedby="register-warning">Register this result</button>
+        <button type="button" id="withdraw" class="secondary" aria-describedby="withdraw-warning">Withdraw the submission</button>
       </div>
       <p class="hint warning" id="register-warning">
         Palomar is still pre-launch. Registration makes the record, review,
@@ -215,11 +221,14 @@ export function statusPage(env) {
         registered record names the submission and its authorization basis, and
         has no field for the person who sent it. The public database may still
         be reshaped until launch; after launch its registered records are
-        append-only. Withdrawing leaves no public trace of the review or the
-        decision.
+        append-only.
       </p>
-      <p class="hint" id="decision-status" role="status"></p>
-    </section>
+      <p class="hint" id="withdraw-warning">
+        Withdrawing ends this submission. Nothing about the review or decision
+        becomes public.
+      </p>
+    </div>
+    <p class="hint" id="decision-status" role="status"></p>
 
     <section class="disclosure">
       <h2>Keep this link</h2>

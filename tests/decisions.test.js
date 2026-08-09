@@ -863,6 +863,110 @@ test("the status page stops asking when nobody is looking at it", async () => {
   assert.match(script, /pollDelay = 0;\s*\n\s*poll\(\);/);
 });
 
+test("every status gets exactly the review and decision controls the server permits", async () => {
+  const { statusPresentation } = await import("../public/statuses.js");
+  const expected = {
+    verifying: { review: "hidden", register: false, withdraw: true },
+    "verification-failed": { review: "hidden", register: false, withdraw: false },
+    "awaiting-review": { review: "hidden", register: false, withdraw: true },
+    reviewing: { review: "hidden", register: false, withdraw: true },
+    "review-ready": { review: "interactive", register: false, withdraw: true },
+    "review-failed": { review: "hidden", register: false, withdraw: true },
+    "dispatch-lost": { review: "hidden", register: false, withdraw: true },
+    registered: { review: "read-only", register: false, withdraw: false },
+    withdrawn: { review: "hidden", register: false, withdraw: false },
+  };
+  const { STATUSES } = await import("../src/submission.js");
+  const { CLOSED } = await import("../public/statuses.js");
+  assert.deepEqual(Object.keys(expected).sort(), Object.keys(STATUSES).sort());
+  for (const [status, presentation] of Object.entries(expected)) {
+    assert.deepEqual(statusPresentation(status), presentation, status);
+    assert.equal(presentation.withdraw, !CLOSED.has(status), `${status} withdrawal drift`);
+  }
+  assert.deepEqual(statusPresentation("review-ready", { reviewPassed: true }), {
+    review: "interactive", register: true, withdraw: true,
+  });
+  assert.deepEqual(statusPresentation("review-ready", {
+    reviewPassed: true,
+    registrationConsent: true,
+  }), {
+    review: "interactive", register: false, withdraw: true,
+  });
+  assert.deepEqual(statusPresentation("registered", { reviewPassed: true }), {
+    review: "read-only", register: false, withdraw: false,
+  });
+  assert.deepEqual(statusPresentation("unknown"), {
+    review: "hidden", register: false, withdraw: false,
+  });
+
+  const script = await readFile(new URL("../public/status.js", import.meta.url), "utf8");
+  assert.match(script, /let presentation = statusPresentation\(data\.status, \{/);
+  assert.match(
+    script,
+    /await showReview\(\);\s*\n\s*presentation = statusPresentation\(data\.status, \{/,
+  );
+  assert.match(
+    script,
+    /async function showReview\(\{ registered = false, expectedDigest = null \} = \{\}\)/,
+  );
+  assert.match(script, /response\.status === 409[\s\S]*if \(registered\) \{[\s\S]*reviewSection\.hidden = true;/);
+  assert.match(
+    script,
+    /decisionSection\.hidden = !presentation\.register && !presentation\.withdraw;[\s\S]*registerButton\.hidden = !presentation\.register;[\s\S]*withdrawButton\.hidden = !presentation\.withdraw;/,
+  );
+  assert.match(script, /presentation\.review === "read-only"[\s\S]*part of the public registered record/);
+  assert.match(script, /expectedDigest: data\.registration_consent_review_sha256/);
+  assert.match(script, /data\.review_sha256 !== reviewDigest[\s\S]*resetReview\(\)/);
+  assert.match(script, /path === "\/register"[\s\S]*resetReview\(\);[\s\S]*await poll\(\)/);
+  assert.match(script, /withdrawButton\.disabled = decisionInFlight \|\| !presentation\.withdraw/);
+  assert.match(script, /reviewShown &&[\s\S]*!effectiveConsent && !reviewNeedsRerun/);
+
+  const { statusPage } = await import("../src/html.js");
+  const page = statusPage(ENV);
+  assert.match(page, /id="review-privacy"/);
+  assert.match(page, /id="decision-section" hidden/);
+  assert.match(page, /<h2>Your decision<\/h2>/);
+  assert.match(page, /id="withdraw"[^>]+aria-describedby="withdraw-warning"/);
+  assert.match(page, /id="register-warning"/);
+  assert.match(page, /id="withdraw-warning"/);
+});
+
+test("a registered page names only the exact consented review as public", async () => {
+  const data = await fixture();
+  const statePathName = "submissions/a1b2c3d4e5f6/state.json";
+  const digest = "e".repeat(64);
+  data[statePathName] = {
+    ...data[statePathName],
+    status: "registered",
+    registration_consent_review_sha256: digest,
+  };
+  stubState(data);
+  const response = await worker.fetch(request("/api/submission"), ENV);
+  assert.equal(response.status, 200);
+  const registeredRecord = await response.json();
+  assert.equal(registeredRecord.registration_consent_review_sha256, digest);
+  assert.equal(registeredRecord.review_sha256, null);
+
+  data[statePathName] = { ...data[statePathName], status: "review-ready", review_sha256: digest };
+  stubState(data);
+  const privateResponse = await worker.fetch(request("/api/submission"), ENV);
+  const privateRecord = await privateResponse.json();
+  assert.equal(privateRecord.registration_consent_review_sha256, null);
+  assert.equal(privateRecord.review_sha256, digest);
+
+  data[statePathName] = {
+    ...data[statePathName],
+    status: "registered",
+    registration_consent_review_sha256: undefined,
+  };
+  stubState(data);
+  const legacyRecord = await worker.fetch(request("/api/submission"), ENV).then(
+    (item) => item.json(),
+  );
+  assert.equal(legacyRecord.registration_consent_review_sha256, null);
+  assert.equal(legacyRecord.review_sha256, null);
+});
+
 test("a temporary status failure retries instead of pretending the record is missing", async () => {
   const { pollFailureAction } = await import("../public/polling.js");
   assert.equal(pollFailureAction(404), "missing");
@@ -2540,9 +2644,11 @@ test("a review whose digest is not recorded yet is not handed over", async () =>
   assert.equal(response.status, 404);
   assert.match((await response.json()).error, /no review yet/);
 
-  // And the page keeps asking on anything that is not a 409.
+  // And the page keeps the panel hidden and keeps asking until the digest-bound
+  // review is actually available.
   const script = await readFile(new URL("../public/status.js", import.meta.url), "utf8");
-  assert.match(script, /if \(!response\.ok\) return;/);
+  assert.match(script, /if \(!response\.ok\) \{[\s\S]*return false;/);
+  assert.match(script, /data\.status === "review-ready" && reviewShown/);
 });
 
 test("the page sends back the digest it was shown", async () => {

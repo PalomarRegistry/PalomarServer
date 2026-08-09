@@ -106,9 +106,12 @@ pinned run id, so the name is not the trust boundary in either place.
 Registration is the submitter's decision and nobody else's. `/register` records
 consent together with the digest of the review the submitter was shown, and the
 reviewer refuses to register anything whose bytes differ, so a revised review
-needs fresh consent rather than inheriting the old. Withdrawing leaves no public
-trace of the review or the decision. Only an accepted review under the current
-review contract can be registered; an older in-flight review must be rerun.
+needs fresh consent rather than inheriting the old. Withdrawing before consent
+leaves no public trace of the review or the decision. After consent, the reviewer
+still refuses to merge a withdrawn record, but source-preservation or rendering
+work that already started may remain public. Only an accepted review under the
+current review contract can be registered; an older in-flight review must be
+rerun.
 
 ## The state a submission holds
 
