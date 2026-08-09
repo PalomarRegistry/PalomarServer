@@ -8,18 +8,43 @@
 
 import { digest } from "./submission.js";
 
+const SESSION_COOKIE_NAME = "__Host-palomar_session";
+
 /** The one-time exchange: fragment in, short-lived host-only cookie out. */
 export function sessionCookie(token) {
   return {
     "set-cookie":
-      `palomar_session=${token}; Path=/; Max-Age=43200; HttpOnly; Secure; SameSite=Strict`,
+      `${SESSION_COOKIE_NAME}=${token}; Path=/; Max-Age=43200; HttpOnly; Secure; SameSite=Strict`,
   };
 }
 
+/**
+ * Read exactly one browser-owned session credential.
+ *
+ * Supporting browsers enforce the `__Host-` prefix by requiring `Secure`,
+ * `Path=/`, and no `Domain`, so a sibling host cannot set or shadow this name.
+ * Raw clients can still construct ambiguous Cookie headers, and no ordering of
+ * two credentials is authoritative, so duplicate names fail closed.
+ */
 export function sessionToken(request) {
   const cookie = request.headers.get("cookie") ?? "";
-  const match = /(?:^|;\s*)palomar_session=([0-9a-f]{64})(?:;|$)/.exec(cookie);
-  return match ? match[1] : null;
+  let found = false;
+  let value = null;
+  for (const rawPart of cookie.split(";")) {
+    const part = rawPart.trimStart();
+    const separator = part.indexOf("=");
+    const rawName = separator === -1 ? part : part.slice(0, separator);
+    const name = rawName.trimEnd();
+    if (name !== SESSION_COOKIE_NAME) continue;
+    // Count a whitespace-padded protected name as ambiguity without accepting
+    // that malformed spelling by itself.
+    if (found || rawName !== name) return null;
+    found = true;
+    value = separator === -1 ? null : part.slice(separator + 1);
+  }
+  return found && typeof value === "string" && /^[0-9a-f]{64}$/.test(value)
+    ? value
+    : null;
 }
 
 /**
