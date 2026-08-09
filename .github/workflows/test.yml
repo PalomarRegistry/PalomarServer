@@ -24,6 +24,10 @@ jobs:
       # Keep low-or-higher advisories in that complete dev graph a hard gate.
       - run: npm run audit:dependencies
       - run: npm test
+      # Exercise both deployed Workers in workerd after the fast pure and
+      # route-contract suite. Deployment depends on this job, so neither Worker
+      # is promoted after only passing Node import tests.
+      - run: npm run test:runtime
 
   # This job holds the credential that can deploy the Worker, and an action
   # resolved from a tag runs before the steps that carry it. Pinned by commit,
