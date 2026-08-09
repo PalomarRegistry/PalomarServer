@@ -25,10 +25,9 @@ export const FIRST_POLL_MS = 6_000;
 // used to.
 export const POLL_CAP_MS = 60_000;
 
-// Five minutes, for the states whose next move is on a clock nobody here
-// controls: `awaiting-review` waits for a reviewer pass, which is scheduled
-// every two hours, and a registration under way takes a whole pass of its own.
-// Asking a hundred times between two possible answers is a hundred wasted asks.
+// Five minutes, for the states whose next move is controlled by the external
+// review pipeline rather than this page. Asking a hundred times while it cannot
+// produce a new answer is a hundred wasted asks.
 export const SLOW_POLL_CAP_MS = 300_000;
 
 // Nothing is running for a submission in these states, so the page stops

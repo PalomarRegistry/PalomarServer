@@ -1,6 +1,6 @@
 // Pure validation and projection at the boundary with PalomarSubmissionState.
-// GitHub reads, optimistic writes, and route responses stay in the Worker
-// composition root.
+// Durable index reads and optimistic writes stay in submission-lifecycle.js
+// and the Worker composition root; route responses stay in the root.
 
 export const INFLIGHT_INDEX_PATH = "index/inflight.json";
 
@@ -19,8 +19,8 @@ const UTC_SECONDS_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
 const CURRENT_REVIEW_SCHEMA_VERSION = 2;
 const REVIEW_DECISIONS = new Set(["accept", "revise", "reject"]);
 
-// Also raised by the composition root when an I/O result cannot satisfy this
-// boundary, so every caller can keep one fail-closed error contract.
+// Also raised by the lifecycle boundary when an I/O result cannot satisfy this
+// contract, so every caller can keep one fail-closed error type.
 export class StateContractError extends Error {}
 
 function plainObject(value) {

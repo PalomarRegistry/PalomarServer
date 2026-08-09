@@ -588,7 +588,7 @@ test("an abandoned sign-in is discarded, and a fresh one is left alone", async (
       sha: `sha-${name}`,
     });
   };
-  const { sweepPending } = await import("../src/index.js");
+  const { sweepPending } = await import("../src/submission-lifecycle.js");
   const removed = await sweepPending(ENV, now);
   assert.deepEqual(deleted.sort(), ["abandoned.json", "undated.json"]);
   assert.equal(removed, 2);
@@ -612,7 +612,7 @@ test("a pending directory too long to list is refused, not half-swept", async ()
       })),
     );
   };
-  const { sweepPending } = await import("../src/index.js");
+  const { sweepPending } = await import("../src/submission-lifecycle.js");
   await assert.rejects(() => sweepPending(ENV), /at or past the 1000/);
   assert.deepEqual(deleted, []);
 });
@@ -637,7 +637,7 @@ test("a scheduled pass that could not do its work does not report success", asyn
 });
 
 test("the inflight index refuses obsolete and malformed shapes", async () => {
-  const { reconcile } = await import("../src/index.js");
+  const { reconcile } = await import("../src/submission-lifecycle.js");
   const current = {
     id: "a1b2c3d4e5f6",
     owner: "example",
@@ -686,7 +686,7 @@ test("the inflight index refuses obsolete and malformed shapes", async () => {
 });
 
 test("the current inflight contract accepts provider-safe ordinary and managed logins", async () => {
-  const { reconcile } = await import("../src/index.js");
+  const { reconcile } = await import("../src/submission-lifecycle.js");
   const { store } = stubState({
     "index/inflight.json": {
       open: [
@@ -897,8 +897,13 @@ test("an event never claims a status the submission cannot be in", async () => {
   // Reconciliation stamped its events "reconciled", which is not a status
   // anything else recognises, so the timeline disagreed with the record.
   const { STATUSES } = await import("../src/submission.js");
-  const source = await readFile(new URL("../src/index.js", import.meta.url), "utf8");
-  const stamped = [...source.matchAll(/\{ at: now\(\), status: "([a-z-]+)"/g)].map((m) => m[1]);
+  const sources = await Promise.all(
+    ["../src/index.js", "../src/submission-lifecycle.js"].map((path) =>
+      readFile(new URL(path, import.meta.url), "utf8")),
+  );
+  const stamped = sources.flatMap((source) =>
+    [...source.matchAll(/\{\s*at: recordedAt\(\), status: "([a-z-]+)"/g)].map((m) => m[1]));
+  assert.ok(stamped.includes("dispatch-lost"), "the lifecycle status scan matched nothing");
   for (const status of stamped) {
     assert.ok(status in STATUSES, `an event claims the status "${status}", which does not exist`);
   }
@@ -2276,7 +2281,7 @@ test("a run that nobody can find eventually gives its slot back", async () => {
   // two for its owner and one of two for its submitter, and nothing else
   // releases it. Two misses rather than one, because a single empty answer is
   // as likely to be GitHub having a moment as a genuinely lost run.
-  const { reconcile } = await import("../src/index.js");
+  const { reconcile } = await import("../src/submission-lifecycle.js");
   const old = "2026-01-01T00:00:00Z";
   const files = {
     ...(await fixture({ status: "verifying", created_at: old, run: undefined })),
@@ -2305,7 +2310,7 @@ test("a run that nobody can find eventually gives its slot back", async () => {
 test("a run that is merely queued is left alone however long it waits", async () => {
   // Verification runs for up to six hours. Ageing out anything that is simply
   // slow would fail submissions that were going to succeed.
-  const { reconcile } = await import("../src/index.js");
+  const { reconcile } = await import("../src/submission-lifecycle.js");
   const old = "2026-01-01T00:00:00Z";
   const queued = {
     id: 999, name: "Verify submission a1b2c3d4e5f6", status: "queued",
@@ -2328,7 +2333,7 @@ test("a second run carrying the same submission id cannot settle the record", as
   // The submission id is in a public run name, so anyone who can dispatch the
   // workflow can produce a run carrying it. `refresh` has always pinned; the
   // cron path did not, and it is the one that runs with nobody watching.
-  const { reconcile } = await import("../src/index.js");
+  const { reconcile } = await import("../src/submission-lifecycle.js");
   const impostor = {
     id: 777, name: "Verify submission a1b2c3d4e5f6", status: "completed",
     conclusion: "success", html_url: "https://example.test/other",
@@ -2354,7 +2359,7 @@ test("a submission that settles is put where the reviewer will find it", async (
   // The reviewer reads `index/open.json` rather than listing every submission.
   // Only admission added to it, and nothing rebuilds it for a single missing
   // id, so a submission that settled here was one the reviewer never saw.
-  const { reconcile } = await import("../src/index.js");
+  const { reconcile } = await import("../src/submission-lifecycle.js");
   const done = {
     id: 12345, name: "Verify submission a1b2c3d4e5f6", status: "completed",
     conclusion: "success", html_url: "https://example.test/run",
@@ -2458,7 +2463,7 @@ test("a search that runs out of pages is not the same as a run that is not there
 test("a run found again clears a miss recorded before it", async () => {
   // Without this a miss is permanent, and two misses an hour apart with a
   // perfectly healthy run between them read as a run nobody can find.
-  const { reconcile } = await import("../src/index.js");
+  const { reconcile } = await import("../src/submission-lifecycle.js");
   const queued = {
     id: 999, name: "Verify submission a1b2c3d4e5f6", status: "queued",
     conclusion: null, html_url: "https://example.test/run", run_started_at: "",

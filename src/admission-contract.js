@@ -1,9 +1,10 @@
 /**
  * Pure admission and per-principal backoff policy.
  *
- * State reads, proof handling, optimistic writes, and dispatch stay in the
- * Worker composition root. This module decides what current admission inputs
- * mean and projects the next rate record after an admission.
+ * Durable inputs come from submission-lifecycle.js and the Worker composition
+ * root; proof handling, optimistic writes, and dispatch stay in the root. This
+ * module decides what current admission inputs mean and projects the next rate
+ * record after an admission.
  */
 
 const MAX_INFLIGHT_TOTAL = 12;

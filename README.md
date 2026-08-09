@@ -144,10 +144,14 @@ admission caps and rate-record projection live in `src/admission-contract.js`;
 the checks for these indexes, the current review marker, and the
 submitter-visible review projection live in `src/state-contract.js`; and exact
 request credential transport and origin classification live in
-`src/request-credentials.js`. The Worker in `src/index.js` remains the
-composition root: it decides which routes require those credentials and owns
-body decoding, responses, reads, optimistic writes, authorization, and
-ordering. These four modules do not perform I/O.
+`src/request-credentials.js`. These four modules do not perform I/O. Validated
+shared-index reads, reviewer-queue appends, admission-slot release and
+reconciliation writes, verification reconciliation, and abandoned-intake
+cleanup live in `src/submission-lifecycle.js`. The Worker in `src/index.js`
+remains the composition root: it decides which routes require credentials and
+owns body decoding, responses, authorization, request-path record and rate
+reads and optimistic writes, the admission-slot append, and route-level
+ordering.
 
 Before pointing a fresh or staging Worker at a new state repository, copy the
 two files in `state-bootstrap/index/` to `index/` and commit them. Deploying the
