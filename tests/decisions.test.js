@@ -1113,14 +1113,20 @@ const PENDING = {
   created_at: "2026-08-01T00:00:00Z",
 };
 
-async function callback(nonce, { binding = BINDING } = {}) {
-  const name = `palomar_intake_${(await digest(nonce)).slice(0, 16)}`;
+async function callback(nonce, { binding = BINDING, cookies = [] } = {}) {
+  const name = `__Host-palomar_intake_${(await digest(nonce)).slice(0, 16)}`;
+  const cookie = [...cookies, ...(binding ? [`${name}=${binding}`] : [])].join("; ");
   return worker.fetch(
     new Request(`https://submit.palomar-registry.org/oauth/callback?code=c&state=${nonce}`, {
-      headers: binding ? { cookie: `${name}=${binding}` } : {},
+      headers: cookie ? { cookie } : {},
     }),
     ENV,
   );
+}
+
+async function clearedIntakeCookie(nonce) {
+  const name = `__Host-palomar_intake_${(await digest(nonce)).slice(0, 16)}`;
+  return `${name}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0`;
 }
 
 test("a submitter who cannot push writes no submission", async () => {
@@ -1133,6 +1139,7 @@ test("a submitter who cannot push writes no submission", async () => {
 
   assert.equal(response.status, 403);
   assert.match(await response.text(), /cannot push to that repository/);
+  assert.equal(response.headers.get("set-cookie"), null, "a retryable intake lost its binding");
   // Nothing may be admitted, indexed, or dispatched on a failed proof.
   assert.deepEqual(written.map((item) => item.path), []);
 });
@@ -1150,6 +1157,7 @@ test("a submitter who can push is recorded as having proved it", async () => {
   assert.ok(record, "no submission record was written");
   assert.equal(record.value.push_verified, true);
   assert.equal(record.value.submitter, "someone");
+  assert.equal(response.headers.get("set-cookie"), await clearedIntakeCookie(nonce));
 });
 
 test("browser intake fails closed and visibly when inflight state is unusable", async () => {
@@ -1173,7 +1181,7 @@ test("browser intake fails closed and visibly when inflight state is unusable", 
     assert.match(body, /sign-in was spent/);
     assert.match(body, /Start a new submission from the submission form/);
     assert.doesNotMatch(body, /inflight|open array|state-contract/);
-    assert.match(response.headers.get("set-cookie"), /Max-Age=0/);
+    assert.equal(response.headers.get("set-cookie"), await clearedIntakeCookie(nonce));
     assert.deepEqual(stub.deleted, [pendingPath], "the proved nonce was not consumed once");
     assert.deepEqual(
       stub.written.filter((item) => !item.path.startsWith("pending/")),
@@ -1260,6 +1268,7 @@ test("a nonce that cannot be consumed admits nothing", async () => {
 
   const response = await callback(nonce);
   assert.equal(response.status, 409);
+  assert.equal(response.headers.get("set-cookie"), null, "a retryable consume conflict was cleared");
   assert.deepEqual(written.map((item) => item.path), []);
 });
 
@@ -1275,7 +1284,7 @@ test("an unattributable sign-in is refused rather than bucketed", async () => {
   const body = await response.text();
   assert.match(body, /sign-in was spent/);
   assert.match(body, /Start a new submission from the submission form/);
-  assert.match(response.headers.get("set-cookie"), /Max-Age=0/);
+  assert.equal(response.headers.get("set-cookie"), await clearedIntakeCookie(nonce));
   assert.deepEqual(written.map((item) => item.path), []);
 });
 
@@ -1390,10 +1399,20 @@ async function agentSubmit(overrides = {}) {
 }
 
 async function agentVerify(body) {
+  const name = `__Host-palomar_intake_${(
+    await digest(String(body.pending_secret ?? ""))
+  ).slice(0, 16)}`;
   return worker.fetch(
     new Request("https://submit.palomar-registry.org/api/verify", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: {
+        "content-type": "application/json",
+        // The agent's explicit pending secret and proof stay authoritative;
+        // ambient browser-cookie ambiguity belongs only to the OAuth callback.
+        cookie:
+          `${name}=${"8".repeat(64)}; ` +
+          `${name}=${"9".repeat(64)}`,
+      },
       body: JSON.stringify(body),
     }),
     ENV,
@@ -1925,6 +1944,51 @@ test("a sign-in completed in a browser that did not begin it is refused", async 
   }
 });
 
+test("a sibling legacy Domain cookie cannot unlock or shadow a browser intake", async () => {
+  const nonce = "6".repeat(64);
+  const digestPrefix = (await digest(nonce)).slice(0, 16);
+  const pendingPath = `pending/${await digest(nonce)}.json`;
+  const legacy = `palomar_intake_${digestPrefix}=${BINDING}`;
+
+  const refused = stubOAuth({ push: true, files: { [pendingPath]: PENDING } });
+  const withoutHostCookie = await callback(nonce, { binding: null, cookies: [legacy] });
+  assert.equal(withoutHostCookie.status, 400);
+  assert.match(await withoutHostCookie.text(), /did not begin here/);
+  assert.deepEqual(refused.deleted, [pendingPath]);
+  assert.deepEqual(refused.written, []);
+
+  const accepted = stubOAuth({ push: true, files: { [pendingPath]: PENDING } });
+  const withHostCookie = await callback(nonce, {
+    cookies: [`palomar_intake_${digestPrefix}=${"8".repeat(64)}`],
+  });
+  assert.equal(withHostCookie.status, 303);
+  assert.ok(accepted.written.find((item) => item.path.endsWith("state.json")));
+});
+
+test("an invalid or ambiguous protected intake cookie is refused before provider I/O", async () => {
+  const nonce = "5".repeat(64);
+  const name = `__Host-palomar_intake_${(await digest(nonce)).slice(0, 16)}`;
+  for (const cookie of [
+    `${name}=${"8".repeat(64)}; ${name}=${"9".repeat(64)}`,
+    `${name}=not-hex`,
+  ]) {
+    let calls = 0;
+    globalThis.fetch = async () => {
+      calls += 1;
+      throw new Error("a refused cookie reached a provider");
+    };
+
+    const response = await callback(nonce, { binding: null, cookies: [cookie] });
+    assert.equal(response.status, 400);
+    assert.match(await response.text(), /did not begin here/);
+    assert.equal(
+      response.headers.get("set-cookie"),
+      `${name}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0`,
+    );
+    assert.equal(calls, 0);
+  }
+});
+
 test("two submissions in two tabs do not overwrite each other's binding", async () => {
   // A fixed cookie name would mean starting the second sign-in clobbered the
   // first one's cookie, and finishing the first would then look exactly like
@@ -1934,7 +1998,7 @@ test("two submissions in two tabs do not overwrite each other's binding", async 
   const second = "2".repeat(64);
   const names = await Promise.all(
     [first, second].map(async (nonce) =>
-      `palomar_intake_${(await digest(nonce)).slice(0, 16)}`),
+      `__Host-palomar_intake_${(await digest(nonce)).slice(0, 16)}`),
   );
   assert.notEqual(names[0], names[1], "both intakes would share one cookie");
 

@@ -62,6 +62,12 @@ and has no `Domain` attribute. Browsers therefore do not let a sibling host set
 or shadow that credential, and the server refuses an ambiguous request carrying
 the session-cookie name more than once.
 
+The short-lived cookie that binds a browser OAuth callback to the tab that
+started it has the same host-only properties and a different name for every
+pending intake. Only the callback consumes the exact nonce-derived name, and an
+ambiguous or case-confusable protected name, or a malformed binding, is refused
+before it can read or consume pending State.
+
 Push access is not authorship. It does not establish approval from the
 responsible authors of a substantive formalization, and does not replace the
 declaration a submitter makes about that.

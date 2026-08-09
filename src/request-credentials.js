@@ -10,6 +10,29 @@ import { digest } from "./submission.js";
 
 const SESSION_COOKIE_NAME = "__Host-palomar_session";
 
+/** Parse one exact host-prefixed credential without assigning authority by order. */
+function protectedCookie(request, expectedName) {
+  const cookie = request.headers.get("cookie") ?? "";
+  const expectedFolded = expectedName.toLowerCase();
+  let found = false;
+  let value = null;
+  for (const rawPart of cookie.split(";")) {
+    const part = rawPart.replace(/^[ \t]+/, "");
+    const separator = part.indexOf("=");
+    const rawName = separator === -1 ? part : part.slice(0, separator);
+    const name = rawName.trimEnd();
+    if (name.toLowerCase() !== expectedFolded) continue;
+    // Case and whitespace are not alternative spellings of a credential.
+    if (found || rawName !== name || name !== expectedName) return { kind: "ambiguous" };
+    found = true;
+    value = separator === -1 ? null : part.slice(separator + 1);
+  }
+  if (!found) return { kind: "absent" };
+  return typeof value === "string" && /^[0-9a-f]{64}$/.test(value)
+    ? { kind: "valid", value }
+    : { kind: "invalid" };
+}
+
 /** The one-time exchange: fragment in, short-lived host-only cookie out. */
 export function sessionCookie(token) {
   return {
@@ -27,24 +50,8 @@ export function sessionCookie(token) {
  * two credentials is authoritative, so duplicate names fail closed.
  */
 export function sessionToken(request) {
-  const cookie = request.headers.get("cookie") ?? "";
-  let found = false;
-  let value = null;
-  for (const rawPart of cookie.split(";")) {
-    const part = rawPart.trimStart();
-    const separator = part.indexOf("=");
-    const rawName = separator === -1 ? part : part.slice(0, separator);
-    const name = rawName.trimEnd();
-    if (name !== SESSION_COOKIE_NAME) continue;
-    // Count a whitespace-padded protected name as ambiguity without accepting
-    // that malformed spelling by itself.
-    if (found || rawName !== name) return null;
-    found = true;
-    value = separator === -1 ? null : part.slice(separator + 1);
-  }
-  return found && typeof value === "string" && /^[0-9a-f]{64}$/.test(value)
-    ? value
-    : null;
+  const credential = protectedCookie(request, SESSION_COOKIE_NAME);
+  return credential.kind === "valid" ? credential.value : null;
 }
 
 /**
@@ -104,20 +111,19 @@ export function madeByThisSite(request) {
  * `Lax`, not `Strict`. The callback is a top-level navigation from github.com,
  * and `Strict` would withhold the cookie on the one request that needs it. Lax
  * is enough here because the cookie confers nothing on its own: it only opens a
- * record whose name the holder must already know.
+ * record whose name the holder must already know. `Path=/` and no `Domain` are
+ * required by the `__Host-` prefix; only the callback consumes the nonce-named
+ * credential, so the broader path grants no authority on another route.
  */
 export async function intakeCookie(nonce, binding, { clear = false } = {}) {
-  const name = `palomar_intake_${(await digest(nonce)).slice(0, 16)}`;
-  const attributes = "Path=/oauth/callback; HttpOnly; Secure; SameSite=Lax";
+  const name = `__Host-palomar_intake_${(await digest(nonce)).slice(0, 16)}`;
+  const attributes = "Path=/; HttpOnly; Secure; SameSite=Lax";
   return clear
     ? `${name}=; ${attributes}; Max-Age=0`
     : `${name}=${binding}; ${attributes}; Max-Age=900`;
 }
 
-/** Read a binding named by an already validated lowercase-hex nonce digest. */
-export function intakeBinding(request, nonceDigest) {
-  const name = `palomar_intake_${nonceDigest.slice(0, 16)}`;
-  const match = new RegExp(`(?:^|;\\s*)${name}=([0-9a-f]{64})(?:;|$)`)
-    .exec(request.headers.get("cookie") ?? "");
-  return match ? match[1] : null;
+/** Parse the exact binding named by an already validated lowercase-hex nonce digest. */
+export function intakeCredential(request, nonceDigest) {
+  return protectedCookie(request, `__Host-palomar_intake_${nonceDigest.slice(0, 16)}`);
 }
