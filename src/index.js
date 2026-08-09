@@ -21,7 +21,7 @@ import {
   resolveCommit,
   writeState,
 } from "./github.js";
-import { page, intakeForm, statusPage, errorPage } from "./html.js";
+import { intakeForm, statusPage, errorPage } from "./html.js";
 import {
   admissionDecision,
   nextRateRecord,
@@ -426,7 +426,7 @@ async function beginSubmission(request, env, { machine = false } = {}) {
       pending,
       `Begin submission for ${repositoryName}`,
     );
-  } catch (error) {
+  } catch {
     // Nothing the submitter did wrong, and nothing they should have to retype.
     return rejected(
       "Palomar could not record that submission just now. Nothing was lost; try again.",
@@ -673,7 +673,7 @@ async function verifySubmission(request, env) {
   const reserved = { ...pending.value, attempts };
   try {
     await writeState(env, pendingPath, reserved, "Take a verification attempt", pending.sha);
-  } catch (error) {
+  } catch {
     return json({ error: "that submission is being verified; try again" }, 409);
   }
   const remaining = MAX_VERIFY_ATTEMPTS - attempts;

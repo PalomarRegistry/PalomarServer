@@ -537,10 +537,8 @@ test("a real change to the file is a conflict and is not retried away", async ()
 test("a submitter is never left waiting on the retries", async () => {
   // Unbounded doubling would spend half a minute on the last attempt alone.
   const { writeState } = await import("../src/github.js");
-  let writes = 0;
   globalThis.fetch = async (url, init = {}) => {
     if ((init.method ?? "GET") === "GET") return new Response("", { status: 404 });
-    writes += 1;
     return new Response("conflict", { status: 409 });
   };
   const started = Date.now();

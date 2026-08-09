@@ -241,6 +241,13 @@ graph requires Node 22.12 or later. When advancing a Worker's compatibility
 date, also advance the pinned Wrangler when needed so its local workerd supports
 that date.
 
+`npm run lint` applies the locked ESLint recommended correctness rules to every
+shipped Worker and browser module, the Node and workerd tests, and their
+JavaScript configuration. It catches invalid or unreachable code, unresolved
+globals, and unused bindings across those environments. This is deliberately a
+lint gate, not a claim that the untyped JavaScript has been statically
+type-checked.
+
 Before the first deployment against a State repository, commit both files from
 `state-bootstrap/index/` as described above. Admission and scheduled
 reconciliation validate the contracts before using them; `/healthz` stays a
@@ -252,6 +259,7 @@ To deploy manually:
 ```bash
 npm ci
 npm run audit:dependencies
+npm run lint
 npm test
 npm run test:runtime
 npx wrangler deploy --dry-run
