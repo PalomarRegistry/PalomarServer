@@ -1,4 +1,5 @@
 import { SETTLED, nextPollDelay, pollFailureAction } from "/polling.js";
+import { statusPresentation } from "/statuses.js";
 
 // The access token lives in the URL fragment, which browsers never send to a
 // server. It is posted once in exchange for a short-lived cookie, then removed
@@ -9,11 +10,15 @@ const details = document.getElementById("details");
 const events = document.getElementById("events");
 const progress = document.getElementById("progress-detail");
 const reviewSection = document.getElementById("review-section");
+const reviewPrivacy = document.getElementById("review-privacy");
 const reviewSummary = document.getElementById("review-summary");
 const reviewBody = document.getElementById("review-body");
+const decisionSection = document.getElementById("decision-section");
 const decisionStatus = document.getElementById("decision-status");
 const registerButton = document.getElementById("register");
 const withdrawButton = document.getElementById("withdraw");
+const registerWarning = document.getElementById("register-warning");
+const withdrawWarning = document.getElementById("withdraw-warning");
 
 const LABELS = {
   verifying: "Mechanically verifying your submission.",
@@ -80,14 +85,44 @@ function paragraphs(heading, items) {
 
 let reviewShown = false;
 let reviewNeedsRerun = false;
+let reviewPassed = false;
+let registrationStarted = false;
+let decisionInFlight = false;
 // The digest of the review on the page, sent back with a registration so that
 // consent names the bytes that were read.
 let reviewDigest = null;
 
-async function showReview() {
-  if (reviewShown) return;
+function resetReview() {
+  reviewShown = false;
+  reviewNeedsRerun = false;
+  reviewPassed = false;
+  reviewDigest = null;
+  reviewSummary.replaceChildren();
+  reviewBody.replaceChildren();
+  reviewSection.hidden = true;
+  reviewPrivacy.textContent =
+    "It is private: nobody but you and the Palomar moderation team can see it, " +
+    "and it stays that way unless you register.";
+}
+
+async function showReview({ registered = false, expectedDigest = null } = {}) {
+  if (reviewShown) {
+    if (registered && (!expectedDigest || reviewDigest !== expectedDigest)) {
+      reviewSection.hidden = true;
+      return false;
+    }
+    reviewSection.hidden = false;
+    return true;
+  }
   const response = await fetch("/api/review", { credentials: "same-origin" });
   if (response.status === 409) {
+    // A frozen registered result cannot be rerun. Older pre-launch records may
+    // no longer satisfy the current private-review contract; leave that panel
+    // absent instead of asking the submitter to do an impossible thing.
+    if (registered) {
+      reviewSection.hidden = true;
+      return false;
+    }
     reviewNeedsRerun = true;
     reviewSummary.replaceChildren();
     reviewBody.replaceChildren(
@@ -98,13 +133,21 @@ async function showReview() {
       ),
     );
     reviewSection.hidden = false;
-    registerButton.hidden = true;
-    return;
+    reviewPassed = false;
+    return true;
   }
-  if (!response.ok) return;
+  if (!response.ok) {
+    if (registered) reviewSection.hidden = true;
+    return false;
+  }
   const review = await response.json();
+  if (registered && (!expectedDigest || review.review_sha256 !== expectedDigest)) {
+    reviewSection.hidden = true;
+    return false;
+  }
   reviewNeedsRerun = false;
   reviewShown = true;
+  reviewPassed = review.passed === true;
   reviewDigest = review.review_sha256 ?? null;
   reviewSummary.replaceChildren();
   reviewBody.replaceChildren();
@@ -124,11 +167,12 @@ async function showReview() {
   // submitter can act on differently, so it is not presented as one.
   paragraphs("AI review comments", review.comments);
   reviewSection.hidden = false;
-  registerButton.hidden = !review.passed;
+  return true;
 }
 
 async function decide(button, path, confirmation, body = null) {
   if (!window.confirm(confirmation)) return;
+  decisionInFlight = true;
   registerButton.disabled = true;
   withdrawButton.disabled = true;
   decisionStatus.textContent = "Working…";
@@ -140,12 +184,22 @@ async function decide(button, path, confirmation, body = null) {
       : {}),
   });
   if (!response.ok) {
+    decisionInFlight = false;
     const problem = await response.json().catch(() => ({}));
     decisionStatus.textContent = `That did not work: ${problem.error ?? response.status}`;
     registerButton.disabled = false;
     withdrawButton.disabled = false;
+    if (path === "/register") {
+      // A replacement is one reason registration can fail. Drop the review
+      // cache and immediately ask again so "read the new one" is an action the
+      // page can actually perform without a reload.
+      resetReview();
+      await poll();
+    }
     return;
   }
+  decisionInFlight = false;
+  if (path === "/register") registrationStarted = true;
   decisionStatus.textContent = "Recorded.";
   poll();
 }
@@ -167,8 +221,12 @@ withdrawButton?.addEventListener("click", () =>
   decide(
     withdrawButton,
     "/withdraw",
-    "Withdrawing ends this submission. Nothing about the review or the " +
-      "decision becomes public. Withdraw?",
+    registrationStarted
+      ? "Withdrawing asks Palomar to stop registration. The registry record will not be " +
+        "merged, but source-preservation or rendering work that already started may remain " +
+        "public. Withdraw?"
+      : "Withdrawing ends this submission. Nothing about the review or the " +
+        "decision becomes public. Withdraw?",
   ),
 );
 
@@ -307,16 +365,58 @@ async function poll() {
     events.append(li);
   }
 
-  if (data.status === "review-ready") {
+  const statusChanged = data.status !== lastStatus;
+  if (statusChanged && data.status !== "registered") resetReview();
+  if (
+    data.status === "review-ready" && reviewShown &&
+    data.review_sha256 !== reviewDigest
+  ) {
+    resetReview();
+  }
+  if (statusChanged) decisionStatus.replaceChildren();
+
+  if (data.registration_consent) registrationStarted = true;
+  const effectiveConsent = data.registration_consent === true || registrationStarted;
+  let presentation = statusPresentation(data.status, {
+    reviewPassed,
+    registrationConsent: effectiveConsent,
+  });
+
+  if (presentation.review === "read-only") {
+    reviewPrivacy.textContent = "This review is part of the public registered record.";
+    const registeredReviewAvailable = await showReview({
+      registered: true,
+      expectedDigest: data.registration_consent_review_sha256,
+    });
+    decisionStatus.textContent = registeredReviewAvailable
+      ? "Registered."
+      : "Registered. The review recorded with this result is not available on this private page.";
+  } else if (presentation.review === "interactive") {
     await showReview();
-    if (data.registration_consent) {
+    presentation = statusPresentation(data.status, {
+      reviewPassed,
+      registrationConsent: effectiveConsent,
+    });
+    if (effectiveConsent) {
       decisionStatus.textContent =
         "Registration is under way. The record appears once the change is merged.";
-      registerButton.disabled = true;
-      withdrawButton.disabled = true;
+      withdrawWarning.textContent =
+        "Withdrawing asks Palomar to stop registration. The registry record will not be " +
+        "merged, but source-preservation or rendering work that already started may remain public.";
     }
   } else {
-    reviewSection.hidden = data.status !== "registered";
+    reviewSection.hidden = true;
+  }
+  decisionSection.hidden = !presentation.register && !presentation.withdraw;
+  registerButton.hidden = !presentation.register;
+  withdrawButton.hidden = !presentation.withdraw;
+  registerButton.disabled = decisionInFlight || !presentation.register;
+  withdrawButton.disabled = decisionInFlight || !presentation.withdraw;
+  registerWarning.hidden = !presentation.register;
+  withdrawWarning.hidden = !presentation.withdraw;
+  if (!effectiveConsent) {
+    withdrawWarning.textContent =
+      "Withdrawing ends this submission. Nothing about the review or decision becomes public.";
   }
   if (data.status === "registered" && data.registered_url) {
     row("Registry record", link(data.registered_url, data.registered_url));
@@ -326,7 +426,8 @@ async function poll() {
   // what left a page saying "waiting for review" while the review arrived.
   askAgain(
     data.status,
-    data.status === "review-ready" && !data.registration_consent && !reviewNeedsRerun,
+    data.status === "review-ready" && reviewShown &&
+      !effectiveConsent && !reviewNeedsRerun,
   );
 }
 

@@ -1279,6 +1279,18 @@ export default {
           review_started_at: record.review_started_at ?? null,
           typical_review_seconds: await typicalReviewSeconds(env),
           registration_consent: record.registration_consent === true,
+          // This lets a page that becomes visible again notice that the review
+          // it rendered has been replaced before offering consent for it.
+          review_sha256:
+            record.status === "review-ready" ? record.review_sha256 ?? null : null,
+          // A registered page may label only the exact review whose bytes the
+          // submitter consented to as part of the public record. A later State
+          // rewrite must fail closed in presentation rather than inheriting
+          // that statement.
+          registration_consent_review_sha256:
+            record.status === "registered"
+              ? record.registration_consent_review_sha256 ?? null
+              : null,
           registered_url: record.registered_url ?? null,
           events: record.events,
         });

@@ -120,12 +120,15 @@ does not fail your submission faster, it fails everybody's. The status page
 starts faster than that and backs off to the same ceiling, and stops asking
 altogether while nobody is looking at it.
 
-A submission is settled at `registered`, `withdrawn`, `verification-failed`, or
-`review-failed`. `GET /api/review` tells you whether the review passed and what
-it asked for; it does not tell you whether the decision was `revise` or
-`reject`, and reading `"passed": false` as either would be reading something
-that is not there. If `requested_changes` describes something you and your user
-can correct, correct it and submit the corrected commit as a new submission.
+A submission is settled at `registered`, `withdrawn`, `verification-failed`,
+`review-failed`, or `dispatch-lost`. `GET /api/review` tells you whether the
+review passed and what it asked for; it does not tell you whether the decision
+was `revise` or `reject`, and reading `"passed": false` as either would be
+reading something that is not there. If `requested_changes` describes something
+you and your user can correct, correct it and submit the corrected commit as a
+new submission. Settled means there is nothing useful to poll for; it does not
+mean every decision is closed. A submitter may still withdraw a `review-failed`
+or `dispatch-lost` submission.
 
 ## Registration is not monitoring
 
