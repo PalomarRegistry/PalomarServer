@@ -246,7 +246,9 @@ shipped Worker and browser module, the Node and workerd tests, and their
 JavaScript configuration. It catches invalid or unreachable code, unresolved
 globals, and unused bindings across those environments. This is deliberately a
 lint gate, not a claim that the untyped JavaScript has been statically
-type-checked.
+type-checked; it parses import declarations but does not resolve their targets.
+The lint packages are part of the complete audited development graph described
+above, so a future low-or-higher advisory in that graph also blocks deployment.
 
 Before the first deployment against a State repository, commit both files from
 `state-bootstrap/index/` as described above. Admission and scheduled

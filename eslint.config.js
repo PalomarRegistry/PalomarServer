@@ -18,14 +18,15 @@ export default [
   },
   {
     files: ["public/**/*.js"],
+    ignores: ["public/normalize.js", "public/statuses.js"],
     languageOptions: { globals: globals.browser },
   },
   {
-    files: ["tests/**/*.js", "*.config.js"],
-    languageOptions: { globals: globals.node },
+    files: ["tests/**/*.js", "runtime-tests/config.js", "*.config.js"],
+    languageOptions: { globals: globals.nodeBuiltin },
   },
   {
-    files: ["runtime-tests/**/*.js"],
+    files: ["runtime-tests/**/*.test.js"],
     languageOptions: { globals: globals.worker },
   },
 ];
