@@ -220,13 +220,26 @@ GitHub repository must provide `CLOUDFLARE_ACCOUNT_ID` and
 it does not change the existing route or cron trigger.
 
 The Worker imports no package from npm at runtime. The locked npm graph is
-development tooling: Wrangler and the Miniflare/workerd stack it uses to develop,
-bundle and deploy the Worker. That still handles source code and, during the
-deployment steps, runs next to production credentials, so CI rejects every
-low-or-higher advisory in the complete development graph. A least-permission
-weekly workflow repeats that registry audit directly from the lockfile, without
-running dependency install hooks, so an advisory published after the last code
-change does not wait for another pull request; it can also be run manually.
+development tooling: Wrangler and the official Vitest pool's Miniflare/workerd
+stack used to test, bundle, and deploy the Worker. That still handles source
+code and, during the deployment steps, runs next to production credentials, so
+CI rejects every low-or-higher advisory in the complete development graph. A
+least-permission weekly workflow repeats that registry audit directly from the
+lockfile, without running dependency install hooks, so an advisory published
+after the last code change does not wait for another pull request; it can also
+be run manually. The required audit includes the runtime test harness and its
+Vitest graph, so an advisory there also blocks deployment.
+
+`npm test` remains the fast Node contract suite. `npm run test:runtime` is the
+small required integration layer: it loads both real Wrangler configurations
+in workerd, invokes the actual Worker entrypoints, and intercepts representative
+GitHub traffic at the runtime `fetch` boundary. CI requires both before the
+deployment job can run; its runtime tests receive dummy required bindings, no
+credentials, and no remote services. An outbound-service guard refuses any
+request that a test does not explicitly intercept. The pinned workerd/Vitest
+graph requires Node 22.12 or later. When advancing a Worker's compatibility
+date, also advance the pinned Wrangler when needed so its local workerd supports
+that date.
 
 Before the first deployment against a State repository, commit both files from
 `state-bootstrap/index/` as described above. Admission and scheduled
@@ -240,6 +253,7 @@ To deploy manually:
 npm ci
 npm run audit:dependencies
 npm test
+npm run test:runtime
 npx wrangler deploy --dry-run
 npx wrangler deploy
 curl -s https://submit.palomar-registry.org/healthz
