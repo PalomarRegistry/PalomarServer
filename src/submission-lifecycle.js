@@ -8,12 +8,15 @@
 
 import {
   deleteState,
+  dispatchVerification,
   dispatchReviewer,
   findVerificationRun,
+  GitHubError,
   listState,
   readState,
   writeState,
 } from "./github.js";
+import { authorizationRelationshipLabel } from "./intake-contract.js";
 import { recordedAt, statePath } from "./submission.js";
 import {
   INFLIGHT_INDEX_PATH,
@@ -23,11 +26,12 @@ import {
   StateContractError,
 } from "./state-contract.js";
 
-// How old a `verifying` submission must be before a run nobody can find is
-// treated as lost. Generous by three orders of magnitude: a dispatched run is
-// listed within seconds, and this only ever applies to one that cannot be found
-// at all.
-const LOST_RUN_MS = 3600_000;
+// GitHub normally lists a dispatched run within seconds. Waiting five minutes
+// before retrying makes a successful-but-ambiguous dispatch overwhelmingly
+// likely to be found first, while the ten-minute scheduled pass still repairs
+// a crash before dispatch or a rejected dispatch without operator action.
+const DISPATCH_RETRY_MS = 5 * 60_000;
+const MAX_DISPATCH_ATTEMPTS = 3;
 
 async function readContractIndex(env, path, validate) {
   let index;
@@ -52,8 +56,26 @@ function reportStateContract(error) {
   console.error("state-contract", error.message);
 }
 
-export async function assertReviewerContract(env) {
-  await readReviewerIndex(env);
+/** Dispatch the verification described entirely by one durable State record. */
+export function dispatchSubmissionVerification(env, record) {
+  return dispatchVerification(env, {
+    repositoryName: record.repository,
+    commit: record.commit,
+    requestId: record.id,
+    options: {
+      authorization_relationship: authorizationRelationshipLabel(
+        record.authorization.relationship,
+      ),
+      ...Object.fromEntries(
+        Object.entries(record.requested_paths ?? {}).filter(([, value]) => value),
+      ),
+      ...(record.authorization.evidence
+        ? { authorization_evidence: record.authorization.evidence }
+        : {}),
+      ...(record.existing_id ? { existing_id: record.existing_id } : {}),
+      ...(record.context ? { context: record.context } : {}),
+    },
+  });
 }
 
 /**
@@ -65,13 +87,10 @@ export async function assertReviewerContract(env) {
  * It reads `index/open.json` instead, so a pass costs the queue rather than the
  * size of the registry.
  *
- * Only the reviewer removes entries, once the record says it is finished with
- * one. Adding has to happen here, because a submission the index never hears
- * about is a submission nothing reviews until the index is next rebuilt from
- * scratch. Written under the sha it was read at, like every other index, so a
- * concurrent change is surfaced instead of overwritten. That compare-and-swap
- * does not make the record, inflight index, and reviewer queue one transaction;
- * a conflict after an earlier write can still leave a partial admission.
+ * Admission adds its first queue entry inside the atomic admission commit.
+ * This helper repairs or reopens the queue later, after verification or a
+ * submitter retry. It remains an optimistic single-file update because the
+ * surrounding record transition is deliberately ordered and retryable.
  */
 export async function openSubmission(env, id) {
   const index = await readReviewerIndex(env);
@@ -115,6 +134,7 @@ export async function reconcile(env) {
   const open = inflight.open;
   const still = [];
   let reviewerQueueUnavailable = false;
+  const dispatchFailures = [];
   for (const item of open) {
     const record = await readState(env, statePath(item.id, "state.json"));
     if (!record.value) continue;               // vanished: do not hold its slot
@@ -145,6 +165,8 @@ export async function reconcile(env) {
     if (run && run.status !== "completed" && (!pinned || record.value.run_misses)) {
       const seen = { ...record.value, run };
       delete seen.run_misses;
+      delete seen.dispatch_lease_at;
+      delete seen.dispatch_lease_count;
       await writeState(env, statePath(item.id, "state.json"), seen,
                        `Pin the run for ${item.id}`, record.sha);
       still.push(item);
@@ -182,6 +204,8 @@ export async function reconcile(env) {
                  { at: recordedAt(), status: settled, note: `Verification ${run.conclusion}` }],
       };
       delete done.run_misses;
+      delete done.dispatch_lease_at;
+      delete done.dispatch_lease_count;
       await writeState(env, statePath(item.id, "state.json"), done,
                        `Reconcile ${item.id}`, record.sha);
       if (settled === "awaiting-review") {
@@ -194,41 +218,55 @@ export async function reconcile(env) {
       continue;
     }
 
-    // A run nothing can find is not a run this record is waiting for. With the
-    // search bounded by time rather than by count this should not happen, which
-    // is exactly why it needs a floor: a submission stuck in `verifying` holds
-    // three separate quotas and nothing else releases it, so a bug here used to
-    // mean a registry that quietly stopped accepting submissions and an
-    // operator editing private state by hand.
-    //
-    // Two misses rather than one, because a single empty answer is as likely to
-    // be GitHub having a moment as a genuinely lost run, and this ends a
-    // submission somebody is waiting on. Finding the run clears the count, so
-    // the two have to be consecutive. A run that is merely queued is found, and
-    // is left alone however long it waits.
-    //
-    // Only when the search actually established that there is no such run. A
-    // search that ran out of pages says where it stopped looking and nothing
-    // more, and reading that as absence is how a live run loses its slot.
-    if (!run && complete) {
-      const missed = (record.value.run_misses ?? 0) + 1;
-      const age = Date.now() - (Date.parse(record.value.created_at) || Date.now());
-      if (missed >= 2 && age > LOST_RUN_MS) {
-        await writeState(env, statePath(item.id, "state.json"), {
+    // A `verifying` record with no pinned run is the durable dispatch outbox.
+    // Search before dispatching: workflow_dispatch returns no run id, so a
+    // crash after GitHub accepted it is indistinguishable from a crash before
+    // the request unless the run is recovered by name. Only a complete search
+    // may authorize a retry; a truncated search leaves the item pending.
+    if (!run && complete && pinned) {
+      dispatchFailures.push(`${item.id}: its pinned verification run is unavailable`);
+    }
+    if (!run && complete && !pinned) {
+      const now = Date.now();
+      const leaseAt = Date.parse(record.value.dispatch_lease_at ?? record.value.created_at);
+      const age = Number.isFinite(leaseAt) && leaseAt <= now ? now - leaseAt : Infinity;
+      if (age >= DISPATCH_RETRY_MS) {
+        const attempts = Number(record.value.dispatch_lease_count ?? 0);
+        if (!Number.isSafeInteger(attempts) || attempts < 0 || attempts >= MAX_DISPATCH_ATTEMPTS) {
+          dispatchFailures.push(
+            `${item.id}: verification dispatch was not discoverable after ${attempts} attempts`,
+          );
+          still.push(item);
+          continue;
+        }
+        const claimed = {
           ...record.value,
-          status: "dispatch-lost",
-          run_misses: missed,
-          events: [...record.value.events, {
-            at: recordedAt(), status: "dispatch-lost",
-            note: "Palomar could not find the verification run it started, and released the slot",
-          }],
-        }, `Release ${item.id}: its run was never found`, record.sha);
-        continue;                              // dropped from `still`: slot back
-      }
-      if (missed !== (record.value.run_misses ?? 0)) {
-        await writeState(env, statePath(item.id, "state.json"),
-                         { ...record.value, run_misses: missed },
-                         `Note a missing run for ${item.id}`, record.sha).catch(() => {});
+          dispatch_lease_at: recordedAt(),
+          dispatch_lease_count: attempts + 1,
+        };
+        try {
+          await writeState(
+            env,
+            statePath(item.id, "state.json"),
+            claimed,
+            `Claim verification dispatch for ${item.id}`,
+            record.sha,
+          );
+        } catch (error) {
+          // Another lifecycle pass claimed this exact outbox item. It will
+          // dispatch, or its lease will expire and a later pass will retry.
+          if (error instanceof GitHubError && [409, 422].includes(error.status)) {
+            still.push(item);
+            continue;
+          }
+          throw error;
+        }
+        try {
+          await dispatchSubmissionVerification(env, claimed);
+        } catch (error) {
+          console.error("verification-dispatch", item.id, error?.stack ?? String(error));
+          dispatchFailures.push(`${item.id}: ${error}`);
+        }
       }
     }
     still.push(item);
@@ -241,6 +279,9 @@ export async function reconcile(env) {
     throw new StateContractError(
       `${OPEN_INDEX_PATH} is unavailable; successful verification was not queued`,
     );
+  }
+  if (dispatchFailures.length) {
+    throw new Error(`verification dispatch retry failed: ${dispatchFailures.join("; ")}`);
   }
   return { released: open.length - still.length, open: still.length };
 }

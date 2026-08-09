@@ -9,7 +9,8 @@ import {
   tokenDigest,
 } from "./submission.js";
 import {
-  dispatchVerification,
+  GitHubError,
+  StateUpdateOutcomeError,
   findVerificationRun,
   CHALLENGE_TAG_PREFIX,
   challengeGist,
@@ -21,6 +22,7 @@ import {
   repository as fetchRepository,
   resolveCommit,
   writeState,
+  transactState,
 } from "./github.js";
 import { intakeForm, statusPage, errorPage } from "./html.js";
 import {
@@ -31,7 +33,7 @@ import {
   rateRecord,
   resetRateRecord,
 } from "./admission-contract.js";
-import { authorizationRelationshipLabel, validateIntake } from "./intake-contract.js";
+import { validateIntake } from "./intake-contract.js";
 import {
   bearerToken,
   intakeCookie,
@@ -42,16 +44,17 @@ import {
 } from "./request-credentials.js";
 import {
   INFLIGHT_INDEX_PATH,
+  OPEN_INDEX_PATH,
   inflightOpen,
   isCurrentReview,
   StateContractError,
   submitterReview,
+  reviewerOpen,
 } from "./state-contract.js";
 import {
   assertInflightContract,
-  assertReviewerContract,
+  dispatchSubmissionVerification,
   openSubmission,
-  readInflightIndex,
   release,
   scheduledMaintenance,
 } from "./submission-lifecycle.js";
@@ -143,7 +146,8 @@ function spentSignInProblems(problems = []) {
 }
 
 function isDurableContractError(error) {
-  return error instanceof StateContractError || error instanceof RateContractError;
+  return error instanceof StateContractError || error instanceof RateContractError ||
+    (error instanceof GitHubError && [409, 503].includes(error.status));
 }
 
 function reportDurableContract(error) {
@@ -402,34 +406,6 @@ async function ratePath(env, principalId) {
   return `index/rate/${await digest(`${pepper(env)}:${principalId}`)}.json`;
 }
 
-async function rateLimit(env, principal) {
-  if (!principal?.id) return { refused: false, record: null, path: null };
-  const path = await ratePath(env, principal.id);
-  const current = await readRateState(env, path);
-  // A missing file means this principal has not started before. A present JSON
-  // null (or any other malformed document) is damaged state, not the same
-  // absence and not permission to fall through to the floor.
-  const value = current.sha === null
-    ? null
-    : atRatePath(path, () => rateRecord(current.value).value);
-  const decision = rateDecision(value);
-  return decision.refused ? decision : { ...decision, path, sha: current.sha };
-}
-
-/** Read both shared indexes fresh, validate them, then apply admission caps. */
-async function admit(env, { owner, submitter }) {
-  // Validate both shared indexes before creating a record. In particular, a
-  // damaged reviewer queue must not be replaced with this submission after
-  // the inflight write has already committed.
-  const [inflight] = await Promise.all([
-    readInflightIndex(env),
-    assertReviewerContract(env),
-  ]);
-  const open = inflight.open;
-  const decision = admissionDecision(open, { owner, submitter });
-  return decision.refused ? decision : { ...decision, inflight, open };
-}
-
 /**
  * Everything after the proof, shared so the two intakes cannot drift apart.
  *
@@ -438,15 +414,26 @@ async function admit(env, { owner, submitter }) {
  * record, the same indexes, the same dispatch. Two copies of this would be two
  * definitions of what a submission is.
  */
-async function admitSubmission(env, { pending, owner, submitter, proof }) {
-  const limit = await rateLimit(env, proof?.principal);
-  if (limit.refused) return limit;
-  const admission = await admit(env, { owner, submitter });
-  if (admission.refused) return admission;
-  const { inflight, open } = admission;
-
+async function admitSubmission(
+  env,
+  { pendingPath, pendingSha, pending, owner, submitter, proof },
+) {
   const id = newSubmissionId();
   const token = newAccessToken();
+  const createdAtMs = Date.now();
+  const createdAt = new Date(createdAtMs).toISOString().replace(/\.\d+Z$/, "Z");
+  const tokenSha256 = await tokenDigest(env, token);
+  const rate = proof?.principal?.id ? await ratePath(env, proof.principal.id) : null;
+  const recordPath = statePath(id, "state.json");
+  const tokenPath = `index/tokens/${tokenSha256}.json`;
+  const paths = [
+    pendingPath,
+    INFLIGHT_INDEX_PATH,
+    OPEN_INDEX_PATH,
+    recordPath,
+    tokenPath,
+    ...(rate ? [rate] : []),
+  ];
   const record = {
     ...newRecord({
       id,
@@ -465,60 +452,111 @@ async function admitSubmission(env, { pending, owner, submitter, proof }) {
       },
     }),
     push_proof: proof,
-    created_at: recordedAt(),
-    token_sha256: await tokenDigest(env, token),
-    events: [{ at: recordedAt(), status: "verifying", note: "Mechanical verification dispatched" }],
+    created_at: createdAt,
+    token_sha256: tokenSha256,
+    // A durable outbox lease. This request owns the first dispatch; if it dies
+    // before or after the ambiguous workflow_dispatch response, reconciliation
+    // searches for the run and only claims another attempt after the lease.
+    dispatch_lease_at: createdAt,
+    dispatch_lease_count: 1,
+    events: [{ at: createdAt, status: "verifying", note: "Mechanical verification queued" }],
   };
-  // Project and validate the complete rate write before the first durable
-  // admission write. A corrupt interval must not fail only after the record,
-  // capacity slot, queue entry, and access-token index have committed.
-  const nextRate = limit.path ? nextRateRecord({
-    login: proof.principal.login,
-    starts: limit.starts,
-    interval: limit.interval,
-    startedAt: record.created_at,
-  }) : null;
-  const nextInflight = [...open, { id, owner, submitter, at: record.created_at }];
-  // Validate the bytes we are about to write as well as the bytes we read.
-  // Provider logins are untrusted input at this boundary.
-  inflightOpen({ open: nextInflight });
-  await writeState(env, statePath(id, "state.json"), record, `Open submission ${id}`);
-  await writeState(
-    env,
-    INFLIGHT_INDEX_PATH,
-    { open: nextInflight },
-    `Admit ${id}`,
-    inflight.sha,
-  );
-  // Re-read after the two preceding commits. The first read above is the
-  // fail-closed precondition; this one avoids widening the optimistic-SHA race
-  // with the reviewer by carrying an older queue version across those writes.
-  await openSubmission(env, id);
-  await writeState(
-    env,
-    `index/tokens/${record.token_sha256}.json`,
-    { id },
-    `Index submission ${id}`,
-  );
-  if (limit.path) {
-    await writeState(env, limit.path, nextRate, `Record a submission start`, limit.sha)
-      .catch(() => {});
+  let result;
+  try {
+    result = await transactState(env, paths, (files) => {
+      const held = files[pendingPath];
+      if (held?.sha === null) {
+        return {
+          changes: [],
+          message: "",
+          result: {
+            refused: true,
+            status: 409,
+            title: "That submission was already claimed",
+            detail: ["Another request consumed this proof. Start a new submission."],
+          },
+        };
+      }
+      if (held?.sha !== pendingSha) {
+        return {
+          changes: [],
+          message: "",
+          result: {
+            refused: true,
+            retryable: true,
+            status: 409,
+            title: "That submission is being verified",
+            detail: ["Another request reserved this proof. Try again."],
+          },
+        };
+      }
+      const inflight = inflightOpen(files[INFLIGHT_INDEX_PATH]?.value);
+      const reviewer = files[OPEN_INDEX_PATH];
+      const reviewerIds = reviewerOpen(reviewer?.value);
+      let limit = { refused: false, interval: null, starts: null };
+      if (rate) {
+        const current = files[rate];
+        const value = current.sha === null
+          ? null
+          : atRatePath(rate, () => rateRecord(current.value).value);
+        limit = rateDecision(value, createdAtMs);
+      }
+      const admission = limit.refused
+        ? limit
+        : admissionDecision(inflight, { owner, submitter });
+      if (admission.refused) {
+        return {
+          changes: [{ path: pendingPath, delete: true }],
+          message: "Consume refused submission proof",
+          result: admission,
+        };
+      }
+      if (files[recordPath]?.sha !== null || files[tokenPath]?.sha !== null) {
+        throw new StateContractError("a generated submission identity already exists");
+      }
+      const nextInflight = [...inflight, { id, owner, submitter, at: record.created_at }];
+      inflightOpen({ open: nextInflight });
+      const nextReviewer = reviewerIds.includes(id)
+        ? reviewer.value
+        : { ...reviewer.value, open: [...reviewerIds, id] };
+      reviewerOpen(nextReviewer);
+      const changes = [
+        { path: pendingPath, delete: true },
+        { path: recordPath, value: record },
+        { path: INFLIGHT_INDEX_PATH, value: { open: nextInflight } },
+        { path: OPEN_INDEX_PATH, value: nextReviewer },
+        { path: tokenPath, value: { id } },
+      ];
+      if (rate) {
+        changes.push({
+          path: rate,
+          value: nextRateRecord({
+            login: proof.principal.login,
+            starts: limit.starts,
+            interval: limit.interval,
+            startedAt: record.created_at,
+            at: createdAtMs,
+          }),
+        });
+      }
+      return {
+        changes,
+        message: `Admit submission ${id}`,
+        result: { refused: false, id, token, record },
+      };
+    });
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      throw new StateContractError(error.message);
+    }
+    throw error;
   }
-  await dispatchVerification(env, {
-    repositoryName: record.repository,
-    commit: record.commit,
-    requestId: id,
-    options: {
-      authorization_relationship: authorizationRelationshipLabel(record.authorization.relationship),
-      ...Object.fromEntries(
-        Object.entries(record.requested_paths ?? {}).filter(([, value]) => value),
-      ),
-      ...(record.authorization.evidence
-        ? { authorization_evidence: record.authorization.evidence }
-        : {}),
-      ...(record.existing_id ? { existing_id: record.existing_id } : {}),
-      ...(record.context ? { context: record.context } : {}),
-    },
+  if (result.refused) return result;
+  // `verifying` with no pinned run is the durable dispatch outbox. A failed or
+  // ambiguous request does not undo admission: the scheduled lifecycle first
+  // searches for a run, then safely retries one that still has none.
+  await dispatchSubmissionVerification(env, result.record).catch((error) => {
+    console.error("verification-dispatch", error?.stack ?? String(error));
   });
   return { refused: false, id, token };
 }
@@ -603,19 +641,19 @@ async function verifySubmission(request, env) {
     }, 403);
   }
 
-  // Consumed only once the proof holds, and its failure is fatal: this is the
-  // only thing between one challenge and two submissions. Re-read because the
-  // reservation above replaced the blob, so the sha this started with is no
-  // longer the one the delete has to name.
+  // The reservation above replaced the blob, so admission binds itself to the
+  // exact held version. Its deletion is part of the same commit as every
+  // accepted admission write (or the sole change for a policy refusal).
   const held = await readState(env, pendingPath);
-  if (!held.value ||
-      !(await deleteState(env, pendingPath, held.sha, "Consume pending intake"))) {
+  if (!held.value) {
     return json({ error: "that submission could not be claimed; try again" }, 409);
   }
 
   let admitted;
   try {
     admitted = await admitSubmission(env, {
+      pendingPath,
+      pendingSha: held.sha,
       pending: pending.value,
       owner: repo?.owner?.login ?? null,
       submitter: gist.principal.login,
@@ -631,18 +669,40 @@ async function verifySubmission(request, env) {
       },
     });
   } catch (error) {
+    if (error instanceof StateUpdateOutcomeError) {
+      console.error("agent-admission", error.message);
+      return json({
+        error: "submission intake outcome is unknown",
+        proof_consumed: "unknown",
+        retry: "Do not retry automatically; ask the registry operator to inspect State.",
+        attempts_remaining: remaining,
+      }, 503);
+    }
     if (isDurableContractError(error)) {
       reportDurableContract(error);
-      return consumedProofResponse({
+      return json({
         error: "submission intake is temporarily unavailable",
+        proof_consumed: false,
+        retry: "Keep the proof artifacts and retry this request.",
+        attempts_remaining: remaining,
       }, 503);
     }
     console.error("agent-admission", error?.stack ?? String(error));
-    return consumedProofResponse({
+    return json({
       error: "submission intake could not be completed",
+      proof_consumed: false,
+      retry: "Keep the proof artifacts and retry this request.",
+      attempts_remaining: remaining,
     }, 500);
   }
   if (admitted.refused) {
+    if (admitted.retryable) {
+      return json({
+        error: admitted.title,
+        detail: admitted.detail,
+        proof_consumed: false,
+      }, admitted.status);
+    }
     return consumedProofResponse(
       { error: admitted.title, detail: admitted.detail },
       admitted.status,
@@ -763,19 +823,6 @@ async function completeSubmission(request, env) {
     ]), 403);
   }
 
-  // Consume the nonce once the proof has passed, and only then. A replayed
-  // callback must not produce a second submission, and the delete is the only
-  // thing standing between one nonce and two records, so its failure is fatal
-  // rather than advisory. It used to be issued and ignored; that was survivable
-  // only because an OAuth code is itself single-use, which is not a property
-  // any other intake path has.
-  if (!(await deleteState(env, pendingPath, pending.sha, "Consume pending intake"))) {
-    return html(errorPage(env, "That sign-in could not be completed", [
-      "Palomar could not record that this sign-in was used, and will not risk",
-      "admitting it twice. Start again from the submission form.",
-    ]), 409);
-  }
-
   const submitter = user?.login;
   if (!submitter) {
     // Every quota keys on this. Without it the old code bucketed submissions
@@ -798,6 +845,8 @@ async function completeSubmission(request, env) {
   let admitted;
   try {
     admitted = await admitSubmission(env, {
+      pendingPath,
+      pendingSha: pending.sha,
       pending: pending.value,
       owner,
       submitter,
@@ -812,6 +861,16 @@ async function completeSubmission(request, env) {
       },
     });
   } catch (error) {
+    if (error instanceof StateUpdateOutcomeError) {
+      console.error("browser-admission", error.message);
+      return html(
+        errorPage(env, "Submission intake outcome is unknown", [
+          "Do not start another submission yet; ask the registry operator to inspect State.",
+        ]),
+        503,
+        { "set-cookie": await intakeCookie(nonce, null, { clear: true }) },
+      );
+    }
     const contractFailure = isDurableContractError(error);
     if (contractFailure) reportDurableContract(error);
     else console.error("browser-admission", error?.stack ?? String(error));
@@ -956,11 +1015,12 @@ async function refresh(env, entry) {
   // same public submission id must not be able to take its place.
   if (record.run?.id && record.run.id !== run.id) return record;
 
-  // Finding it clears any misses the cron pass recorded. Without this a miss is
-  // permanent, and two misses an hour apart with a perfectly healthy run
-  // between them would read as a run nobody can find.
+  // Finding it retires the outbox lease: this run is now the one durable thing
+  // every later refresh asks for, so no path may dispatch another by name.
   const next = { ...record, run };
   delete next.run_misses;
+  delete next.dispatch_lease_at;
+  delete next.dispatch_lease_count;
   if (run.status === "completed") {
     next.status = run.conclusion === "success" ? "awaiting-review" : "verification-failed";
     next.events = [
