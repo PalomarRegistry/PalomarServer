@@ -4,7 +4,9 @@ import test from "node:test";
 import {
   admissionDecision,
   nextRateRecord,
+  RateContractError,
   rateDecision,
+  rateRecord,
   resetRateRecord,
 } from "../src/admission-contract.js";
 
@@ -12,6 +14,18 @@ const AT = Date.parse("2026-08-08T00:00:00Z");
 
 function inflight(overrides = {}) {
   return { owner: "another-owner", submitter: "another-submitter", ...overrides };
+}
+
+function rate(overrides = {}) {
+  return {
+    schema_version: 1,
+    login: "someone",
+    starts: 3,
+    interval_seconds: 3600,
+    last_start_at: "2026-08-07T23:00:00Z",
+    next_allowed_at: "2026-08-08T01:00:00Z",
+    ...overrides,
+  };
 }
 
 test("admission allows a submission below every cap", () => {
@@ -86,16 +100,15 @@ test("rate state defaults to the floor and reports actionable waits", () => {
   });
 
   for (const [seconds, detail] of [
+    [1, "Please try again in 1 second."],
     [61, "Please try again in 61 seconds."],
     [90, "Please try again in 2 minutes."],
     [5400, "Please try again in 2 hours."],
     [172800, "Please try again in 2 days."],
   ]) {
-    assert.deepEqual(rateDecision({
-      interval_seconds: 3600,
-      starts: 3,
-      next_allowed_at: new Date(AT + seconds * 1000).toISOString(),
-    }, AT), {
+    assert.deepEqual(rateDecision(rate({
+      next_allowed_at: new Date(AT + seconds * 1000).toISOString().replace(/\.\d+Z$/, "Z"),
+    }), AT), {
       refused: true,
       status: 429,
       title: "You have hit a submission rate limit",
@@ -109,16 +122,50 @@ test("an expired or reached deadline preserves the current backoff state", () =>
     "2026-08-07T23:59:59Z",
     "2026-08-08T00:00:00Z",
   ]) {
-    assert.deepEqual(rateDecision({
-      interval_seconds: 3600,
-      starts: 3,
-      next_allowed_at: nextAllowedAt,
-    }, AT), {
+    assert.deepEqual(rateDecision(rate({ next_allowed_at: nextAllowedAt }), AT), {
       refused: false,
       interval: 3600,
       starts: 3,
     });
   }
+});
+
+test("present rate state has one strict current contract", () => {
+  const malformed = [
+    [null, /JSON object/],
+    [[], /JSON object/],
+    [rate({ schema_version: 2 }), /schema_version/],
+    [rate({ login: "" }), /login/],
+    [rate({ starts: "3" }), /starts/],
+    [rate({ starts: 0 }), /starts/],
+    [rate({ interval_seconds: "3600" }), /interval_seconds/],
+    [rate({ interval_seconds: 59 }), /interval_seconds/],
+    [rate({ last_start_at: "yesterday" }), /last_start_at/],
+    [rate({ next_allowed_at: "2026-02-30T00:00:00Z" }), /next_allowed_at/],
+    [rate({ next_allowed_at: "2026-08-07T22:59:59Z" }), /must not precede/],
+  ];
+  for (const [value, message] of malformed) {
+    assert.throws(
+      () => rateRecord(value),
+      (error) => error instanceof RateContractError && message.test(error.message),
+    );
+  }
+
+  const extended = rate({ producer_extension: { retained: true } });
+  assert.equal(rateRecord(extended).value, extended);
+});
+
+test("an unrepresentable next deadline fails before it can be written", () => {
+  assert.throws(
+    () => nextRateRecord({
+      login: "someone",
+      starts: 20,
+      interval: Number.MAX_SAFE_INTEGER,
+      startedAt: "2026-08-08T00:00:00Z",
+      at: AT,
+    }),
+    (error) => error instanceof RateContractError && /next interval_seconds/.test(error.message),
+  );
 });
 
 test("an accepted start gets one deterministic next rate record", () => {
@@ -161,9 +208,8 @@ test("registration reset preserves rate history and returns to the floor", () =>
     last_start_at: "2026-08-07T00:00:00Z",
     next_allowed_at: "2026-08-08T00:00:00Z",
   });
-  assert.deepEqual(resetRateRecord(null, "2026-08-08T00:00:00Z"), {
-    schema_version: 1,
-    interval_seconds: 60,
-    next_allowed_at: "2026-08-08T00:00:00Z",
-  });
+  assert.throws(
+    () => resetRateRecord(null, "2026-08-08T00:00:00Z"),
+    RateContractError,
+  );
 });

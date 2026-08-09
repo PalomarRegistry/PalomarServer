@@ -164,6 +164,17 @@ submission is started, and is put back to that floor only by a completed
 registration. A submission that fails verification, or is withdrawn, leaves it
 where it is, because those are exactly the loops worth slowing down.
 
+The Server owns the rate document's current `schema_version: 1` contract. A
+present document records a GitHub `login`, positive integer `starts`, an integer
+`interval_seconds` of at least sixty, and canonical UTC-seconds
+`last_start_at` and `next_allowed_at` timestamps. The State repository's
+whole-tree validator deliberately treats these producer-owned fields as opaque,
+so the Server validates all of them before admission and before projecting a
+reset. A missing file is a first start; a malformed present file makes intake
+temporarily unavailable rather than silently granting the floor. A malformed
+file also leaves a registration reset unapplied until repair, but does not hide
+the already-registered result from its submitter.
+
 There is no ceiling, and that is deliberate rather than an omission to fix.
 Twenty starts with nothing registered is already years; nobody submitting in
 good faith reaches it, and the failure worth designing for is the other one, a

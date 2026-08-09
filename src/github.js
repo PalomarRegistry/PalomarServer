@@ -77,7 +77,13 @@ export async function readState(env, path) {
     env.GITHUB_TOKEN,
     `/repos/${env.STATE_REPO}/contents/${encodeURI(path)}`,
   );
-  if (!data?.content) return { value: null, sha: null };
+  if (data === null) return { value: null, sha: null };
+  // Empty content, or a Contents response that omits inline content, is a
+  // present unreadable file rather than a 404. Let parsing fail so its owning
+  // contract can refuse it instead of treating it as absent state.
+  if (typeof data.content !== "string") {
+    throw new SyntaxError(`${path} did not contain inline JSON`);
+  }
   const text = new TextDecoder().decode(
     Uint8Array.from(atob(data.content.replace(/\n/g, "")), (c) => c.charCodeAt(0)),
   );
