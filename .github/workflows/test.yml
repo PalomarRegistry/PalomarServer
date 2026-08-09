@@ -47,6 +47,14 @@ jobs:
         with:
           node-version: "22"
       - run: npm ci
+      # `versions upload` does not apply routes, cron triggers, workers.dev, or
+      # preview-URL settings. Apply the reviewed exposure contract first so a
+      # newly uploaded version is never minted behind an inherited preview URL.
+      - name: Apply Cloudflare routes and hostname policy
+        run: npx wrangler triggers deploy
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       - name: Upload Cloudflare version
         run: npx wrangler versions upload --tag "$GITHUB_SHA" --message "GitHub $GITHUB_SHA"
         env:
