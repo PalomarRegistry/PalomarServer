@@ -1006,8 +1006,10 @@ test("an event never claims a status the submission cannot be in", async () => {
       readFile(new URL(path, import.meta.url), "utf8")),
   );
   const stamped = sources.flatMap((source) =>
-    [...source.matchAll(/\{\s*at: recordedAt\(\), status: "([a-z-]+)"/g)].map((m) => m[1]));
-  assert.ok(stamped.includes("dispatch-lost"), "the lifecycle status scan matched nothing");
+    [...source.matchAll(/\{\s*at: (?:recordedAt\(\)|createdAt), status: "([a-z-]+)"/g)]
+      .map((m) => m[1]));
+  assert.ok(stamped.includes("verifying"), "the admission event escaped the status scan");
+  assert.ok(stamped.includes("withdrawn"), "the decision events escaped the status scan");
   for (const status of stamped) {
     assert.ok(status in STATUSES, `an event claims the status "${status}", which does not exist`);
   }
@@ -1140,6 +1142,41 @@ test("the dispatch carries only a ref, so every reviewer input needs a default",
   assert.deepEqual(JSON.parse(bodies[0]), { ref: "main" });
 });
 
+/** Emulate the Git Data API's one-tree/one-commit/one-ref admission update. */
+function stateGitApi(target, init, { store, written, deleted, refUpdates }) {
+  const method = init.method ?? "GET";
+  const prefix = `/repos/${ENV.STATE_REPO}`;
+  const head = "a".repeat(40);
+  if (target.pathname === `${prefix}/git/ref/heads/main` && method === "GET") {
+    return Response.json({ object: { type: "commit", sha: head } });
+  }
+  if (target.pathname === `${prefix}/git/commits/${head}` && method === "GET") {
+    return Response.json({ tree: { sha: "b".repeat(40) } });
+  }
+  if (target.pathname === `${prefix}/git/trees` && method === "POST") {
+    const body = JSON.parse(init.body);
+    refUpdates.push(body.tree);
+    return Response.json({ sha: "c".repeat(40) });
+  }
+  if (target.pathname === `${prefix}/git/commits` && method === "POST") {
+    return Response.json({ sha: "d".repeat(40) });
+  }
+  if (target.pathname === `${prefix}/git/refs/heads/main` && method === "PATCH") {
+    for (const change of refUpdates.at(-1) ?? []) {
+      if (change.sha === null) {
+        deleted.push(change.path);
+        store.delete(change.path);
+      } else {
+        const value = JSON.parse(change.content);
+        written.push({ path: change.path, value });
+        store.set(change.path, value);
+      }
+    }
+    return Response.json({ object: { sha: "d".repeat(40) } });
+  }
+  return null;
+}
+
 /**
  * The push check, which had no test at all.
  *
@@ -1163,6 +1200,7 @@ function stubOAuth({
   const store = new Map(Object.entries(initial));
   const deleted = [];
   const dispatched = [];
+  const refUpdates = [];
   globalThis.fetch = async (url, init = {}) => {
     const target = new URL(url);
     const method = init.method ?? "GET";
@@ -1184,6 +1222,8 @@ function stubOAuth({
       dispatched.push(target.pathname);
       return Response.json({ ok: true });
     }
+    const git = stateGitApi(target, init, { store, written, deleted, refUpdates });
+    if (git) return git;
     const path = decodeURI(
       target.pathname.replace(`/repos/${ENV.STATE_REPO}/contents/`, ""),
     );
@@ -1201,7 +1241,7 @@ function stubOAuth({
     store.set(path, JSON.parse(Buffer.from(body.content, "base64").toString("utf-8")));
     return Response.json({ content: {} });
   };
-  return { written, deleted, dispatched, store };
+  return { written, deleted, dispatched, store, refUpdates };
 }
 
 // The browser half of the intake. `beginSubmission` mints this, keeps only its
@@ -1291,7 +1331,8 @@ test("browser intake fails closed and visibly when inflight state is unusable", 
     assert.match(body, /Start a new submission from the submission form/);
     assert.doesNotMatch(body, /inflight|open array|state-contract/);
     assert.equal(response.headers.get("set-cookie"), await clearedIntakeCookie(nonce));
-    assert.deepEqual(stub.deleted, [pendingPath], "the proved nonce was not consumed once");
+    assert.deepEqual(stub.deleted, [], "damaged State consumed a proof without admitting it");
+    assert.ok(stub.store.has(pendingPath), "damaged State did not leave the proof retryable");
     assert.deepEqual(
       stub.written.filter((item) => !item.path.startsWith("pending/")),
       [],
@@ -1316,7 +1357,8 @@ test("browser intake also treats malformed rate state as a retryable contract fa
   const response = await callback(nonce);
   assert.equal(response.status, 503);
   assert.match(await response.text(), /Submission intake is temporarily unavailable/);
-  assert.deepEqual(stub.deleted, [pendingPath]);
+  assert.deepEqual(stub.deleted, []);
+  assert.ok(stub.store.has(pendingPath));
   assert.deepEqual(
     stub.written.filter((item) => !item.path.startsWith("pending/")),
     [],
@@ -1363,22 +1405,118 @@ test("a refused submitter keeps what they typed, and the nonce", async () => {
   assert.ok(store.has(path), "the intake was consumed by a submission that never happened");
 });
 
-test("a nonce that cannot be consumed admits nothing", async () => {
-  // The delete is the only thing between one sign-in and two submissions, so
-  // its failure is fatal rather than advisory.
+test("a branch update that cannot consume the nonce admits nothing", async () => {
+  // Proof consumption and admission are one ref update. A ref that never
+  // accepts the commit must expose none of its tree, even though GitHub may
+  // retain the unreachable tree and commit objects.
   const nonce = "e".repeat(64);
   const path = `pending/${await digest(nonce)}.json`;
   const { written } = stubOAuth({ push: true, files: { [path]: PENDING } });
   const inner = globalThis.fetch;
-  globalThis.fetch = async (url, init = {}) =>
-    (init.method ?? "GET") === "DELETE"
-      ? new Response("", { status: 409 })
-      : inner(url, init);
+  globalThis.fetch = async (url, init = {}) => {
+    const target = new URL(url);
+    if ((init.method ?? "GET") === "PATCH" && target.pathname.endsWith("/git/refs/heads/main")) {
+      return Response.json({ message: "Update is not a fast-forward" }, { status: 422 });
+    }
+    return inner(url, init);
+  };
 
   const response = await callback(nonce);
-  assert.equal(response.status, 409);
-  assert.equal(response.headers.get("set-cookie"), null, "a retryable consume conflict was cleared");
+  assert.equal(response.status, 503);
+  assert.match(await response.text(), /temporarily unavailable/);
   assert.deepEqual(written.map((item) => item.path), []);
+});
+
+test("a lost ref response is resolved from the landed commit ancestry", async () => {
+  const stub = stubAgent();
+  const begun = await agentSubmit();
+  stub.state.tag = { exists: true, sha: "1".repeat(40) };
+  stub.state.gist = { exists: true, content: begun.challenge };
+  const inner = globalThis.fetch;
+  let patches = 0;
+  globalThis.fetch = async (url, init = {}) => {
+    const target = new URL(url);
+    if ((init.method ?? "GET") === "PATCH" && target.pathname.endsWith("/git/refs/heads/main")) {
+      patches += 1;
+      if (patches === 1) {
+        await inner(url, init); // GitHub applied it, but the response was lost.
+        throw new TypeError("connection reset after upload");
+      }
+      return Response.json({ message: "Update is not a fast-forward" }, { status: 422 });
+    }
+    if (target.pathname.includes(`/compare/${"d".repeat(40)}...${"a".repeat(40)}`)) {
+      return Response.json({
+        status: "ahead",
+        merge_base_commit: { sha: "d".repeat(40) },
+      });
+    }
+    return inner(url, init);
+  };
+
+  const response = await agentVerify({ pending_secret: begun.pending_secret, gist_id: "abc123" });
+  assert.equal(response.status, 200);
+  assert.equal(patches, 2, "the indeterminate non-forced update was not retried");
+  assert.equal(stub.written.filter((item) => item.path.endsWith("state.json")).length, 1);
+});
+
+test("an HTTP failure after a landed ref update is resolved the same way", async () => {
+  const stub = stubAgent();
+  const begun = await agentSubmit();
+  stub.state.tag = { exists: true, sha: "1".repeat(40) };
+  stub.state.gist = { exists: true, content: begun.challenge };
+  const inner = globalThis.fetch;
+  let patches = 0;
+  globalThis.fetch = async (url, init = {}) => {
+    const target = new URL(url);
+    if ((init.method ?? "GET") === "PATCH" && target.pathname.endsWith("/git/refs/heads/main")) {
+      patches += 1;
+      if (patches === 1) {
+        await inner(url, init);
+        return new Response("edge lost the response", { status: 502 });
+      }
+      return Response.json({ message: "Update is not a fast-forward" }, { status: 422 });
+    }
+    if (target.pathname.includes(`/compare/${"d".repeat(40)}...${"a".repeat(40)}`)) {
+      return Response.json({
+        status: "ahead",
+        merge_base_commit: { sha: "d".repeat(40) },
+      });
+    }
+    return inner(url, init);
+  };
+  const response = await agentVerify({ pending_secret: begun.pending_secret, gist_id: "abc123" });
+  assert.equal(response.status, 200);
+  assert.equal(patches, 2);
+  assert.equal(stub.written.filter((item) => item.path.endsWith("state.json")).length, 1);
+});
+
+test("an unresolved ref response never claims that the proof survived", async () => {
+  const stub = stubAgent();
+  const begun = await agentSubmit();
+  stub.state.tag = { exists: true, sha: "1".repeat(40) };
+  stub.state.gist = { exists: true, content: begun.challenge };
+  const inner = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    const target = new URL(url);
+    if ((init.method ?? "GET") === "PATCH" && target.pathname.endsWith("/git/refs/heads/main")) {
+      throw new TypeError("connection reset");
+    }
+    if (target.pathname.includes("/compare/")) throw new TypeError("GitHub unavailable");
+    return inner(url, init);
+  };
+  const originalError = console.error;
+  console.error = () => {};
+  let response;
+  try {
+    response = await agentVerify({ pending_secret: begun.pending_secret, gist_id: "abc123" });
+  } finally {
+    console.error = originalError;
+  }
+  assert.equal(response.status, 503);
+  const body = await response.json();
+  assert.equal(body.proof_consumed, "unknown");
+  assert.match(body.retry, /Do not retry automatically/);
+  assert.ok(stub.store.size > 0, "the fake State unexpectedly vanished");
 });
 
 test("an unattributable sign-in is refused rather than bucketed", async () => {
@@ -1397,14 +1535,14 @@ test("an unattributable sign-in is refused rather than bucketed", async () => {
   assert.deepEqual(written.map((item) => item.path), []);
 });
 
-test("an unexpected failure after browser proof consumption is honest and terminal", async () => {
+test("an unexpected failure before the atomic ref update exposes no admission", async () => {
   const nonce = "0".repeat(64);
   const pendingPath = `pending/${await digest(nonce)}.json`;
   const stub = stubOAuth({ push: true, files: { [pendingPath]: PENDING } });
   const inner = globalThis.fetch;
   globalThis.fetch = async (url, init = {}) => {
     const target = new URL(url);
-    if ((init.method ?? "GET") === "PUT" && target.pathname.includes("/contents/submissions/")) {
+    if ((init.method ?? "GET") === "POST" && target.pathname.endsWith("/git/trees")) {
       return new Response("upstream failure", { status: 502 });
     }
     return inner(url, init);
@@ -1417,7 +1555,8 @@ test("an unexpected failure after browser proof consumption is honest and termin
   assert.match(body, /sign-in was spent/);
   assert.match(body, /Start a new submission from the submission form/);
   assert.match(response.headers.get("set-cookie"), /Max-Age=0/);
-  assert.deepEqual(stub.deleted, [pendingPath]);
+  assert.deepEqual(stub.deleted, []);
+  assert.ok(stub.store.has(pendingPath));
   assert.deepEqual(stub.written, []);
   assert.deepEqual(stub.dispatched, []);
 });
@@ -1444,6 +1583,7 @@ function stubAgent(config = {}) {
   const store = new Map(initial);
   const deleted = [];
   const dispatched = [];
+  const refUpdates = [];
   globalThis.fetch = async (url, init = {}) => {
     const target = new URL(url);
     const method = init.method ?? "GET";
@@ -1468,6 +1608,8 @@ function stubAgent(config = {}) {
         owner: { login: "example" }, permissions: { push: true },
       });
     }
+    const git = stateGitApi(target, init, { store, written, deleted, refUpdates });
+    if (git) return git;
     if (target.pathname.includes("/commits/")) return Response.json({ sha: "1".repeat(40) });
     if (target.pathname.includes("/actions/workflows/")) {
       dispatched.push({ path: target.pathname, body: JSON.parse(init.body) });
@@ -1485,7 +1627,7 @@ function stubAgent(config = {}) {
     store.set(path, value);
     return Response.json({ content: {} });
   };
-  return { written, deleted, dispatched, store, state };
+  return { written, deleted, dispatched, store, state, refUpdates };
 }
 
 const AGENT_SUBMISSION = {
@@ -1586,11 +1728,111 @@ test("a tag and a gist together admit a submission", async () => {
   assert.equal(record.value.push_proof.method, "tag-and-gist");
   assert.equal(record.value.push_proof.binding, "separately-attested");
   assert.equal(record.value.push_proof.principal.id, 4242);
+  assert.equal(stub.refUpdates.length, 1, "admission used more than one branch update");
+  assert.deepEqual(
+    new Set(stub.refUpdates[0].map((item) => item.path)),
+    new Set([
+      [...stub.deleted][0],
+      `submissions/${body.submission_id}/state.json`,
+      "index/inflight.json",
+      "index/open.json",
+      `index/tokens/${record.value.token_sha256}.json`,
+      await agentRatePath(),
+    ]),
+  );
   assert.equal(stub.dispatched.length, 1);
   assert.equal(
     JSON.parse(stub.dispatched[0].body.inputs.options).authorization_relationship,
     "I am a responsible author or maintainer",
   );
+});
+
+test("an admission ref race rereads the whole snapshot and lands once", async () => {
+  const stub = stubAgent();
+  const begun = await agentSubmit();
+  stub.state.tag = { exists: true, sha: "1".repeat(40) };
+  stub.state.gist = { exists: true, content: begun.challenge };
+  const inner = globalThis.fetch;
+  let patches = 0;
+  globalThis.fetch = async (url, init = {}) => {
+    const target = new URL(url);
+    if ((init.method ?? "GET") === "PATCH" && target.pathname.endsWith("/git/refs/heads/main")) {
+      patches += 1;
+      if (patches === 1) {
+        return Response.json({ message: "Update is not a fast-forward" }, { status: 422 });
+      }
+    }
+    return inner(url, init);
+  };
+
+  const response = await agentVerify({ pending_secret: begun.pending_secret, gist_id: "abc123" });
+  assert.equal(response.status, 200);
+  assert.equal(patches, 2);
+  assert.equal(stub.refUpdates.length, 2, "the losing projection was not rebuilt");
+  assert.equal(stub.written.filter((item) => item.path.endsWith("state.json")).length, 1);
+  assert.equal(stub.deleted.length, 1);
+});
+
+test("a later proof reservation is a retryable conflict, not State damage", async () => {
+  const stub = stubAgent();
+  const begun = await agentSubmit();
+  stub.state.tag = { exists: true, sha: "1".repeat(40) };
+  stub.state.gist = { exists: true, content: begun.challenge };
+  const pendingPath = `pending/${await digest(begun.pending_secret)}.json`;
+  const inner = globalThis.fetch;
+  let pendingReads = 0;
+  globalThis.fetch = async (url, init = {}) => {
+    const target = new URL(url);
+    if (
+      (init.method ?? "GET") === "GET" &&
+      decodeURI(target.pathname).endsWith(`/${pendingPath}`)
+    ) {
+      pendingReads += 1;
+      const response = await inner(url, init);
+      if (pendingReads === 3 && response.ok) {
+        return Response.json({ ...(await response.json()), sha: "somebody-else-reserved-it" });
+      }
+      return response;
+    }
+    return inner(url, init);
+  };
+  const response = await agentVerify({ pending_secret: begun.pending_secret, gist_id: "abc123" });
+  assert.equal(response.status, 409);
+  const body = await response.json();
+  assert.equal(body.proof_consumed, false);
+  assert.equal(body.attempts_remaining, undefined);
+  assert.match(body.error, /being verified/);
+  assert.equal(stub.refUpdates.length, 0, "a reservation conflict still built an admission commit");
+});
+
+test("a rejected initial dispatch leaves a durable retryable verification", async () => {
+  const stub = stubAgent();
+  const begun = await agentSubmit();
+  stub.state.tag = { exists: true, sha: "1".repeat(40) };
+  stub.state.gist = { exists: true, content: begun.challenge };
+  const inner = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    const target = new URL(url);
+    if ((init.method ?? "GET") === "POST" &&
+        target.pathname.includes("/actions/workflows/submission.yml/dispatches")) {
+      return new Response("dispatch unavailable", { status: 503 });
+    }
+    return inner(url, init);
+  };
+  const originalError = console.error;
+  console.error = () => {};
+  let response;
+  try {
+    response = await agentVerify({ pending_secret: begun.pending_secret, gist_id: "abc123" });
+  } finally {
+    console.error = originalError;
+  }
+
+  assert.equal(response.status, 200);
+  const record = stub.written.find((item) => item.path.endsWith("state.json"));
+  assert.equal(record.value.status, "verifying");
+  assert.equal(record.value.run, undefined);
+  assert.equal(stub.deleted.length, 1);
 });
 
 test("agent intake fails closed and in JSON when admission indexes are unusable", async () => {
@@ -1616,11 +1858,11 @@ test("agent intake fails closed and in JSON when admission indexes are unusable"
     const body = await response.json();
     assert.deepEqual(body, {
       error: "submission intake is temporarily unavailable",
-      proof_consumed: true,
-      restart: "This proof was consumed. Start a new submission and create a new proof.",
+      proof_consumed: false,
+      retry: "Keep the proof artifacts and retry this request.",
+      attempts_remaining: 9,
     });
-    assert.ok(stub.deleted.some((path) => path.startsWith("pending/")),
-              `${name} did not consume the proved challenge exactly once`);
+    assert.deepEqual(stub.deleted, [], `${name} consumed a proof without admitting it`);
     assert.deepEqual(
       stub.written.slice(before).filter((item) => !item.path.startsWith("pending/")),
       [],
@@ -1652,6 +1894,7 @@ test("an agent capacity refusal says its accepted proof was consumed", async () 
   assert.equal(body.error, "Palomar is at capacity");
   assert.equal(body.proof_consumed, true);
   assert.match(body.restart, /Start a new submission and create a new proof/);
+  assert.equal(stub.refUpdates.at(-1).length, 1, "a refusal changed more than its proof");
   assert.deepEqual(
     stub.written.slice(before).filter((item) => item.path.includes("submissions/")),
     [],
@@ -1859,7 +2102,7 @@ test("starting a submission doubles the wait, and only registering clears it", a
   assert.equal(rate().interval_seconds, 120, "a second start did not double the wait");
 });
 
-test("malformed present rate state consumes the proof but admits and writes nothing", async () => {
+test("malformed present rate state preserves the proof and admits nothing", async () => {
   const malformed = [
     null,
     {
@@ -1896,8 +2139,9 @@ test("malformed present rate state consumes the proof but admits and writes noth
     assert.equal(response.status, 503);
     assert.deepEqual(await response.json(), {
       error: "submission intake is temporarily unavailable",
-      proof_consumed: true,
-      restart: "This proof was consumed. Start a new submission and create a new proof.",
+      proof_consumed: false,
+      retry: "Keep the proof artifacts and retry this request.",
+      attempts_remaining: 9,
     });
     assert.deepEqual(
       stub.written.slice(before).filter((item) => !item.path.startsWith("pending/")),
@@ -1937,7 +2181,7 @@ test("empty and invalid-JSON rate files also fail closed before admission writes
       gist_id: "abc123",
     });
     assert.equal(response.status, 503);
-    assert.equal((await response.json()).proof_consumed, true);
+    assert.equal((await response.json()).proof_consumed, false);
     assert.deepEqual(
       stub.written.slice(before).filter((item) => !item.path.startsWith("pending/")),
       [],
@@ -2380,11 +2624,10 @@ test("a pinned run is asked for by id, not searched for by name", async () => {
   );
 });
 
-test("a run that nobody can find eventually gives its slot back", async () => {
-  // A submission stuck in `verifying` holds one of twelve global slots, one of
-  // two for its owner and one of two for its submitter, and nothing else
-  // releases it. Two misses rather than one, because a single empty answer is
-  // as likely to be GitHub having a moment as a genuinely lost run.
+test("a durable dispatch retries under a lease without releasing its slot", async () => {
+  // A verifying record is the outbox. Giving up would turn a crash before the
+  // first workflow_dispatch into a terminal submission; retrying forever is
+  // deliberate backpressure until the dispatch credential is repaired.
   const { reconcile } = await import("../src/submission-lifecycle.js");
   const old = "2026-01-01T00:00:00Z";
   const files = {
@@ -2393,22 +2636,113 @@ test("a run that nobody can find eventually gives its slot back", async () => {
       open: [{ id: "a1b2c3d4e5f6", owner: "example", submitter: "someone", at: old }],
     },
   };
-  const { written, store } = stubState(files, []);
+  const { store } = stubState(files, []);
+  const inner = globalThis.fetch;
+  let dispatches = 0;
+  globalThis.fetch = async (url, init = {}) => {
+    const target = new URL(url);
+    if ((init.method ?? "GET") === "POST" && target.pathname.endsWith("/dispatches")) {
+      dispatches += 1;
+    }
+    return inner(url, init);
+  };
 
   // First pass: noticed, not acted on.
   await reconcile(ENV);
   assert.equal(store.get(statePath("a1b2c3d4e5f6", "state.json")).status, "verifying");
-  assert.equal(store.get(statePath("a1b2c3d4e5f6", "state.json")).run_misses, 1);
+  assert.equal(store.get(statePath("a1b2c3d4e5f6", "state.json")).run_misses, undefined);
   assert.deepEqual(store.get("index/inflight.json").open.length, 1);
 
-  // Second pass: released.
+  // Second pass: the fresh lease prevents a duplicate, and it stays pending.
   await reconcile(ENV);
   const record = store.get(statePath("a1b2c3d4e5f6", "state.json"));
-  assert.equal(record.status, "dispatch-lost");
-  assert.deepEqual(store.get("index/inflight.json").open, []);
-  // And it says what happened, rather than blaming the proof.
-  assert.match(record.events.at(-1).note, /could not find the verification run/);
-  assert.ok(written.length > 0);
+  assert.equal(record.status, "verifying");
+  assert.equal(record.run_misses, undefined);
+  assert.equal(record.dispatch_lease_count, 1);
+  assert.equal(store.get("index/inflight.json").open.length, 1);
+  assert.equal(dispatches, 1);
+});
+
+test("a missing pinned run fails loudly without dispatching a replacement", async () => {
+  const { reconcile } = await import("../src/submission-lifecycle.js");
+  const old = "2026-01-01T00:00:00Z";
+  const files = {
+    ...(await fixture({ status: "verifying", created_at: old, run: { id: 999 } })),
+    "index/inflight.json": {
+      open: [{ id: "a1b2c3d4e5f6", owner: "example", submitter: "someone", at: old }],
+    },
+  };
+  const { store } = stubState(files, []);
+  let dispatches = 0;
+  const inner = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    if ((init.method ?? "GET") === "POST" && new URL(url).pathname.endsWith("/dispatches")) {
+      dispatches += 1;
+    }
+    return inner(url, init);
+  };
+  await assert.rejects(() => reconcile(ENV), /pinned verification run is unavailable/);
+  assert.equal(dispatches, 0);
+  assert.equal(store.get(statePath("a1b2c3d4e5f6", "state.json")).run.id, 999);
+  assert.equal(store.get("index/inflight.json").open.length, 1);
+});
+
+test("an undiscoverable dispatch stops after the bounded attempt count", async () => {
+  const { reconcile } = await import("../src/submission-lifecycle.js");
+  const old = "2026-01-01T00:00:00Z";
+  const files = {
+    ...(await fixture({
+      status: "verifying", created_at: old, run: undefined,
+      dispatch_lease_at: old, dispatch_lease_count: 3,
+    })),
+    "index/inflight.json": {
+      open: [{ id: "a1b2c3d4e5f6", owner: "example", submitter: "someone", at: old }],
+    },
+  };
+  const { store } = stubState(files, []);
+  let dispatches = 0;
+  const inner = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    if ((init.method ?? "GET") === "POST" && new URL(url).pathname.endsWith("/dispatches")) {
+      dispatches += 1;
+    }
+    return inner(url, init);
+  };
+  await assert.rejects(() => reconcile(ENV), /not discoverable after 3 attempts/);
+  assert.equal(dispatches, 0);
+  assert.equal(store.get(statePath("a1b2c3d4e5f6", "state.json")).dispatch_lease_count, 3);
+  assert.equal(store.get("index/inflight.json").open.length, 1);
+});
+
+test("an invalid or future dispatch lease cannot silently wedge the outbox", async () => {
+  const { reconcile } = await import("../src/submission-lifecycle.js");
+  for (const lease of ["not-a-timestamp", "2999-01-01T00:00:00Z"]) {
+    const old = "2026-01-01T00:00:00Z";
+    const files = {
+      ...(await fixture({
+        status: "verifying", created_at: old, run: undefined,
+        dispatch_lease_at: lease, dispatch_lease_count: 2,
+      })),
+      "index/inflight.json": {
+        open: [{ id: "a1b2c3d4e5f6", owner: "example", submitter: "someone", at: old }],
+      },
+    };
+    const { store } = stubState(files, []);
+    let dispatches = 0;
+    const inner = globalThis.fetch;
+    globalThis.fetch = async (url, init = {}) => {
+      if ((init.method ?? "GET") === "POST" && new URL(url).pathname.endsWith("/dispatches")) {
+        dispatches += 1;
+      }
+      return inner(url, init);
+    };
+    await reconcile(ENV);
+    assert.equal(dispatches, 1, `${lease} silently suppressed the retry`);
+    assert.equal(
+      store.get(statePath("a1b2c3d4e5f6", "state.json")).dispatch_lease_count,
+      3,
+    );
+  }
 });
 
 test("a run that is merely queued is left alone however long it waits", async () => {
@@ -2453,7 +2787,10 @@ test("a second run carrying the same submission id cannot settle the record", as
     },
   };
   const { store } = stubState(files, [impostor]);
-  await reconcile(ENV);
+  await assert.rejects(
+    () => reconcile(ENV),
+    /pinned verification run is unavailable/,
+  );
   const record = store.get(statePath("a1b2c3d4e5f6", "state.json"));
   assert.equal(record.status, "verifying", "an impostor run settled the record");
   assert.equal(record.run.id, 12345);

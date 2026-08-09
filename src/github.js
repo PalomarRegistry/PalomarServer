@@ -14,6 +14,7 @@ const API = "https://api.github.com";
 // together. Retrying is cheap and a collision is not a disagreement about
 // anything; give it enough attempts that ordinary traffic never sees one.
 const MAX_WRITE_ATTEMPTS = 8;
+const STATE_BRANCH = "main";
 
 function headers(token) {
   return {
@@ -30,6 +31,9 @@ export class GitHubError extends Error {
     this.status = status;
   }
 }
+
+/** GitHub may have moved State even though the ref-update response was lost. */
+export class StateUpdateOutcomeError extends Error {}
 
 async function call(token, path, init = {}) {
   const response = await fetch(`${API}${path}`, {
@@ -77,10 +81,18 @@ export async function readState(env, path) {
     env.GITHUB_TOKEN,
     `/repos/${env.STATE_REPO}/contents/${encodeURI(path)}`,
   );
+  return decodeState(path, data);
+}
+
+function encode(value) {
+  const bytes = new TextEncoder().encode(JSON.stringify(value, null, 2) + "\n");
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
+
+function decodeState(path, data) {
   if (data === null) return { value: null, sha: null };
-  // Empty content, or a Contents response that omits inline content, is a
-  // present unreadable file rather than a 404. Let parsing fail so its owning
-  // contract can refuse it instead of treating it as absent state.
   if (typeof data.content !== "string") {
     throw new SyntaxError(`${path} did not contain inline JSON`);
   }
@@ -90,11 +102,186 @@ export async function readState(env, path) {
   return { value: JSON.parse(text), sha: data.sha };
 }
 
-function encode(value) {
-  const bytes = new TextEncoder().encode(JSON.stringify(value, null, 2) + "\n");
-  let binary = "";
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary);
+/**
+ * Read a closed set of State files from one exact branch head.
+ *
+ * Contents reads without `ref` can each observe a different commit. Admission
+ * needs a single input snapshot: its rate decision, capacity decision, proof
+ * consumption, and every projected write either belong to one parent commit
+ * or none of them do.
+ */
+export async function readStateSnapshot(env, paths) {
+  const unique = [...new Set(paths)];
+  if (unique.length !== paths.length) throw new Error("State snapshot paths must be unique");
+  const ref = await call(
+    env.GITHUB_TOKEN,
+    `/repos/${env.STATE_REPO}/git/ref/heads/${STATE_BRANCH}`,
+  );
+  const headSha = ref?.object?.type === "commit" ? ref.object.sha : null;
+  if (typeof headSha !== "string" || !/^[0-9a-f]{40}$/i.test(headSha)) {
+    throw new GitHubError(503, `State ${STATE_BRANCH} did not resolve to a commit`);
+  }
+  const commit = await call(
+    env.GITHUB_TOKEN,
+    `/repos/${env.STATE_REPO}/git/commits/${headSha}`,
+  );
+  const treeSha = commit?.tree?.sha;
+  if (typeof treeSha !== "string" || !/^[0-9a-f]{40}$/i.test(treeSha)) {
+    throw new GitHubError(503, `State ${STATE_BRANCH} commit had no tree`);
+  }
+  const files = {};
+  await Promise.all(unique.map(async (path) => {
+    const query = new URLSearchParams({ ref: headSha });
+    const data = await call(
+      env.GITHUB_TOKEN,
+      `/repos/${env.STATE_REPO}/contents/${encodeURI(path)}?${query}`,
+    );
+    files[path] = decodeState(path, data);
+  }));
+  return { headSha, treeSha, files };
+}
+
+/**
+ * Commit several JSON replacements/deletions as one State transition.
+ *
+ * A false answer is an ordinary compare-and-swap loss: another writer moved
+ * main after the snapshot. The caller must reread and re-evaluate every input.
+ * Tree and commit objects created before that loss are unreachable and never
+ * become State. No forced ref update is ever used.
+ */
+async function commitStateSnapshot(env, snapshot, changes, message) {
+  const paths = changes.map((change) => change.path);
+  if (new Set(paths).size !== paths.length) {
+    throw new Error("A State transaction cannot change one path twice");
+  }
+  const tree = await call(
+    env.GITHUB_TOKEN,
+    `/repos/${env.STATE_REPO}/git/trees`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        base_tree: snapshot.treeSha,
+        tree: changes.map((change) => ({
+          path: change.path,
+          mode: "100644",
+          type: "blob",
+          ...(change.delete ? { sha: null } : {
+            content: JSON.stringify(change.value, null, 2) + "\n",
+          }),
+        })),
+      }),
+    },
+  );
+  if (typeof tree?.sha !== "string") throw new GitHubError(502, "GitHub created no State tree");
+  const commit = await call(
+    env.GITHUB_TOKEN,
+    `/repos/${env.STATE_REPO}/git/commits`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ message, tree: tree.sha, parents: [snapshot.headSha] }),
+    },
+  );
+  if (typeof commit?.sha !== "string") {
+    throw new GitHubError(502, "GitHub created no State commit");
+  }
+  const update = {
+    method: "PATCH",
+    headers: { ...headers(env.GITHUB_TOKEN), "content-type": "application/json" },
+    body: JSON.stringify({ sha: commit.sha, force: false }),
+  };
+  let response;
+  let uncertain = false;
+  try {
+    response = await fetch(
+      `${API}/repos/${env.STATE_REPO}/git/refs/heads/${STATE_BRANCH}`,
+      update,
+    );
+  } catch {
+    // A rejected fetch has the same unknown outcome as an HTTP 5xx here.
+  }
+  if (!response || response.status >= 500) {
+    // Repeating this non-forced update is idempotent. If the first request
+    // landed, GitHub either accepts the same target again or reports that a
+    // later descendant is now at the ref; if it did not, this request applies
+    // the commit. This closes the ordinary lost-response window without a
+    // second State transition or a forced write.
+    uncertain = true;
+    try {
+      response = await fetch(
+        `${API}/repos/${env.STATE_REPO}/git/refs/heads/${STATE_BRANCH}`,
+        update,
+      );
+    } catch {
+      response = null;
+    }
+  }
+  if (uncertain && !response?.ok) {
+    try {
+      const ref = await call(
+        env.GITHUB_TOKEN,
+        `/repos/${env.STATE_REPO}/git/ref/heads/${STATE_BRANCH}`,
+      );
+      const headSha = ref?.object?.type === "commit" ? ref.object.sha : null;
+      if (headSha === commit.sha) return true;
+      if (typeof headSha === "string" && /^[0-9a-f]{40}$/i.test(headSha)) {
+        const comparison = await call(
+          env.GITHUB_TOKEN,
+          `/repos/${env.STATE_REPO}/compare/${commit.sha}...${headSha}`,
+        );
+        if (
+          ["ahead", "identical"].includes(comparison?.status) &&
+          comparison?.merge_base_commit?.sha === commit.sha
+        ) return true;
+      }
+    } catch {
+      // The outcome remains unknown; the typed error below prevents callers
+      // from claiming that the proof was definitely not consumed.
+    }
+    if (response?.status === 409) return false;
+    if (response?.status === 422) {
+      const detail = (await response.text()).slice(0, 300);
+      if (/not a fast.?forward/i.test(detail)) return false;
+    }
+    throw new StateUpdateOutcomeError("State ref update outcome is unknown");
+  }
+  if (response.status === 409) return false;
+  if (response.status === 422) {
+    const detail = (await response.text()).slice(0, 300);
+    if (/not a fast.?forward/i.test(detail)) return false;
+    throw new GitHubError(response.status, detail || "State ref update was rejected");
+  }
+  if (!response.ok) {
+    throw new GitHubError(response.status, (await response.text()).slice(0, 300));
+  }
+  return true;
+}
+
+/**
+ * Re-evaluate and atomically apply one multi-file State transition.
+ *
+ * `project` receives files from one exact commit and returns the complete
+ * change set, commit message, and value to hand to the caller. Ref contention
+ * retries from a fresh head; contract conflicts raised by `project` do not.
+ */
+export async function transactState(env, paths, project) {
+  for (let attempt = 0; attempt <= MAX_WRITE_ATTEMPTS; attempt += 1) {
+    const snapshot = await readStateSnapshot(env, paths);
+    const projected = await project(snapshot.files);
+    if (projected.changes.length === 0) return projected.result;
+    if (await commitStateSnapshot(
+      env,
+      snapshot,
+      projected.changes,
+      projected.message,
+    )) return projected.result;
+    if (attempt >= MAX_WRITE_ATTEMPTS) {
+      throw new GitHubError(409, "State branch kept changing underneath this transaction");
+    }
+    await pause(attempt);
+  }
+  throw new Error("unreachable State transaction attempt");
 }
 
 /**

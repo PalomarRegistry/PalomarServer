@@ -81,9 +81,13 @@ and never appear in the repository:
 | --- | --- | --- |
 | `OAUTH_CLIENT_ID` | GitHub OAuth App client id, for the push-access check | — |
 | `OAUTH_CLIENT_SECRET` | its client secret | — |
-| `GITHUB_TOKEN` | writes submission state, asks the reviewer to run, and reads public repository metadata for the repository being submitted | `PalomarSubmissionState`, contents and actions, plus public reads |
+| `GITHUB_TOKEN` | reads and atomically advances submission State, asks the reviewer to run, and reads public repository metadata for the repository being submitted | `PalomarSubmissionState`, contents and actions, plus public reads |
 | `SUBMISSION_TOKEN` | starts and reads verification runs, and reads the submitter's public ref and gist while checking a proof | `PalomarSubmission`, actions, plus public reads |
 | `TOKEN_PEPPER` | so a leaked state repository does not yield live links | — |
+
+The State token's existing repository `Contents: write` grant covers the Git
+tree, commit, and non-forced reference update used for atomic admission; it
+does not need repository-administration permission.
 
 Two GitHub tokens, not one, because a fine-grained token grants the same
 permissions to every repository it names. A single token covering both
@@ -156,16 +160,41 @@ owns body decoding, responses, authorization, request-path record and rate
 reads and optimistic writes, the admission-slot append, and route-level
 ordering.
 
+Admission uses GitHub's Git Data API as a transaction boundary. The Worker
+reads the pending proof, rate record, capacity index, reviewer queue, and the
+two create-only paths at one exact `main` commit. One derived tree then consumes
+the proof and writes the submission record, capacity reservation, reviewer
+queue entry, token index, and rate update. A non-forced ref update publishes all
+of them together. If another writer moved `main`, the update is rejected and
+the complete decision is recomputed from the new head; unreachable losing tree
+and commit objects never become State. Policy refusals publish only the proof
+deletion. Damaged or unavailable State publishes nothing and leaves an agent's
+proof retryable within its reported attempt budget. If a ref-update response
+and the follow-up reachability checks are all unavailable, the Worker reports
+the outcome as unknown instead of claiming that the proof survived.
+
+The external verification dispatch cannot be part of a Git commit. A newly
+committed `verifying` record therefore doubles as a durable outbox item and
+carries a short dispatch lease. The admitting request tries immediately. The
+ten-minute lifecycle first searches for the workflow run (covering a crash
+after GitHub accepted an ambiguous dispatch), then one reconciler claims an
+expired lease and retries. It does not release capacity or declare the dispatch
+lost merely because a credential or provider outage needs repair. Retries stop
+after three dispatch attempts and make the scheduled pass fail loudly while
+retaining the record and its slot; a pinned run that disappears is likewise
+never replaced by a namesake dispatch.
+
 Before pointing a fresh or staging Worker at a new state repository, copy the
 two files in `state-bootstrap/index/` to `index/` and commit them. Deploying the
 Worker before that initialization deliberately leaves intake unavailable; it
 does not silently grant unbounded capacity.
 
-These files are separate GitHub commits, not a transaction. Validation and
-compare-and-swap writes prevent a known-bad index or a concurrent edit from
-being silently overwritten, but a conflict after an earlier commit can leave a
-partial admission or decision. A later request can retry an entry whose
-reservation remains in flight; other partial states require an operator.
+Admission is the multi-file transaction described above. Later lifecycle and
+submitter decisions remain ordered Git commits rather than one global
+transaction: their operations are idempotent or deliberately leave an earlier
+durable state that the next request or scheduled pass can finish. Git State
+continues to be the auditable source of truth; no separate coordinator or
+export process is required.
 
 `index/open.json` holds every submission the reviewer is not yet finished with.
 This server adds an id when it admits one, and the reviewer drops one when the
