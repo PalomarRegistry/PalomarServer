@@ -11,6 +11,7 @@ const MAX_INFLIGHT_PER_OWNER = 2;
 const MAX_INFLIGHT_PER_SUBMITTER = 2;
 const GITHUB_LOGIN = /^[A-Za-z0-9_-]{1,39}$/;
 const UTC_SECONDS = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
+const LAST_UTC_SECONDS_MS = Date.parse("9999-12-31T23:59:59Z");
 
 export class RateContractError extends Error {}
 
@@ -128,7 +129,7 @@ export function nextRateRecord({ login, starts, interval, startedAt, at = Date.n
     fail("next interval_seconds is not a safe integer");
   }
   const nextAllowed = at + nextInterval * 1000;
-  if (!Number.isFinite(nextAllowed) || Math.abs(nextAllowed) > 8.64e15) {
+  if (!Number.isFinite(nextAllowed) || nextAllowed < 0 || nextAllowed > LAST_UTC_SECONDS_MS) {
     fail("next_allowed_at is outside the representable date range");
   }
   const result = {

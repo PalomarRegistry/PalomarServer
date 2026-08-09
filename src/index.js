@@ -226,6 +226,24 @@ function reportDurableContract(error) {
   console.error(error instanceof RateContractError ? "rate-contract" : "state-contract", error.message);
 }
 
+async function readRateState(env, path) {
+  try {
+    return await readState(env, path);
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) throw error;
+    throw new RateContractError(`${path} must contain valid JSON`);
+  }
+}
+
+function atRatePath(path, operation) {
+  try {
+    return operation();
+  } catch (error) {
+    if (!(error instanceof RateContractError)) throw error;
+    throw new RateContractError(`${path}: ${error.message}`);
+  }
+}
+
 // Pending intake that may exist at once, across everybody. This limits ordinary
 // growth rather than bounding it: the count is read and the record is written
 // separately, so intakes arriving together can overshoot it. What it is really
@@ -492,11 +510,13 @@ async function ratePath(env, principalId) {
 async function rateLimit(env, principal) {
   if (!principal?.id) return { refused: false, record: null, path: null };
   const path = await ratePath(env, principal.id);
-  const current = await readState(env, path);
+  const current = await readRateState(env, path);
   // A missing file means this principal has not started before. A present JSON
   // null (or any other malformed document) is damaged state, not the same
   // absence and not permission to fall through to the floor.
-  const value = current.sha === null ? null : rateRecord(current.value).value;
+  const value = current.sha === null
+    ? null
+    : atRatePath(path, () => rateRecord(current.value).value);
   const decision = rateDecision(value);
   return decision.refused ? decision : { ...decision, path, sha: current.sha };
 }
@@ -984,16 +1004,31 @@ async function refresh(env, entry) {
   // live links.
   if (record.status === "registered" && !record.rate_reset_at && record.push_proof?.principal?.id) {
     const path = await ratePath(env, record.push_proof.principal.id);
-    const current = await readState(env, path);
     const resetAt = now();
     // Absence already admits the next start at the floor. Do not synthesize a
     // partial document without the historical fields required of every
     // present rate record; a malformed present document fails closed.
-    if (current.sha !== null) {
+    let current;
+    let projected = null;
+    try {
+      current = await readRateState(env, path);
+      if (current.sha !== null) {
+        projected = atRatePath(path, () => resetRateRecord(current.value, resetAt));
+      }
+    } catch (error) {
+      if (!(error instanceof RateContractError)) throw error;
+      // Resetting an auxiliary backoff is conservative: leaving it unapplied
+      // cannot admit another start early. Keep the registered result visible
+      // and leave the marker unset so repairing the file makes a later poll
+      // retry the reset.
+      reportDurableContract(error);
+      return record;
+    }
+    if (projected !== null) {
       await writeState(
         env,
         path,
-        resetRateRecord(current.value, resetAt),
+        projected,
         "Reset after a registration",
         current.sha,
       ).catch(() => {});

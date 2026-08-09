@@ -480,6 +480,26 @@ test("the state token never reaches the submission repository, and vice versa", 
   );
 });
 
+test("a present empty or non-inline state file is not mistaken for a missing file", async () => {
+  const { readState } = await import("../src/github.js");
+  for (const responseBody of [
+    { sha: "empty", content: "" },
+    { sha: "not-inline", encoding: "none" },
+  ]) {
+    globalThis.fetch = async () => Response.json(responseBody);
+    await assert.rejects(
+      () => readState(ENV, "index/rate/example.json"),
+      SyntaxError,
+    );
+  }
+
+  globalThis.fetch = async () => new Response("", { status: 404 });
+  assert.deepEqual(await readState(ENV, "index/rate/example.json"), {
+    value: null,
+    sha: null,
+  });
+});
+
 test("a commit racing on the branch is retried, not shown to the submitter", async () => {
   // Every write commits to one branch, so two submissions a second apart, or a
   // submission and the reconciliation cron, collide. That is not a conflict
@@ -1758,6 +1778,43 @@ test("malformed present rate state consumes the proof but admits and writes noth
   }
 });
 
+test("empty and invalid-JSON rate files also fail closed before admission writes", async () => {
+  for (const text of ["", "{"]) {
+    const stub = stubAgent();
+    const begun = await agentSubmit();
+    const path = await agentRatePath();
+    stub.state.tag = { exists: true, sha: "1".repeat(40) };
+    stub.state.gist = { exists: true, content: begun.challenge };
+    const before = stub.written.length;
+    const inner = globalThis.fetch;
+    globalThis.fetch = async (url, init = {}) => {
+      const target = new URL(url);
+      const requested = decodeURI(
+        target.pathname.replace(`/repos/${ENV.STATE_REPO}/contents/`, ""),
+      );
+      if ((init.method ?? "GET") === "GET" && requested === path) {
+        return Response.json({
+          content: Buffer.from(text, "utf-8").toString("base64"),
+          sha: "rate-sha",
+        });
+      }
+      return inner(url, init);
+    };
+
+    const response = await agentVerify({
+      pending_secret: begun.pending_secret,
+      gist_id: "abc123",
+    });
+    assert.equal(response.status, 503);
+    assert.equal((await response.json()).proof_consumed, true);
+    assert.deepEqual(
+      stub.written.slice(before).filter((item) => !item.path.startsWith("pending/")),
+      [],
+    );
+    assert.deepEqual(stub.dispatched, []);
+  }
+});
+
 test("a registration puts the interval back to a minute", async () => {
   const stub = stubAgent();
   const begun = await agentSubmit();
@@ -1785,7 +1842,7 @@ test("a registration puts the interval back to a minute", async () => {
   assert.equal(stub.store.get(file).interval_seconds, 60, "registering did not clear the wait");
 });
 
-test("registration reset rejects malformed present rate state before writing", async () => {
+test("registration reset leaves malformed rate state unapplied without hiding the result", async () => {
   const stub = stubAgent();
   const begun = await agentSubmit();
   stub.state.tag = { exists: true, sha: "1".repeat(40) };
@@ -1804,12 +1861,11 @@ test("registration reset rejects malformed present rate state before writing", a
     "https://submit.palomar-registry.org/api/submission",
     { headers: { authorization: `Bearer ${verified.access_token}` } },
   ), ENV);
-  assert.equal(response.status, 503);
-  assert.deepEqual(await response.json(), {
-    error: "submission status is temporarily unavailable",
-  });
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).status, "registered");
   assert.deepEqual(stub.written.slice(before), []);
   assert.equal(stub.store.get(recordPath), registered);
+  assert.equal(Object.hasOwn(stub.store.get(recordPath), "rate_reset_at"), false);
 });
 
 test("registration reset does not synthesize a partial rate document when it is absent", async () => {

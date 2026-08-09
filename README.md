@@ -171,7 +171,9 @@ present document records a GitHub `login`, positive integer `starts`, an integer
 whole-tree validator deliberately treats these producer-owned fields as opaque,
 so the Server validates all of them before admission and before projecting a
 reset. A missing file is a first start; a malformed present file makes intake
-or reset temporarily unavailable rather than silently granting the floor.
+temporarily unavailable rather than silently granting the floor. A malformed
+file also leaves a registration reset unapplied until repair, but does not hide
+the already-registered result from its submitter.
 
 There is no ceiling, and that is deliberate rather than an omission to fix.
 Twenty starts with nothing registered is already years; nobody submitting in
