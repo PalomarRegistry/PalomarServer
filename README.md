@@ -87,6 +87,9 @@ Dashboard sign-in uses the existing GitHub OAuth application with the additional
 read-only `read:org` scope. The callback requires an active membership in the
 closed `PalomarRegistry/technical-maintainers` team, discards the GitHub token
 immediately, and issues a signed host-only session lasting fifteen minutes.
+GitHub OAuth grants scopes cumulatively per application, so a maintainer who
+has granted `read:org` may also receive it on a later intake token; every such
+token is still single-use here and is discarded rather than stored.
 Removing a maintainer therefore takes effect no later than that expiry. The
 signature is domain-separated from submission-token digests while reusing the
 existing `TOKEN_PEPPER`; there is no additional secret or durable login store.
@@ -94,7 +97,8 @@ The OAuth state and session cookie both reject duplicates and are never cached.
 
 The machine-readable aggregate is available at `/api/dashboard` under the same
 session. The Server validates that the stored document has the identity-free
-dashboard contract with an exact field allowlist, rather than trying to spot a
+dashboard contract with an exact field-name allowlist and deep value shapes,
+rather than trying to spot a
 few forbidden identity fields. The page and API also link moderators to the
 private Database issue-form chooser for takedown and restoration work, and to
 Database issue #123 while the direct forms are being implemented. Those links

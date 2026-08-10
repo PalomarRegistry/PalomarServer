@@ -210,6 +210,13 @@ test("aggregate contract rejects accidental target identities", () => {
     () => validateDashboardReport({ ...REPORT, totals: { ...REPORT.totals, submissions: "4" } }),
     /invalid aggregate/,
   );
+  assert.throws(
+    () => validateDashboardReport({
+      ...REPORT,
+      submission_statuses: { ...REPORT.submission_statuses, "owner:maintainer": 1 },
+    }),
+    /invalid aggregate/,
+  );
   const html = dashboardHtml(withDashboardActions(REPORT), "maintainer");
   assert.match(html, /Failed or abandoned attempts/);
   assert.doesNotMatch(html, /<style/);
@@ -231,6 +238,7 @@ test("machine dashboard includes only aggregate data and stable operator links",
     );
     assert.equal(response.status, 200);
     const body = await response.json();
+    assert.equal(body.operator_actions.status, "issue-chooser-fallback");
     assert.equal(
       body.operator_actions.take_down_version,
       "https://github.com/PalomarRegistry/PalomarDatabase/issues/new/choose",
@@ -240,6 +248,7 @@ test("machine dashboard includes only aggregate data and stable operator links",
       body.operator_actions.workflow_status,
       "https://github.com/PalomarRegistry/PalomarDatabase/issues/123",
     );
+    assert.match(body.operator_actions.note, /issue-form chooser/);
     assert.equal(Object.hasOwn(body, "targets"), false);
     assert.equal(Object.hasOwn(body, "submissions"), false);
   } finally {
@@ -275,6 +284,60 @@ test("an OAuth binding cannot be replayed as a dashboard session", async () => {
     assert.equal(response.status, 401);
   } finally {
     globalThis.fetch = saved;
+  }
+});
+
+
+test("expired, tampered, and ambiguous dashboard sessions fail before State I/O", async () => {
+  const callback = await login(() => {
+    throw new Error("unexpected fetch");
+  });
+  const cookies = callback.headers.getSetCookie?.() ?? [callback.headers.get("set-cookie")];
+  const sessionPair = cookies.join(";").match(/__Host-palomar_dashboard=([^;,]+)/)?.[0];
+  assert.ok(sessionPair);
+  const signedValue = sessionPair.slice(sessionPair.indexOf("=") + 1);
+  const savedFetch = globalThis.fetch;
+  const savedNow = Date.now;
+  globalThis.fetch = async () => {
+    throw new Error("invalid sessions must fail before State I/O");
+  };
+  try {
+    const expiredAt = savedNow() + 16 * 60_000;
+    Date.now = () => expiredAt;
+    const expired = await worker.fetch(
+      new Request("https://submit.example/api/dashboard", { headers: { cookie: sessionPair } }),
+      ENV,
+    );
+    assert.equal(expired.status, 401);
+    Date.now = savedNow;
+
+    const replacement = signedValue.endsWith("A") ? "B" : "A";
+    const tampered = await worker.fetch(
+      new Request("https://submit.example/api/dashboard", {
+        headers: { cookie: `__Host-palomar_dashboard=${signedValue.slice(0, -1)}${replacement}` },
+      }),
+      ENV,
+    );
+    assert.equal(tampered.status, 401);
+
+    const ambiguous = await worker.fetch(
+      new Request("https://submit.example/api/dashboard", {
+        headers: { cookie: `${sessionPair}; __Host-palomar_dashboard=${signedValue}` },
+      }),
+      ENV,
+    );
+    assert.equal(ambiguous.status, 401);
+
+    const wrongCase = await worker.fetch(
+      new Request("https://submit.example/api/dashboard", {
+        headers: { cookie: `__host-palomar_dashboard=${signedValue}` },
+      }),
+      ENV,
+    );
+    assert.equal(wrongCase.status, 401);
+  } finally {
+    Date.now = savedNow;
+    globalThis.fetch = savedFetch;
   }
 });
 

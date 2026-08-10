@@ -29,8 +29,12 @@ function cookieValue(request, expected) {
   for (const raw of (request.headers.get("cookie") ?? "").split(";")) {
     const part = raw.replace(/^[ \t]+/, "");
     const separator = part.indexOf("=");
-    const name = separator === -1 ? part : part.slice(0, separator);
-    if (name === expected) matches.push(separator === -1 ? "" : part.slice(separator + 1));
+    const rawName = separator === -1 ? part : part.slice(0, separator);
+    const name = rawName.trimEnd();
+    if (name.toLowerCase() !== expected.toLowerCase()) continue;
+    // Case, whitespace, and ordering are not alternative credential spellings.
+    if (rawName !== name || name !== expected) return null;
+    matches.push(separator === -1 ? "" : part.slice(separator + 1));
   }
   return matches.length === 1 ? matches[0] : null;
 }

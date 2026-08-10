@@ -1,5 +1,7 @@
 /** Aggregate-only validation and rendering for the private operational dashboard. */
 
+import { STATUSES } from "./submission.js";
+
 const MODERATION_ISSUE_CHOOSER =
   "https://github.com/PalomarRegistry/PalomarDatabase/issues/new/choose";
 const MODERATION_IMPLEMENTATION_ISSUE =
@@ -162,9 +164,14 @@ export function withDashboardActions(report) {
   return {
     ...validateDashboardReport(report),
     operator_actions: {
+      status: "issue-chooser-fallback",
       take_down_version: MODERATION_ISSUE_CHOOSER,
       restore_version: MODERATION_ISSUE_CHOOSER,
       workflow_status: MODERATION_IMPLEMENTATION_ISSUE,
+      note: (
+        "Take down and restore currently open the Database issue-form chooser; " +
+        "Database #123 is implementing the direct forms."
+      ),
     },
   };
 }
@@ -207,7 +214,7 @@ export function dashboardHtml(report, login) {
 <li><a href="${escapeHtml(actions.restore_version)}">Restore a version</a></li>
 <li><a href="${escapeHtml(actions.workflow_status)}">Workflow implementation and status (Database #123)</a></li>
 </ul>
-<p><small>The action links currently open the Database issue-form chooser. Direct form links can replace them once Database #123 fixes the final template names.</small></p>
+<p><small>${escapeHtml(actions.note)}</small></p>
 <p><a href="/api/dashboard">Machine-readable aggregate JSON</a></p>
 </main></body></html>`;
 }
@@ -242,7 +249,10 @@ export function validateDashboardReport(report) {
   for (const value of Object.values(report.totals)) number(value, { integer: true });
 
   object(report.submission_statuses);
-  for (const value of Object.values(report.submission_statuses)) number(value, { integer: true });
+  for (const [key, value] of Object.entries(report.submission_statuses)) {
+    if (!Object.hasOwn(STATUSES, key)) fail();
+    number(value, { integer: true });
+  }
 
   exactKeys(report.rates, ["landed_per_submission", "landed_per_terminal_submission", "landed_per_target"]);
   for (const value of Object.values(report.rates)) number(value, { nullable: true, maximum: 1 });
