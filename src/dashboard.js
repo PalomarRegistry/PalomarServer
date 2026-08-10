@@ -2,10 +2,10 @@
 
 import { STATUSES } from "./submission.js";
 
-const MODERATION_ISSUE_CHOOSER =
-  "https://github.com/PalomarRegistry/PalomarDatabase/issues/new/choose";
-const MODERATION_IMPLEMENTATION_ISSUE =
-  "https://github.com/PalomarRegistry/PalomarDatabase/issues/123";
+const TAKEDOWN_ISSUE_FORM =
+  "https://github.com/PalomarRegistry/PalomarDatabase/issues/new?template=takedown.yml";
+const RESTORATION_ISSUE_FORM =
+  "https://github.com/PalomarRegistry/PalomarDatabase/issues/new?template=restoration.yml";
 const PRICE_SCHEDULE = "gpt-5.6-sol-2026-08-10";
 const DEFINITIONS = {
   submission: "one durable submissions/<id>/state.json record",
@@ -196,13 +196,10 @@ export function withDashboardActions(report) {
   return {
     ...validateDashboardReport(report),
     operator_actions: {
-      status: "issue-chooser-fallback",
-      issue_chooser: MODERATION_ISSUE_CHOOSER,
-      workflow_status: MODERATION_IMPLEMENTATION_ISSUE,
-      note: (
-        "Take down and restore currently open the Database issue-form chooser; " +
-        "Database #123 is implementing the direct forms."
-      ),
+      status: "direct-moderation-forms",
+      takedown: TAKEDOWN_ISSUE_FORM,
+      restoration: RESTORATION_ISSUE_FORM,
+      note: "Each form starts the reviewed one-Moderator workflow in the private Database repository.",
     },
   };
 }
@@ -242,9 +239,8 @@ ${totals.landed_targets_attempt_history_incomplete ? `<p><small>Retry history is
 <h2>Failed or abandoned attempts before first landing</h2>${histogram(distributions.failed_or_abandoned_attempts_before_first_land_per_landed_target)}
 <h2>Review rounds to first landing</h2>${histogram(distributions.review_rounds_to_first_land_per_landed_target)}
 <h2>Moderator actions</h2><ul>
-<li><a href="${escapeHtml(actions.issue_chooser)}">Take down a version</a></li>
-<li><a href="${escapeHtml(actions.issue_chooser)}">Restore a version</a></li>
-<li><a href="${escapeHtml(actions.workflow_status)}">Workflow implementation and status (Database #123)</a></li>
+<li><a href="${escapeHtml(actions.takedown)}">Take down a version</a></li>
+<li><a href="${escapeHtml(actions.restoration)}">Restore a version</a></li>
 </ul>
 <p><small>${escapeHtml(actions.note)}</small></p>
 <p><a href="/api/dashboard">Machine-readable aggregate JSON</a></p>

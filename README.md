@@ -106,11 +106,9 @@ dashboard contract with an exact field-name allowlist and deep value shapes,
 instead of trying to spot a few forbidden identity fields. The contract is
 tested against an aggregate fixture emitted by the State producer, so a
 producer/consumer contract change cannot be represented only by hand-written
-Server test data. The page and API also link moderators to the
-private Database issue-form chooser for takedown and restoration work, and to
-Database issue #123 while the direct forms are being implemented. Those links
-are operator conveniences, not State data; once #123 fixes the template names,
-the chooser links can become direct form links.
+Server test data. The page and API link directly to the private Database's
+one-person Moderator forms for takedown and restoration. Those links are
+operator conveniences, not State data.
 
 ## Configuration
 

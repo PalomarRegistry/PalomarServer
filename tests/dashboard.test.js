@@ -261,7 +261,9 @@ test("authenticated dashboard reads only the aggregate report", async () => {
     assert.match(body, /Palomar operations/);
     assert.match(body, /Take down a version/);
     assert.match(body, /Restore a version/);
-    assert.match(body, /issues\/123/);
+    assert.match(body, /issues\/new\?template=takedown\.yml/);
+    assert.match(body, /issues\/new\?template=restoration\.yml/);
+    assert.doesNotMatch(body, /issues\/123/);
     assert.equal(requests.length, 1);
   } finally {
     globalThis.fetch = saved;
@@ -320,16 +322,16 @@ test("machine dashboard includes only aggregate data and stable operator links",
     );
     assert.equal(response.status, 200);
     const body = await response.json();
-    assert.equal(body.operator_actions.status, "issue-chooser-fallback");
+    assert.equal(body.operator_actions.status, "direct-moderation-forms");
     assert.equal(
-      body.operator_actions.issue_chooser,
-      "https://github.com/PalomarRegistry/PalomarDatabase/issues/new/choose",
+      body.operator_actions.takedown,
+      "https://github.com/PalomarRegistry/PalomarDatabase/issues/new?template=takedown.yml",
     );
     assert.equal(
-      body.operator_actions.workflow_status,
-      "https://github.com/PalomarRegistry/PalomarDatabase/issues/123",
+      body.operator_actions.restoration,
+      "https://github.com/PalomarRegistry/PalomarDatabase/issues/new?template=restoration.yml",
     );
-    assert.match(body.operator_actions.note, /issue-form chooser/);
+    assert.match(body.operator_actions.note, /one-Moderator workflow/);
     assert.equal(Object.hasOwn(body, "targets"), false);
     assert.equal(Object.hasOwn(body, "submissions"), false);
   } finally {
