@@ -1,0 +1,56 @@
+body {
+  color: #17202a;
+  font: 16px system-ui, sans-serif;
+  margin: 2rem auto;
+  max-width: 68rem;
+  padding: 0 1rem;
+}
+
+header {
+  align-items: baseline;
+  display: flex;
+  gap: 1rem;
+  justify-content: space-between;
+}
+
+.cards {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
+}
+
+.card {
+  border: 1px solid #ccd4dc;
+  border-radius: .5rem;
+  padding: 1rem;
+}
+
+.number {
+  font-size: 2rem;
+  font-weight: 700;
+}
+
+table {
+  border-collapse: collapse;
+  max-width: 38rem;
+  width: 100%;
+}
+
+th,
+td {
+  border-bottom: 1px solid #ddd;
+  padding: .35rem;
+  text-align: left;
+}
+
+meter {
+  width: 100%;
+}
+
+code {
+  font-size: .85em;
+}
+
+small {
+  color: #52606d;
+}

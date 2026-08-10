@@ -58,6 +58,12 @@ import {
   release,
   scheduledMaintenance,
 } from "./submission-lifecycle.js";
+import {
+  beginDashboardLogin,
+  completeDashboardLogin,
+  dashboardPrincipal,
+} from "./dashboard-auth.js";
+import { dashboardHtml, validateDashboardReport } from "./dashboard.js";
 // One vocabulary for "this submission has stopped moving", shared with the
 // status page, which asks a slightly different question of the same words.
 import { CLOSED } from "../public/statuses.js";
@@ -1122,6 +1128,30 @@ export default {
       if (request.method === "GET" && url.pathname === "/") {
         return html(intakeForm(env));
       }
+      if (request.method === "GET" && url.pathname === "/dashboard/login") {
+        return await beginDashboardLogin(request, env);
+      }
+      if (request.method === "GET" && url.pathname === "/dashboard") {
+        const principal = await dashboardPrincipal(request, env);
+        if (!principal) {
+          return new Response(null, {
+            status: 303,
+            headers: { location: "/dashboard/login", "cache-control": "no-store" },
+          });
+        }
+        const stored = await readState(env, "reports/dashboard.json");
+        if (!stored.value) {
+          return html(errorPage(env, "The operational report is not ready", []), 503);
+        }
+        return html(dashboardHtml(validateDashboardReport(stored.value), principal));
+      }
+      if (request.method === "GET" && url.pathname === "/api/dashboard") {
+        const principal = await dashboardPrincipal(request, env);
+        if (!principal) return json({ error: "authentication required" }, 401);
+        const stored = await readState(env, "reports/dashboard.json");
+        if (!stored.value) return json({ error: "operational report is not ready" }, 503);
+        return json(validateDashboardReport(stored.value));
+      }
       if (request.method === "POST" && url.pathname === "/api/submit") {
         return (
           (await intakeThrottle(env, request, { machine: true })) ??
@@ -1153,6 +1183,9 @@ export default {
         );
       }
       if (request.method === "GET" && url.pathname === "/oauth/callback") {
+        if ((url.searchParams.get("state") ?? "").startsWith("dashboard_")) {
+          return await completeDashboardLogin(request, env);
+        }
         return await completeSubmission(request, env);
       }
       if (request.method === "GET" && url.pathname === "/s") {

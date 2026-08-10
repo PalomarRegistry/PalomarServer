@@ -72,6 +72,31 @@ Push access is not authorship. It does not establish approval from the
 responsible authors of a substantive formalization, and does not replace the
 declaration a submitter makes about that.
 
+## Private operational dashboard
+
+`/dashboard` shows aggregate submission throughput, review-round counts,
+landing distributions, and bounded model-spend distributions. It never reads a
+review or serves a submission id, repository, Comparator path, commit, or
+submitter identity. The State reporting workflow derives
+`reports/dashboard.json` after State changes and hourly as a backstop; the page
+reads that one private file and identifies the exact immutable State
+`submissions/` tree and latest event included, so lag is visible rather than
+disguised as current data.
+
+Dashboard sign-in uses the existing GitHub OAuth application with the additional
+read-only `read:org` scope. The callback requires an active membership in the
+closed `PalomarRegistry/technical-maintainers` team, discards the GitHub token
+immediately, and issues a signed host-only session lasting fifteen minutes.
+Removing a maintainer therefore takes effect no later than that expiry. The
+signature is domain-separated from submission-token digests while reusing the
+existing `TOKEN_PEPPER`; there is no additional secret or durable login store.
+The OAuth state and session cookie both reject duplicates and are never cached.
+
+The machine-readable aggregate is available at `/api/dashboard` under the same
+session. The Server validates that the stored document has the identity-free
+dashboard contract and specifically refuses the complete private report's
+`targets` section.
+
 ## Configuration
 
 Variables live in `wrangler.jsonc`. Secrets are set with `wrangler secret put`
@@ -305,6 +330,12 @@ Before the first deployment against a State repository, commit both files from
 reconciliation validate the contracts before using them; `/healthz` stays a
 network-free configuration check so public monitoring cannot spend the shared
 GitHub API budget.
+
+Do not deploy the dashboard routes until the State reporting change has merged
+and `Refresh private operational report` has successfully created
+`reports/dashboard.json` on State `main`. No OAuth application callback change
+is needed: dashboard and intake both return through the existing
+`/oauth/callback`, and their bound state values are disjoint.
 
 To deploy manually:
 
