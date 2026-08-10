@@ -167,6 +167,7 @@ export async function completeDashboardLogin(request, env) {
     }),
   });
   if (providerFailure(tokenResponse)) {
+    console.error("dashboard-oauth-provider", tokenResponse.status);
     return privateResponse("GitHub sign-in is temporarily unavailable.\n", 503, { "set-cookie": clear });
   }
   let granted;
@@ -180,6 +181,7 @@ export async function completeDashboardLogin(request, env) {
   }
   const user = await githubJson("https://api.github.com/user", granted.access_token);
   if (providerFailure(user.response)) {
+    console.error("dashboard-oauth-user", user.response.status);
     return privateResponse("GitHub sign-in is temporarily unavailable.\n", 503, { "set-cookie": clear });
   }
   const login = user.value?.login;
@@ -191,6 +193,7 @@ export async function completeDashboardLogin(request, env) {
     granted.access_token,
   );
   if (providerFailure(membership.response)) {
+    console.error("dashboard-oauth-membership", membership.response.status);
     return privateResponse("GitHub team authorization is temporarily unavailable.\n", 503, { "set-cookie": clear });
   }
   if (membership.value?.state !== "active") {

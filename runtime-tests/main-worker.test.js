@@ -127,6 +127,44 @@ test("the real Worker rejects legacy and duplicate session cookies before I/O", 
   expect(outbound).not.toHaveBeenCalled();
 });
 
+test("the real Worker signs and accepts one host-only dashboard session", async () => {
+  const outbound = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+    const url = String(input);
+    if (url === "https://github.com/login/oauth/access_token") {
+      return Response.json({ access_token: "runtime-user-token" });
+    }
+    if (url === "https://api.github.com/user") {
+      return Response.json({ login: "maintainer" });
+    }
+    if (url.includes("/teams/technical-maintainers/memberships/maintainer")) {
+      return Response.json({ state: "active", role: "member" });
+    }
+    throw new Error(`unexpected dashboard request ${url}`);
+  });
+
+  const begun = await exports.default.fetch(
+    new Request("https://submit.palomar-registry.org/dashboard/login", {
+      redirect: "manual",
+    }),
+  );
+  expect(begun.status, await begun.clone().text()).toBe(303);
+  const authorize = new URL(begun.headers.get("location"));
+  const oauthCookie = begun.headers.get("set-cookie").split(";", 1)[0];
+  const callback = await exports.default.fetch(new Request(
+    `https://submit.palomar-registry.org/oauth/callback?code=one&state=${authorize.searchParams.get("state")}`,
+    { headers: { cookie: oauthCookie }, redirect: "manual" },
+  ));
+
+  expect(callback.status).toBe(303);
+  expect(callback.headers.get("location")).toBe("/dashboard");
+  const cookies = callback.headers.getSetCookie();
+  expect(cookies).toHaveLength(2);
+  expect(cookies[0]).toContain("Max-Age=0");
+  expect(cookies[1]).toMatch(/^__Host-palomar_dashboard=/);
+  expect(cookies[1]).toContain("HttpOnly; Secure; SameSite=Lax");
+  expect(outbound).toHaveBeenCalledTimes(3);
+});
+
 test("the real callback refuses a planted legacy intake cookie", async () => {
   const nonce = "6".repeat(64);
   const binding = "9".repeat(64);

@@ -346,10 +346,11 @@ reconciliation validate the contracts before using them; `/healthz` stays a
 network-free configuration check so public monitoring cannot spend the shared
 GitHub API budget.
 
-Do not deploy the dashboard routes until the State reporting change has merged
-and `Refresh private operational report` has successfully created
-`reports/dashboard.json` on State `main`. No OAuth application callback change
-is needed: dashboard and intake both return through the existing
+Merge the State reporting change and run `Refresh private operational report`
+to create `reports/dashboard.json` on State `main` before merging this Server
+change. A Server merge deploys automatically; if the report is not ready, the
+authenticated route fails closed with a typed 503 until it appears. No OAuth
+application callback change is needed: dashboard and intake both return through the existing
 `/oauth/callback`, and their bound state values are disjoint.
 
 To deploy manually:

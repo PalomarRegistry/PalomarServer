@@ -93,6 +93,10 @@ async function operationalDashboard(env) {
     if (stored.value === null) return { kind: "missing" };
     return { kind: "ready", value: withDashboardActions(stored.value) };
   } catch (error) {
+    if (error instanceof GitHubError) {
+      console.error("dashboard-provider", error.message);
+      return { kind: "unavailable" };
+    }
     console.error("dashboard-contract", error instanceof Error ? error.message : String(error));
     return { kind: "invalid" };
   }
@@ -1144,6 +1148,9 @@ export default {
         if (report.kind === "invalid") {
           return html(errorPage(env, "The operational report needs repair", []), 503);
         }
+        if (report.kind === "unavailable") {
+          return html(errorPage(env, "The operational report is temporarily unavailable", []), 503);
+        }
         return html(dashboardHtml(report.value, principal));
       }
       if (request.method === "GET" && url.pathname === "/api/dashboard") {
@@ -1155,6 +1162,9 @@ export default {
         const report = await operationalDashboard(env);
         if (report.kind === "missing") return json({ error: "operational report is not ready" }, 503);
         if (report.kind === "invalid") return json({ error: "operational report needs repair" }, 503);
+        if (report.kind === "unavailable") {
+          return json({ error: "operational report is temporarily unavailable" }, 503);
+        }
         return json(report.value);
       }
       if (request.method === "POST" && url.pathname === "/api/submit") {

@@ -392,6 +392,31 @@ test("malformed stored dashboard JSON returns the typed unavailable response", a
 });
 
 
+test("State provider failures are not diagnosed as malformed reports", async () => {
+  const callback = await login(() => {
+    throw new Error("unexpected fetch");
+  });
+  const cookies = callback.headers.getSetCookie?.() ?? [callback.headers.get("set-cookie")];
+  const session = cookies.join(";").match(/__Host-palomar_dashboard=([^;,]+)/)?.[0];
+  const saved = globalThis.fetch;
+  globalThis.fetch = async () => new Response("upstream", { status: 503 });
+  try {
+    const response = await worker.fetch(
+      new Request("https://submit.example/api/dashboard", {
+        headers: { cookie: session, "sec-fetch-site": "same-origin" },
+      }),
+      ENV,
+    );
+    assert.equal(response.status, 503);
+    assert.deepEqual(await response.json(), {
+      error: "operational report is temporarily unavailable",
+    });
+  } finally {
+    globalThis.fetch = saved;
+  }
+});
+
+
 test("parallel dashboard OAuth starts use different host-only cookies", async () => {
   const first = await worker.fetch(new Request("https://submit.example/dashboard/login"), ENV);
   const second = await worker.fetch(new Request("https://submit.example/dashboard/login"), ENV);
