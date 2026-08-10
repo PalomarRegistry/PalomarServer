@@ -136,6 +136,11 @@ async function githubJson(url, token, init = {}) {
 }
 
 
+function providerFailure(response) {
+  return response.status === 403 || response.status === 429 || response.status >= 500;
+}
+
+
 export async function completeDashboardLogin(request, env) {
   const url = new URL(request.url);
   const state = url.searchParams.get("state") ?? "";
@@ -161,11 +166,22 @@ export async function completeDashboardLogin(request, env) {
       code: url.searchParams.get("code"),
     }),
   });
-  const granted = await tokenResponse.json();
+  if (providerFailure(tokenResponse)) {
+    return privateResponse("GitHub sign-in is temporarily unavailable.\n", 503, { "set-cookie": clear });
+  }
+  let granted;
+  try {
+    granted = await tokenResponse.json();
+  } catch {
+    return privateResponse("GitHub sign-in is temporarily unavailable.\n", 503, { "set-cookie": clear });
+  }
   if (!granted?.access_token) {
     return privateResponse("GitHub declined that sign-in.\n", 403, { "set-cookie": clear });
   }
   const user = await githubJson("https://api.github.com/user", granted.access_token);
+  if (providerFailure(user.response)) {
+    return privateResponse("GitHub sign-in is temporarily unavailable.\n", 503, { "set-cookie": clear });
+  }
   const login = user.value?.login;
   if (typeof login !== "string") {
     return privateResponse("GitHub did not identify that account.\n", 403, { "set-cookie": clear });
@@ -174,6 +190,9 @@ export async function completeDashboardLogin(request, env) {
     `https://api.github.com/orgs/${ORG}/teams/${TEAM}/memberships/${encodeURIComponent(login)}`,
     granted.access_token,
   );
+  if (providerFailure(membership.response)) {
+    return privateResponse("GitHub team authorization is temporarily unavailable.\n", 503, { "set-cookie": clear });
+  }
   if (membership.value?.state !== "active") {
     return privateResponse(
       "This dashboard is limited to Palomar Technical Maintainers.\n",

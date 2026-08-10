@@ -88,9 +88,9 @@ function json(value, status = 200, extra = {}) {
 }
 
 async function operationalDashboard(env) {
-  const stored = await readState(env, "reports/dashboard.json");
-  if (!stored.value) return { kind: "missing" };
   try {
+    const stored = await readState(env, "reports/dashboard.json");
+    if (stored.value === null) return { kind: "missing" };
     return { kind: "ready", value: withDashboardActions(stored.value) };
   } catch (error) {
     console.error("dashboard-contract", error instanceof Error ? error.message : String(error));

@@ -10,8 +10,9 @@ const PRICE_SCHEDULE = "gpt-5.6-sol-2026-08-10";
 const DEFINITIONS = {
   submission: "one durable submissions/<id>/state.json record",
   round: "one completed spend item; started rounds are reported separately",
-  target: "case-folded repository plus normalized comparator configuration path",
+  target: "case-folded repository plus normalized comparator configuration path; aggregate target metrics exclude historical rows without complete target identity",
   landed: "a submission with a registered event",
+  pricing: "official https://developers.openai.com/api/docs/models/gpt-5.6-sol; broker estimates are not billing authority",
 };
 const COST_BINS = [
   ["$0–$1", 0, 1],
@@ -119,6 +120,7 @@ function spend(value) {
   exactKeys(value, [
     "count",
     "ambiguous_count",
+    "partial_count",
     "lower",
     "upper",
     "total_lower_usd",
@@ -127,7 +129,9 @@ function spend(value) {
   ]);
   number(value.count, { integer: true });
   number(value.ambiguous_count, { integer: true });
+  number(value.partial_count, { integer: true });
   if (value.ambiguous_count > value.count) fail();
+  if (value.partial_count > value.count) fail();
   stats(value.lower);
   stats(value.upper);
   if (value.lower.count !== value.count || value.upper.count !== value.count) fail();
@@ -157,9 +161,10 @@ function escapedNumber(value) {
 
 function money(block) {
   if (!block.count) return "No priced observations";
+  const partial = block.partial_count ? `; ${escapeHtml(block.partial_count)} partial` : "";
   return `$${escapeHtml(block.lower.mean.toFixed(2))}–$${escapeHtml(block.upper.mean.toFixed(2))} mean; ` +
     `$${escapeHtml(block.total_lower_usd.toFixed(2))}–$${escapeHtml(block.total_upper_usd.toFixed(2))} ` +
-    `total over ${escapeHtml(block.count)} priced observations`;
+    `total over ${escapeHtml(block.count)} priced observations${partial}`;
 }
 
 
@@ -215,9 +220,10 @@ export function dashboardHtml(report, login) {
 <p><small>Aggregate private data from State snapshot <code>${escapeHtml(report.source.state_revision)}</code>; latest included event ${escapeHtml(report.source.latest_event_at ?? "none")}.</small></p>
 <section class="cards">
 <div class="card"><div class="number">${escapedNumber(totals.submissions)}</div>submissions<br>${escapedNumber(totals.submissions_landed)} landed; ${escapedNumber(totals.submissions_active)} active</div>
-<div class="card"><div class="number">${escapedNumber(totals.targets)}</div>targets<br>${escapedNumber(totals.targets_landed)} landed</div>
+<div class="card"><div class="number">${escapedNumber(totals.targets)}</div>targets<br>${escapedNumber(totals.targets_landed)} landed; ${escapedNumber(totals.submissions_target_identity_incomplete)} historical submissions excluded</div>
 <div class="card"><div class="number">${escapedNumber(totals.review_rounds_completed)}</div>completed review rounds<br>${escapedNumber(totals.review_rounds_unpriced)} unpriced</div>
 </section>
+${totals.landed_targets_attempt_history_incomplete ? `<p><small>Retry history is omitted for ${escapedNumber(totals.landed_targets_attempt_history_incomplete)} landed target(s) with incomplete historical identity.</small></p>` : ""}
 <h2>Model spend</h2><ul>
 <li>Per completed round: ${money(report.model_spend.per_round)}</li>
 <li>Per reviewed submission: ${money(report.model_spend.per_submission_with_review)}</li>
@@ -255,7 +261,7 @@ export function validateDashboardReport(report) {
   timestamp(report.source.latest_event_at, true);
   exactText(report.source.pricing_schedule, PRICE_SCHEDULE);
 
-  exactKeys(report.definitions, ["submission", "round", "target", "landed"]);
+  exactKeys(report.definitions, ["submission", "round", "target", "landed", "pricing"]);
   for (const [key, value] of Object.entries(DEFINITIONS)) exactText(report.definitions[key], value);
 
   exactKeys(report.totals, [
@@ -264,9 +270,13 @@ export function validateDashboardReport(report) {
     "submissions_not_landed",
     "submissions_active",
     "submissions_terminal_unlanded",
+    "submissions_target_identity_incomplete",
+    "submissions_review_attempts_inconsistent",
     "targets",
     "targets_landed",
     "targets_not_landed",
+    "landed_targets_round_timing_incomplete",
+    "landed_targets_attempt_history_incomplete",
     "review_rounds_started",
     "review_rounds_completed",
     "review_rounds_priced",

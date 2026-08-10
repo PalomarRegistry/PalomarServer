@@ -103,8 +103,10 @@ the OAuth landing page itself remains a top-level cross-site navigation.
 The machine-readable aggregate is available at `/api/dashboard` under the same
 session. The Server validates that the stored document has the identity-free
 dashboard contract with an exact field-name allowlist and deep value shapes,
-rather than trying to spot a few forbidden identity fields. The page and API
-also link moderators to the
+instead of trying to spot a few forbidden identity fields. The contract is
+tested against an aggregate fixture emitted by the State producer, so a
+producer/consumer contract change cannot be represented only by hand-written
+Server test data. The page and API also link moderators to the
 private Database issue-form chooser for takedown and restoration work, and to
 Database issue #123 while the direct forms are being implemented. Those links
 are operator conveniences, not State data; once #123 fixes the template names,

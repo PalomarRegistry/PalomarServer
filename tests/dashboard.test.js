@@ -38,6 +38,7 @@ function spendBlock(count, lower, upper) {
   return {
     count,
     ambiguous_count: lower === upper ? 0 : count,
+    partial_count: 0,
     lower: stats(lower),
     upper: stats(upper),
     total_lower_usd: count * lower,
@@ -63,8 +64,9 @@ const REPORT = {
   definitions: {
     submission: "one durable submissions/<id>/state.json record",
     round: "one completed spend item; started rounds are reported separately",
-    target: "case-folded repository plus normalized comparator configuration path",
+    target: "case-folded repository plus normalized comparator configuration path; aggregate target metrics exclude historical rows without complete target identity",
     landed: "a submission with a registered event",
+    pricing: "official https://developers.openai.com/api/docs/models/gpt-5.6-sol; broker estimates are not billing authority",
   },
   totals: {
     submissions: 4,
@@ -72,9 +74,13 @@ const REPORT = {
     submissions_not_landed: 3,
     submissions_active: 1,
     submissions_terminal_unlanded: 2,
+    submissions_target_identity_incomplete: 1,
+    submissions_review_attempts_inconsistent: 0,
     targets: 2,
     targets_landed: 1,
     targets_not_landed: 1,
+    landed_targets_round_timing_incomplete: 0,
+    landed_targets_attempt_history_incomplete: 1,
     review_rounds_started: 3,
     review_rounds_completed: 3,
     review_rounds_priced: 3,
@@ -123,18 +129,18 @@ function inline(value) {
 }
 
 
-async function login(fetchImpl, membership = "active") {
+async function login(fetchImpl, membership = "active", provider = {}) {
   const saved = globalThis.fetch;
   globalThis.fetch = async (url, init = {}) => {
     const text = String(url);
     if (text === "https://github.com/login/oauth/access_token") {
-      return Response.json({ access_token: "ephemeral-user-token" });
+      return provider.token ?? Response.json({ access_token: "ephemeral-user-token" });
     }
     if (text === "https://api.github.com/user") {
-      return Response.json({ login: "maintainer" });
+      return provider.user ?? Response.json({ login: "maintainer" });
     }
     if (text.includes("/teams/technical-maintainers/memberships/maintainer")) {
-      return Response.json({ state: membership, role: "member" });
+      return provider.membership ?? Response.json({ state: membership, role: "member" });
     }
     return fetchImpl(url, init);
   };
@@ -177,6 +183,25 @@ test("nonmembers receive no dashboard session", async () => {
   }, "pending");
   assert.equal(callback.status, 403);
   assert.doesNotMatch(callback.headers.get("set-cookie") ?? "", /__Host-palomar_dashboard=[^.]/);
+});
+
+
+test("GitHub provider failures are temporary service errors, not membership refusals", async () => {
+  const userFailure = await login(
+    () => { throw new Error("unexpected fetch"); },
+    "active",
+    { user: new Response("down", { status: 503 }) },
+  );
+  assert.equal(userFailure.status, 503);
+  assert.match(await userFailure.text(), /temporarily unavailable/);
+
+  const membershipFailure = await login(
+    () => { throw new Error("unexpected fetch"); },
+    "active",
+    { membership: new Response("rate", { status: 429 }) },
+  );
+  assert.equal(membershipFailure.status, 503);
+  assert.match(await membershipFailure.text(), /temporarily unavailable/);
 });
 
 
@@ -265,6 +290,19 @@ test("aggregate contract rejects accidental target identities", () => {
 });
 
 
+test("the exact State-produced aggregate fixture satisfies the consumer contract", async () => {
+  const text = await readFile(
+    new URL("fixtures/state-dashboard.json", import.meta.url),
+    "utf8",
+  );
+  const fixture = JSON.parse(text);
+  assert.doesNotThrow(() => validateDashboardReport(fixture));
+  assert.equal(Object.hasOwn(fixture, "targets"), false);
+  assert.equal(Object.hasOwn(fixture, "submissions"), false);
+  assert.equal(fixture.source.state_revision, `submissions-tree:${"3c13456937bf73c97fcf98c9952a96f2a048422d"}`);
+});
+
+
 test("machine dashboard includes only aggregate data and stable operator links", async () => {
   const callback = await login(() => {
     throw new Error("unexpected fetch");
@@ -331,6 +369,29 @@ test("machine dashboard requires same-origin and reports malformed aggregates as
 });
 
 
+test("malformed stored dashboard JSON returns the typed unavailable response", async () => {
+  const callback = await login(() => {
+    throw new Error("unexpected fetch");
+  });
+  const cookies = callback.headers.getSetCookie?.() ?? [callback.headers.get("set-cookie")];
+  const session = cookies.join(";").match(/__Host-palomar_dashboard=([^;,]+)/)?.[0];
+  const saved = globalThis.fetch;
+  globalThis.fetch = async () => Response.json({ content: btoa("{"), sha: "b".repeat(40) });
+  try {
+    const response = await worker.fetch(
+      new Request("https://submit.example/api/dashboard", {
+        headers: { cookie: session, "sec-fetch-site": "same-origin" },
+      }),
+      ENV,
+    );
+    assert.equal(response.status, 503);
+    assert.deepEqual(await response.json(), { error: "operational report needs repair" });
+  } finally {
+    globalThis.fetch = saved;
+  }
+});
+
+
 test("parallel dashboard OAuth starts use different host-only cookies", async () => {
   const first = await worker.fetch(new Request("https://submit.example/dashboard/login"), ENV);
   const second = await worker.fetch(new Request("https://submit.example/dashboard/login"), ENV);
@@ -390,11 +451,13 @@ test("expired, tampered, and ambiguous dashboard sessions fail before State I/O"
     assert.equal(expired.status, 401);
     Date.now = savedNow;
 
-    const replacement = signedValue.endsWith("A") ? "B" : "A";
+    const [signedBody, signature] = signedValue.split(".");
+    const replacement = signature.startsWith("A") ? "B" : "A";
+    const tamperedValue = `${signedBody}.${replacement}${signature.slice(1)}`;
     const tampered = await worker.fetch(
       new Request("https://submit.example/api/dashboard", {
         headers: {
-          cookie: `__Host-palomar_dashboard=${signedValue.slice(0, -1)}${replacement}`,
+          cookie: `__Host-palomar_dashboard=${tamperedValue}`,
           "sec-fetch-site": "same-origin",
         },
       }),

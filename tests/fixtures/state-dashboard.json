@@ -1,0 +1,299 @@
+{
+  "cost_model": {
+    "completed_review_rounds": 6,
+    "mean_model_usd_per_review_round_lower": 1.981243,
+    "mean_model_usd_per_review_round_upper": 2.538012,
+    "priced_review_rounds": 6,
+    "pricing_schedule": "gpt-5.6-sol-2026-08-10",
+    "schema_version": 1,
+    "state_revision": "submissions-tree:3c13456937bf73c97fcf98c9952a96f2a048422d"
+  },
+  "definitions": {
+    "landed": "a submission with a registered event",
+    "pricing": "official https://developers.openai.com/api/docs/models/gpt-5.6-sol; broker estimates are not billing authority",
+    "round": "one completed spend item; started rounds are reported separately",
+    "submission": "one durable submissions/<id>/state.json record",
+    "target": "case-folded repository plus normalized comparator configuration path; aggregate target metrics exclude historical rows without complete target identity"
+  },
+  "distributions": {
+    "failed_or_abandoned_attempts_before_first_land_per_landed_target": [],
+    "review_rounds_completed_per_submission": [
+      {
+        "count": 6,
+        "value": 0
+      },
+      {
+        "count": 4,
+        "value": 1
+      },
+      {
+        "count": 1,
+        "value": 2
+      }
+    ],
+    "review_rounds_to_first_land_per_landed_target": [],
+    "submission_attempts_to_first_land_per_landed_target": []
+  },
+  "latency_seconds": {
+    "creation_to_first_land": {
+      "count": 1,
+      "max": 3075.0,
+      "mean": 3075.0,
+      "median": 3075.0,
+      "min": 3075.0
+    },
+    "creation_to_review_ready": {
+      "count": 5,
+      "max": 2762.0,
+      "mean": 1614.8,
+      "median": 1431.0,
+      "min": 1180.0
+    },
+    "creation_to_terminal": {
+      "count": 10,
+      "max": 12547.0,
+      "mean": 2893.9,
+      "median": 1458.5,
+      "min": 78.0
+    },
+    "creation_to_verification_success": {
+      "count": 7,
+      "max": 1108.0,
+      "mean": 867.0,
+      "median": 1014.0,
+      "min": 58.0
+    }
+  },
+  "model_spend": {
+    "per_round": {
+      "ambiguous_count": 3,
+      "count": 6,
+      "histogram": [
+        {
+          "definite_count": 0,
+          "label": "$0\u2013$1",
+          "lower_usd": 0,
+          "possible_count": 0,
+          "upper_usd": 1
+        },
+        {
+          "definite_count": 3,
+          "label": "$1\u2013$2",
+          "lower_usd": 1,
+          "possible_count": 4,
+          "upper_usd": 2
+        },
+        {
+          "definite_count": 0,
+          "label": "$2\u2013$3",
+          "lower_usd": 2,
+          "possible_count": 3,
+          "upper_usd": 3
+        },
+        {
+          "definite_count": 0,
+          "label": "$3\u2013$5",
+          "lower_usd": 3,
+          "possible_count": 2,
+          "upper_usd": 5
+        },
+        {
+          "definite_count": 0,
+          "label": "$5\u2013$10",
+          "lower_usd": 5,
+          "possible_count": 0,
+          "upper_usd": 10
+        },
+        {
+          "definite_count": 0,
+          "label": "$10+",
+          "lower_usd": 10,
+          "possible_count": 0,
+          "upper_usd": null
+        }
+      ],
+      "lower": {
+        "count": 6,
+        "max": 2.419667,
+        "mean": 1.981243,
+        "median": 1.884943,
+        "min": 1.468699
+      },
+      "partial_count": 0,
+      "total_lower_usd": 11.887459,
+      "total_upper_usd": 15.228069,
+      "upper": {
+        "count": 6,
+        "max": 3.769966,
+        "mean": 2.538012,
+        "median": 2.211152,
+        "min": 1.468699
+      }
+    },
+    "per_submission_with_review": {
+      "ambiguous_count": 2,
+      "count": 5,
+      "histogram": [
+        {
+          "definite_count": 0,
+          "label": "$0\u2013$1",
+          "lower_usd": 0,
+          "possible_count": 0,
+          "upper_usd": 1
+        },
+        {
+          "definite_count": 3,
+          "label": "$1\u2013$2",
+          "lower_usd": 1,
+          "possible_count": 3,
+          "upper_usd": 2
+        },
+        {
+          "definite_count": 0,
+          "label": "$2\u2013$3",
+          "lower_usd": 2,
+          "possible_count": 1,
+          "upper_usd": 3
+        },
+        {
+          "definite_count": 0,
+          "label": "$3\u2013$5",
+          "lower_usd": 3,
+          "possible_count": 2,
+          "upper_usd": 5
+        },
+        {
+          "definite_count": 0,
+          "label": "$5\u2013$10",
+          "lower_usd": 5,
+          "possible_count": 1,
+          "upper_usd": 10
+        },
+        {
+          "definite_count": 0,
+          "label": "$10+",
+          "lower_usd": 10,
+          "possible_count": 0,
+          "upper_usd": null
+        }
+      ],
+      "lower": {
+        "count": 5,
+        "max": 4.330152,
+        "mean": 2.377492,
+        "median": 1.859401,
+        "min": 1.468699
+      },
+      "partial_count": 0,
+      "total_lower_usd": 11.887459,
+      "total_upper_usd": 15.228069,
+      "upper": {
+        "count": 5,
+        "max": 6.332871,
+        "mean": 3.045614,
+        "median": 1.859401,
+        "min": 1.468699
+      }
+    },
+    "per_target_with_review": {
+      "ambiguous_count": 0,
+      "count": 2,
+      "histogram": [
+        {
+          "definite_count": 0,
+          "label": "$0\u2013$1",
+          "lower_usd": 0,
+          "possible_count": 0,
+          "upper_usd": 1
+        },
+        {
+          "definite_count": 1,
+          "label": "$1\u2013$2",
+          "lower_usd": 1,
+          "possible_count": 1,
+          "upper_usd": 2
+        },
+        {
+          "definite_count": 0,
+          "label": "$2\u2013$3",
+          "lower_usd": 2,
+          "possible_count": 0,
+          "upper_usd": 3
+        },
+        {
+          "definite_count": 1,
+          "label": "$3\u2013$5",
+          "lower_usd": 3,
+          "possible_count": 1,
+          "upper_usd": 5
+        },
+        {
+          "definite_count": 0,
+          "label": "$5\u2013$10",
+          "lower_usd": 5,
+          "possible_count": 0,
+          "upper_usd": 10
+        },
+        {
+          "definite_count": 0,
+          "label": "$10+",
+          "lower_usd": 10,
+          "possible_count": 0,
+          "upper_usd": null
+        }
+      ],
+      "lower": {
+        "count": 2,
+        "max": 3.328099,
+        "mean": 2.56994,
+        "median": 2.56994,
+        "min": 1.811781
+      },
+      "partial_count": 0,
+      "total_lower_usd": 5.139881,
+      "total_upper_usd": 5.139881,
+      "upper": {
+        "count": 2,
+        "max": 3.328099,
+        "mean": 2.56994,
+        "median": 2.56994,
+        "min": 1.811781
+      }
+    }
+  },
+  "rates": {
+    "landed_per_submission": 0.090909,
+    "landed_per_target": 0.333333,
+    "landed_per_terminal_submission": 0.1
+  },
+  "schema_version": 1,
+  "source": {
+    "latest_event_at": "2026-08-10T03:17:22Z",
+    "pricing_schedule": "gpt-5.6-sol-2026-08-10",
+    "state_revision": "submissions-tree:3c13456937bf73c97fcf98c9952a96f2a048422d"
+  },
+  "submission_statuses": {
+    "registered": 1,
+    "review-ready": 1,
+    "verification-failed": 4,
+    "withdrawn": 5
+  },
+  "totals": {
+    "landed_targets_attempt_history_incomplete": 1,
+    "landed_targets_round_timing_incomplete": 0,
+    "review_rounds_completed": 6,
+    "review_rounds_priced": 6,
+    "review_rounds_started": 8,
+    "review_rounds_unpriced": 0,
+    "submissions": 11,
+    "submissions_active": 1,
+    "submissions_landed": 1,
+    "submissions_not_landed": 10,
+    "submissions_review_attempts_inconsistent": 0,
+    "submissions_target_identity_incomplete": 3,
+    "submissions_terminal_unlanded": 9,
+    "targets": 3,
+    "targets_landed": 1,
+    "targets_not_landed": 2
+  }
+}
