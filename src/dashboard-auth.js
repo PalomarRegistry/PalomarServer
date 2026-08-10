@@ -1,5 +1,7 @@
 /** Short-lived GitHub-team authorization for the private dashboard. */
 
+import { SECURITY_HEADERS } from "./response-security.js";
+
 const SESSION_COOKIE = "__Host-palomar_dashboard";
 const TEAM = "technical-maintainers";
 const ORG = "PalomarRegistry";
@@ -91,9 +93,8 @@ function privateResponse(body, status, headers = {}) {
   return new Response(body, {
     status,
     headers: {
+      ...SECURITY_HEADERS,
       "content-type": "text/plain; charset=utf-8",
-      "cache-control": "no-store",
-      "x-content-type-options": "nosniff",
       ...headers,
     },
   });
@@ -112,9 +113,8 @@ export async function beginDashboardLogin(request, env) {
   return new Response(null, {
     status: 303,
     headers: {
+      ...SECURITY_HEADERS,
       location: authorize.toString(),
-      "cache-control": "no-store",
-      "x-content-type-options": "nosniff",
       "set-cookie": setCookie(oauthCookieName(nonce), binding, 600, "Lax"),
     },
   });
@@ -184,8 +184,7 @@ export async function completeDashboardLogin(request, env) {
   // The GitHub token is deliberately not retained. Team removal takes effect
   // no later than this short session's expiry.
   const session = await signed(env, { kind: "session", login, expires: Date.now() + 15 * 60_000 });
-  const headers = new Headers({ location: "/dashboard", "cache-control": "no-store" });
-  headers.set("x-content-type-options", "nosniff");
+  const headers = new Headers({ ...SECURITY_HEADERS, location: "/dashboard" });
   headers.append("set-cookie", clear);
   // Lax is required for the top-level navigation back from GitHub OAuth.
   headers.append("set-cookie", setCookie(SESSION_COOKIE, session, 900, "Lax"));

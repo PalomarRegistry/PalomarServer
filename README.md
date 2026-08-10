@@ -78,7 +78,7 @@ declaration a submitter makes about that.
 landing distributions, and bounded model-spend distributions. It never reads a
 review or serves a submission id, repository, Comparator path, commit, or
 submitter identity. The State reporting workflow derives
-`reports/dashboard.json` after State changes and hourly as a backstop; the page
+`reports/dashboard.json` in a daily or manually dispatched full sweep; the page
 reads that one private file and identifies the exact immutable State
 `submissions/` tree and latest event included, so lag is visible rather than
 disguised as current data.
@@ -94,12 +94,17 @@ Removing a maintainer therefore takes effect no later than that expiry. The
 signature is domain-separated from submission-token digests while reusing the
 existing `TOKEN_PEPPER`; there is no additional secret or durable login store.
 The OAuth state and session cookie both reject duplicates and are never cached.
+Dashboard OAuth initiation and callback share the intake address limiter, so an
+unauthenticated loop cannot turn into unbounded GitHub token exchanges. Every
+dynamic OAuth response carries the same no-referrer and security headers as the
+rest of the Server. The API additionally requires a same-origin browser request;
+the OAuth landing page itself remains a top-level cross-site navigation.
 
 The machine-readable aggregate is available at `/api/dashboard` under the same
 session. The Server validates that the stored document has the identity-free
 dashboard contract with an exact field-name allowlist and deep value shapes,
-rather than trying to spot a
-few forbidden identity fields. The page and API also link moderators to the
+rather than trying to spot a few forbidden identity fields. The page and API
+also link moderators to the
 private Database issue-form chooser for takedown and restoration work, and to
 Database issue #123 while the direct forms are being implemented. Those links
 are operator conveniences, not State data; once #123 fixes the template names,
@@ -112,7 +117,7 @@ and never appear in the repository:
 
 | Secret | What it is | Reach |
 | --- | --- | --- |
-| `OAUTH_CLIENT_ID` | GitHub OAuth App client id, for the push-access check | — |
+| `OAUTH_CLIENT_ID` | GitHub OAuth App client id, for submission push-access and dashboard team checks | — |
 | `OAUTH_CLIENT_SECRET` | its client secret | — |
 | `GITHUB_TOKEN` | reads and atomically advances submission State, asks the reviewer to run, and reads public repository metadata for the repository being submitted | `PalomarSubmissionState`, contents and actions, plus public reads |
 | `SUBMISSION_TOKEN` | starts and reads verification runs, and reads the submitter's public ref and gist while checking a proof | `PalomarSubmission`, actions, plus public reads |

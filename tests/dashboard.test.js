@@ -27,6 +27,14 @@ const ENV = {
 
 function spendBlock(count, lower, upper) {
   const stats = (value) => ({ count, min: value, mean: value, median: value, max: value });
+  const bins = [
+    ["$0–$1", 0, 1],
+    ["$1–$2", 1, 2],
+    ["$2–$3", 2, 3],
+    ["$3–$5", 3, 5],
+    ["$5–$10", 5, 10],
+    ["$10+", 10, null],
+  ];
   return {
     count,
     ambiguous_count: lower === upper ? 0 : count,
@@ -34,13 +42,13 @@ function spendBlock(count, lower, upper) {
     upper: stats(upper),
     total_lower_usd: count * lower,
     total_upper_usd: count * upper,
-    histogram: [{
-      label: "$1–$10",
-      lower_usd: 1,
-      upper_usd: 10,
-      definite_count: count,
-      possible_count: count,
-    }],
+    histogram: bins.map(([label, lowerUsd, upperUsd]) => ({
+      label,
+      lower_usd: lowerUsd,
+      upper_usd: upperUsd,
+      definite_count: lower >= lowerUsd && (upperUsd === null || upper < upperUsd) ? count : 0,
+      possible_count: upper >= lowerUsd && (upperUsd === null || lower < upperUsd) ? count : 0,
+    })),
   };
 }
 
@@ -48,15 +56,15 @@ function spendBlock(count, lower, upper) {
 const REPORT = {
   schema_version: 1,
   source: {
-    state_revision: "a".repeat(40),
+    state_revision: `submissions-tree:${"a".repeat(40)}`,
     latest_event_at: "2026-08-10T00:00:00Z",
-    pricing_schedule: "test",
+    pricing_schedule: "gpt-5.6-sol-2026-08-10",
   },
   definitions: {
-    submission: "one record",
-    round: "one spend item",
-    target: "repository and comparator path",
-    landed: "registered",
+    submission: "one durable submissions/<id>/state.json record",
+    round: "one completed spend item; started rounds are reported separately",
+    target: "case-folded repository plus normalized comparator configuration path",
+    landed: "a submission with a registered event",
   },
   totals: {
     submissions: 4,
@@ -97,8 +105,8 @@ const REPORT = {
   },
   cost_model: {
     schema_version: 1,
-    state_revision: "a".repeat(40),
-    pricing_schedule: "test",
+    state_revision: `submissions-tree:${"a".repeat(40)}`,
+    pricing_schedule: "gpt-5.6-sol-2026-08-10",
     completed_review_rounds: 3,
     priced_review_rounds: 3,
     mean_model_usd_per_review_round_lower: 1,
@@ -133,6 +141,7 @@ async function login(fetchImpl, membership = "active") {
   try {
     const begun = await worker.fetch(new Request("https://submit.example/dashboard/login"), ENV);
     assert.equal(begun.status, 303);
+    assert.equal(begun.headers.get("referrer-policy"), "no-referrer");
     const authorize = new URL(begun.headers.get("location"));
     assert.equal(authorize.searchParams.get("scope"), "read:user read:org");
     const oauthCookie = begun.headers.get("set-cookie").split(";", 1)[0];
@@ -156,6 +165,7 @@ test("dashboard login authorizes the exact active Technical Maintainers team", a
   });
   assert.equal(callback.status, 303);
   assert.equal(callback.headers.get("location"), "/dashboard");
+  assert.equal(callback.headers.get("referrer-policy"), "no-referrer");
   assert.match(callback.headers.get("set-cookie"), /__Host-palomar_dashboard=/);
   assert.match(callback.headers.get("set-cookie"), /SameSite=Lax/);
 });
@@ -167,6 +177,38 @@ test("nonmembers receive no dashboard session", async () => {
   }, "pending");
   assert.equal(callback.status, 403);
   assert.doesNotMatch(callback.headers.get("set-cookie") ?? "", /__Host-palomar_dashboard=[^.]/);
+});
+
+
+test("dashboard OAuth entry and callback are address-throttled before provider I/O", async () => {
+  const blocked = { ...ENV, INTAKE_LIMITER: { limit: async () => ({ success: false }) } };
+  const saved = globalThis.fetch;
+  globalThis.fetch = async () => {
+    throw new Error("throttled dashboard OAuth must not reach GitHub");
+  };
+  try {
+    const loginResponse = await worker.fetch(
+      new Request("https://submit.example/dashboard/login"),
+      blocked,
+    );
+    assert.equal(loginResponse.status, 429);
+    const callbackResponse = await worker.fetch(
+      new Request(`https://submit.example/oauth/callback?code=x&state=dashboard_${"a".repeat(43)}`),
+      blocked,
+    );
+    assert.equal(callbackResponse.status, 429);
+  } finally {
+    globalThis.fetch = saved;
+  }
+});
+
+
+test("unauthenticated dashboard navigation redirects with the shared security headers", async () => {
+  const response = await worker.fetch(new Request("https://submit.example/dashboard"), ENV);
+  assert.equal(response.status, 303);
+  assert.equal(response.headers.get("location"), "/dashboard/login");
+  assert.equal(response.headers.get("referrer-policy"), "no-referrer");
+  assert.match(response.headers.get("content-security-policy"), /default-src 'none'/);
 });
 
 
@@ -233,17 +275,18 @@ test("machine dashboard includes only aggregate data and stable operator links",
   globalThis.fetch = async () => Response.json(inline(REPORT));
   try {
     const response = await worker.fetch(
-      new Request("https://submit.example/api/dashboard", { headers: { cookie: session } }),
+      new Request("https://submit.example/api/dashboard", {
+        headers: { cookie: session, "sec-fetch-site": "same-origin" },
+      }),
       ENV,
     );
     assert.equal(response.status, 200);
     const body = await response.json();
     assert.equal(body.operator_actions.status, "issue-chooser-fallback");
     assert.equal(
-      body.operator_actions.take_down_version,
+      body.operator_actions.issue_chooser,
       "https://github.com/PalomarRegistry/PalomarDatabase/issues/new/choose",
     );
-    assert.equal(body.operator_actions.restore_version, body.operator_actions.take_down_version);
     assert.equal(
       body.operator_actions.workflow_status,
       "https://github.com/PalomarRegistry/PalomarDatabase/issues/123",
@@ -251,6 +294,37 @@ test("machine dashboard includes only aggregate data and stable operator links",
     assert.match(body.operator_actions.note, /issue-form chooser/);
     assert.equal(Object.hasOwn(body, "targets"), false);
     assert.equal(Object.hasOwn(body, "submissions"), false);
+  } finally {
+    globalThis.fetch = saved;
+  }
+});
+
+
+test("machine dashboard requires same-origin and reports malformed aggregates as JSON", async () => {
+  const callback = await login(() => {
+    throw new Error("unexpected fetch");
+  });
+  const cookies = callback.headers.getSetCookie?.() ?? [callback.headers.get("set-cookie")];
+  const session = cookies.join(";").match(/__Host-palomar_dashboard=([^;,]+)/)?.[0];
+  const saved = globalThis.fetch;
+  globalThis.fetch = async () => Response.json(inline({ ...REPORT, owner_login: "maintainer" }));
+  try {
+    const crossSite = await worker.fetch(
+      new Request("https://submit.example/api/dashboard", {
+        headers: { cookie: session, "sec-fetch-site": "cross-site" },
+      }),
+      ENV,
+    );
+    assert.equal(crossSite.status, 403);
+
+    const malformed = await worker.fetch(
+      new Request("https://submit.example/api/dashboard", {
+        headers: { cookie: session, "sec-fetch-site": "same-origin" },
+      }),
+      ENV,
+    );
+    assert.equal(malformed.status, 503);
+    assert.deepEqual(await malformed.json(), { error: "operational report needs repair" });
   } finally {
     globalThis.fetch = saved;
   }
@@ -277,7 +351,10 @@ test("an OAuth binding cannot be replayed as a dashboard session", async () => {
   try {
     const response = await worker.fetch(
       new Request("https://submit.example/api/dashboard", {
-        headers: { cookie: `__Host-palomar_dashboard=${binding}` },
+        headers: {
+          cookie: `__Host-palomar_dashboard=${binding}`,
+          "sec-fetch-site": "same-origin",
+        },
       }),
       ENV,
     );
@@ -305,7 +382,9 @@ test("expired, tampered, and ambiguous dashboard sessions fail before State I/O"
     const expiredAt = savedNow() + 16 * 60_000;
     Date.now = () => expiredAt;
     const expired = await worker.fetch(
-      new Request("https://submit.example/api/dashboard", { headers: { cookie: sessionPair } }),
+      new Request("https://submit.example/api/dashboard", {
+        headers: { cookie: sessionPair, "sec-fetch-site": "same-origin" },
+      }),
       ENV,
     );
     assert.equal(expired.status, 401);
@@ -314,7 +393,10 @@ test("expired, tampered, and ambiguous dashboard sessions fail before State I/O"
     const replacement = signedValue.endsWith("A") ? "B" : "A";
     const tampered = await worker.fetch(
       new Request("https://submit.example/api/dashboard", {
-        headers: { cookie: `__Host-palomar_dashboard=${signedValue.slice(0, -1)}${replacement}` },
+        headers: {
+          cookie: `__Host-palomar_dashboard=${signedValue.slice(0, -1)}${replacement}`,
+          "sec-fetch-site": "same-origin",
+        },
       }),
       ENV,
     );
@@ -322,7 +404,10 @@ test("expired, tampered, and ambiguous dashboard sessions fail before State I/O"
 
     const ambiguous = await worker.fetch(
       new Request("https://submit.example/api/dashboard", {
-        headers: { cookie: `${sessionPair}; __Host-palomar_dashboard=${signedValue}` },
+        headers: {
+          cookie: `${sessionPair}; __Host-palomar_dashboard=${signedValue}`,
+          "sec-fetch-site": "same-origin",
+        },
       }),
       ENV,
     );
@@ -330,7 +415,10 @@ test("expired, tampered, and ambiguous dashboard sessions fail before State I/O"
 
     const wrongCase = await worker.fetch(
       new Request("https://submit.example/api/dashboard", {
-        headers: { cookie: `__host-palomar_dashboard=${signedValue}` },
+        headers: {
+          cookie: `__host-palomar_dashboard=${signedValue}`,
+          "sec-fetch-site": "same-origin",
+        },
       }),
       ENV,
     );

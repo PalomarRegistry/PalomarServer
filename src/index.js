@@ -64,26 +64,10 @@ import {
   dashboardPrincipal,
 } from "./dashboard-auth.js";
 import { dashboardHtml, withDashboardActions } from "./dashboard.js";
+import { SECURITY_HEADERS } from "./response-security.js";
 // One vocabulary for "this submission has stopped moving", shared with the
 // status page, which asks a slightly different question of the same words.
 import { CLOSED } from "../public/statuses.js";
-
-const SECURITY_HEADERS = {
-  // The intake form checks the repository, the commit, and a cited Palomar ID
-  // straight from the browser, so those two origins are reachable and nothing
-  // else is. Neither answer is trusted: the server checks all three again.
-  "content-security-policy":
-    "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; " +
-    "connect-src 'self' https://api.github.com https://data.palomar-registry.org; " +
-    // form-action governs the whole redirect chain, not just the first hop.
-    // Submitting posts to this origin and is answered with a redirect to
-    // GitHub for sign-in, so leaving GitHub out blocks every submission that
-    // gets far enough to be redirected, and blames the original URL for it.
-    "base-uri 'none'; form-action 'self' https://github.com; frame-ancestors 'none'",
-  "referrer-policy": "no-referrer",
-  "x-content-type-options": "nosniff",
-  "cache-control": "no-store",
-};
 
 function html(body, status = 200, extra = {}) {
   return new Response(body, {
@@ -101,6 +85,17 @@ function json(value, status = 200, extra = {}) {
       ...extra,
     },
   });
+}
+
+async function operationalDashboard(env) {
+  const stored = await readState(env, "reports/dashboard.json");
+  if (!stored.value) return { kind: "missing" };
+  try {
+    return { kind: "ready", value: withDashboardActions(stored.value) };
+  } catch (error) {
+    console.error("dashboard-contract", error instanceof Error ? error.message : String(error));
+    return { kind: "invalid" };
+  }
 }
 
 const MAX_VERIFY_ATTEMPTS = 10;
@@ -1129,28 +1124,38 @@ export default {
         return html(intakeForm(env));
       }
       if (request.method === "GET" && url.pathname === "/dashboard/login") {
-        return await beginDashboardLogin(request, env);
+        return (
+          (await intakeThrottle(env, request)) ??
+          (await beginDashboardLogin(request, env))
+        );
       }
       if (request.method === "GET" && url.pathname === "/dashboard") {
         const principal = await dashboardPrincipal(request, env);
         if (!principal) {
           return new Response(null, {
             status: 303,
-            headers: { location: "/dashboard/login", "cache-control": "no-store" },
+            headers: { ...SECURITY_HEADERS, location: "/dashboard/login" },
           });
         }
-        const stored = await readState(env, "reports/dashboard.json");
-        if (!stored.value) {
+        const report = await operationalDashboard(env);
+        if (report.kind === "missing") {
           return html(errorPage(env, "The operational report is not ready", []), 503);
         }
-        return html(dashboardHtml(withDashboardActions(stored.value), principal));
+        if (report.kind === "invalid") {
+          return html(errorPage(env, "The operational report needs repair", []), 503);
+        }
+        return html(dashboardHtml(report.value, principal));
       }
       if (request.method === "GET" && url.pathname === "/api/dashboard") {
+        if (!madeByThisSite(request)) {
+          return json({ error: "that request did not come from this site" }, 403);
+        }
         const principal = await dashboardPrincipal(request, env);
         if (!principal) return json({ error: "authentication required" }, 401);
-        const stored = await readState(env, "reports/dashboard.json");
-        if (!stored.value) return json({ error: "operational report is not ready" }, 503);
-        return json(withDashboardActions(stored.value));
+        const report = await operationalDashboard(env);
+        if (report.kind === "missing") return json({ error: "operational report is not ready" }, 503);
+        if (report.kind === "invalid") return json({ error: "operational report needs repair" }, 503);
+        return json(report.value);
       }
       if (request.method === "POST" && url.pathname === "/api/submit") {
         return (
@@ -1184,7 +1189,10 @@ export default {
       }
       if (request.method === "GET" && url.pathname === "/oauth/callback") {
         if ((url.searchParams.get("state") ?? "").startsWith("dashboard_")) {
-          return await completeDashboardLogin(request, env);
+          return (
+            (await intakeThrottle(env, request)) ??
+            (await completeDashboardLogin(request, env))
+          );
         }
         return await completeSubmission(request, env);
       }

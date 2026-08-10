@@ -6,6 +6,21 @@ const MODERATION_ISSUE_CHOOSER =
   "https://github.com/PalomarRegistry/PalomarDatabase/issues/new/choose";
 const MODERATION_IMPLEMENTATION_ISSUE =
   "https://github.com/PalomarRegistry/PalomarDatabase/issues/123";
+const PRICE_SCHEDULE = "gpt-5.6-sol-2026-08-10";
+const DEFINITIONS = {
+  submission: "one durable submissions/<id>/state.json record",
+  round: "one completed spend item; started rounds are reported separately",
+  target: "case-folded repository plus normalized comparator configuration path",
+  landed: "a submission with a registered event",
+};
+const COST_BINS = [
+  ["$0–$1", 0, 1],
+  ["$1–$2", 1, 2],
+  ["$2–$3", 2, 3],
+  ["$3–$5", 3, 5],
+  ["$5–$10", 5, 10],
+  ["$10+", 10, null],
+];
 
 const TOP_LEVEL_KEYS = [
   "schema_version",
@@ -50,9 +65,16 @@ function exactKeys(value, expected) {
 }
 
 
-function text(value, nullable = false) {
-  if ((nullable && value === null) || typeof value === "string") return;
-  fail();
+function exactText(value, expected) {
+  if (value !== expected) fail();
+}
+
+
+function timestamp(value, nullable = false) {
+  if (nullable && value === null) return;
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(value)) fail();
+  const parsed = new Date(value);
+  if (!Number.isFinite(parsed.valueOf()) || parsed.toISOString().replace(".000Z", "Z") !== value) fail();
 }
 
 
@@ -74,16 +96,19 @@ function stats(value) {
   for (const key of ["min", "mean", "median", "max"]) number(value[key], { nullable: true });
   if (value.count === 0 && [value.min, value.mean, value.median, value.max].some((item) => item !== null)) fail();
   if (value.count > 0 && [value.min, value.mean, value.median, value.max].some((item) => item === null)) fail();
+  if (value.count > 0 && !(value.min <= value.mean && value.mean <= value.max && value.min <= value.median && value.median <= value.max)) fail();
 }
 
 
 function costHistogram(value) {
-  if (!Array.isArray(value)) fail();
-  for (const row of value) {
+  if (!Array.isArray(value) || value.length !== COST_BINS.length) fail();
+  for (const [index, row] of value.entries()) {
     exactKeys(row, ["label", "lower_usd", "upper_usd", "definite_count", "possible_count"]);
-    text(row.label);
+    const [label, lower, upper] = COST_BINS[index];
+    exactText(row.label, label);
     number(row.lower_usd);
     number(row.upper_usd, { nullable: true });
+    if (row.lower_usd !== lower || row.upper_usd !== upper) fail();
     number(row.definite_count, { integer: true });
     number(row.possible_count, { integer: true });
   }
@@ -109,12 +134,13 @@ function spend(value) {
   number(value.total_lower_usd);
   number(value.total_upper_usd);
   if (value.total_lower_usd > value.total_upper_usd) fail();
+  if (value.count > 0 && value.lower.mean > value.upper.mean) fail();
   costHistogram(value.histogram);
 }
 
 
 function discreteHistogram(value) {
-  if (!Array.isArray(value)) fail();
+  if (!Array.isArray(value) || value.length > 100) fail();
   for (const row of value) {
     exactKeys(row, ["value", "count"]);
     number(row.value, { integer: true });
@@ -132,7 +158,8 @@ function escapedNumber(value) {
 function money(block) {
   if (!block.count) return "No priced observations";
   return `$${escapeHtml(block.lower.mean.toFixed(2))}–$${escapeHtml(block.upper.mean.toFixed(2))} mean; ` +
-    `$${escapeHtml(block.total_lower_usd.toFixed(2))}–$${escapeHtml(block.total_upper_usd.toFixed(2))} total`;
+    `$${escapeHtml(block.total_lower_usd.toFixed(2))}–$${escapeHtml(block.total_upper_usd.toFixed(2))} ` +
+    `total over ${escapeHtml(block.count)} priced observations`;
 }
 
 
@@ -165,8 +192,7 @@ export function withDashboardActions(report) {
     ...validateDashboardReport(report),
     operator_actions: {
       status: "issue-chooser-fallback",
-      take_down_version: MODERATION_ISSUE_CHOOSER,
-      restore_version: MODERATION_ISSUE_CHOOSER,
+      issue_chooser: MODERATION_ISSUE_CHOOSER,
       workflow_status: MODERATION_IMPLEMENTATION_ISSUE,
       note: (
         "Take down and restore currently open the Database issue-form chooser; " +
@@ -210,8 +236,8 @@ export function dashboardHtml(report, login) {
 <h2>Failed or abandoned attempts before first landing</h2>${histogram(distributions.failed_or_abandoned_attempts_before_first_land_per_landed_target)}
 <h2>Review rounds to first landing</h2>${histogram(distributions.review_rounds_to_first_land_per_landed_target)}
 <h2>Moderator actions</h2><ul>
-<li><a href="${escapeHtml(actions.take_down_version)}">Take down a version</a></li>
-<li><a href="${escapeHtml(actions.restore_version)}">Restore a version</a></li>
+<li><a href="${escapeHtml(actions.issue_chooser)}">Take down a version</a></li>
+<li><a href="${escapeHtml(actions.issue_chooser)}">Restore a version</a></li>
 <li><a href="${escapeHtml(actions.workflow_status)}">Workflow implementation and status (Database #123)</a></li>
 </ul>
 <p><small>${escapeHtml(actions.note)}</small></p>
@@ -225,12 +251,12 @@ export function validateDashboardReport(report) {
   if (report.schema_version !== 1) fail();
 
   exactKeys(report.source, ["state_revision", "latest_event_at", "pricing_schedule"]);
-  text(report.source.state_revision);
-  text(report.source.latest_event_at, true);
-  text(report.source.pricing_schedule);
+  if (!/^submissions-tree:[0-9a-f]{40}$/.test(report.source.state_revision)) fail();
+  timestamp(report.source.latest_event_at, true);
+  exactText(report.source.pricing_schedule, PRICE_SCHEDULE);
 
   exactKeys(report.definitions, ["submission", "round", "target", "landed"]);
-  for (const value of Object.values(report.definitions)) text(value);
+  for (const [key, value] of Object.entries(DEFINITIONS)) exactText(report.definitions[key], value);
 
   exactKeys(report.totals, [
     "submissions",
@@ -286,8 +312,8 @@ export function validateDashboardReport(report) {
     "mean_model_usd_per_review_round_upper",
   ]);
   if (report.cost_model.schema_version !== 1) fail();
-  text(report.cost_model.state_revision);
-  text(report.cost_model.pricing_schedule);
+  exactText(report.cost_model.state_revision, report.source.state_revision);
+  exactText(report.cost_model.pricing_schedule, PRICE_SCHEDULE);
   number(report.cost_model.completed_review_rounds, { integer: true });
   number(report.cost_model.priced_review_rounds, { integer: true });
   number(report.cost_model.mean_model_usd_per_review_round_lower, { nullable: true });
