@@ -157,10 +157,11 @@ press it, that is fine; deciding for them is not.
 
 ## Practical notes
 
-- One repository owner, and separately one submitter, may have a small number of
-  submissions verifying at once; further ones are refused with 429 until those
-  finish. When Palomar as a whole is at capacity the refusal is 503. Neither is
-  a reason to retry immediately. These refusals happen after `/api/verify` has
+- One repository owner may have at most two submissions verifying at once, and
+  one submitter may have at most one; further ones are refused with 429 until
+  those finish. There is no global admission cap, so unrelated submitters cannot
+  exhaust a shared slot pool. A refusal is not a reason to retry immediately.
+  These refusals happen after `/api/verify` has
   accepted and consumed the proof: follow its `restart` instruction and begin a
   new submission when capacity is available.
 - There is also an interval between starting one submission and starting the
@@ -169,7 +170,7 @@ press it, that is fine; deciding for them is not.
 - `/api/verify` allows a bounded number of failed proofs and then refuses and
   discards the intake. Fix the tag or the gist before retrying, rather than
   retrying the same broken proof.
-- A policy or capacity refusal after `/api/verify` has accepted the proof says
+- A policy or principal-limit refusal after `/api/verify` has accepted the proof says
   `"proof_consumed": true` and includes a `restart` instruction. Start again at
   `/api/submit` when the refusal can be addressed. If durable State is damaged
   or unavailable, no admission commit lands: the response instead says

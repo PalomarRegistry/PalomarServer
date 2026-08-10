@@ -7,9 +7,8 @@
  * record after an admission.
  */
 
-const MAX_INFLIGHT_TOTAL = 12;
 const MAX_INFLIGHT_PER_OWNER = 2;
-const MAX_INFLIGHT_PER_SUBMITTER = 2;
+const MAX_INFLIGHT_PER_SUBMITTER = 1;
 const GITHUB_LOGIN = /^[A-Za-z0-9_-]{1,39}$/;
 const UTC_SECONDS = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
 const LAST_UTC_SECONDS_MS = Date.parse("9999-12-31T23:59:59Z");
@@ -160,24 +159,17 @@ export function resetRateRecord(value, resetAt) {
 }
 
 /**
- * Decide whether one more proved submission fits the current admission caps.
+ * Decide whether one more proved submission fits the principal admission caps.
  *
  * Verification is expensive and long-running, and anyone who can prove push
  * access to any public repository reaches this point — including on a
  * repository they made a minute ago. The owner cap stops one project's
- * repositories monopolising the runners; the submitter cap stops one person
- * doing it across many repositories, which the owner cap alone never noticed,
- * because a fresh organisation buys fresh slots.
+ * repositories monopolising the runners; the one-per-submitter cap stops one
+ * person doing it across many repositories, which the owner cap alone never
+ * noticed, because a fresh organisation buys fresh slots. There is no global
+ * cap: unrelated submitters must not be able to make intake refuse everyone.
  */
 export function admissionDecision(open, { owner, submitter }) {
-  if (open.length >= MAX_INFLIGHT_TOTAL) {
-    return {
-      refused: true,
-      status: 503,
-      title: "Palomar is at capacity",
-      detail: ["Too many submissions are being verified right now. Please try again later."],
-    };
-  }
   if (owner && open.filter((item) => item.owner === owner).length >= MAX_INFLIGHT_PER_OWNER) {
     return {
       refused: true,
@@ -195,7 +187,7 @@ export function admissionDecision(open, { owner, submitter }) {
       status: 429,
       title: "You already have submissions in flight",
       detail: [
-        `Palomar verifies at most ${MAX_INFLIGHT_PER_SUBMITTER} submissions at a time from one submitter.`,
+        "Palomar verifies at most one submission at a time from one submitter.",
         "Wait for those to finish before submitting another.",
       ],
     };

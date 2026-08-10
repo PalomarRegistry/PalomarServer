@@ -472,9 +472,9 @@ function describeRun(run) {
  * A dispatch answers with no run id, so a run has to be recovered by name the
  * first time. `per_page=40` made that a window rather than a search: forty runs
  * between the dispatch and the next reconcile and this submission's run was
- * never seen again, and its record went on holding one of twelve global slots,
- * one of two for its owner and one of two for its submitter, until somebody
- * edited private state by hand. Bounded by when the submission was admitted
+ * never seen again, and its record went on holding an owner slot and its
+ * submitter's sole slot until somebody edited private state by hand. Bounded
+ * by when the submission was admitted
  * instead, since nothing started before it can be its run, and by `event`,
  * because a scheduled or push-triggered run never carries this name.
  *

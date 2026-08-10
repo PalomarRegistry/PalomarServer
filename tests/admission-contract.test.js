@@ -35,17 +35,15 @@ test("admission allows a submission below every cap", () => {
   );
 });
 
-test("total capacity takes precedence over the narrower caps", () => {
-  const open = Array.from({ length: 12 }, () => inflight({
-    owner: "example",
-    submitter: "someone",
+test("unrelated submitters cannot exhaust a global capacity", () => {
+  const open = Array.from({ length: 1_000 }, (_, index) => inflight({
+    owner: `owner${index}`,
+    submitter: `user${index}`,
   }));
-  assert.deepEqual(admissionDecision(open, { owner: "example", submitter: "someone" }), {
-    refused: true,
-    status: 503,
-    title: "Palomar is at capacity",
-    detail: ["Too many submissions are being verified right now. Please try again later."],
-  });
+  assert.deepEqual(
+    admissionDecision(open, { owner: "new-owner", submitter: "new-submitter" }),
+    { refused: false },
+  );
 });
 
 test("owner and submitter caps have their exact current responses", () => {
@@ -67,7 +65,7 @@ test("owner and submitter caps have their exact current responses", () => {
 
   assert.deepEqual(
     admissionDecision(
-      [inflight({ submitter: "someone" }), inflight({ submitter: "someone" })],
+      [inflight({ submitter: "someone" })],
       { owner: "example", submitter: "someone" },
     ),
     {
@@ -75,7 +73,7 @@ test("owner and submitter caps have their exact current responses", () => {
       status: 429,
       title: "You already have submissions in flight",
       detail: [
-        "Palomar verifies at most 2 submissions at a time from one submitter.",
+        "Palomar verifies at most one submission at a time from one submitter.",
         "Wait for those to finish before submitting another.",
       ],
     },

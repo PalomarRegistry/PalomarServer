@@ -178,6 +178,12 @@ timestamps, and a missing file stop admission and reconciliation visibly. They
 are not coerced to an empty list or treated as if the repository owner were the
 submitter.
 
+The index enforces at most two active verifications for one repository owner
+and at most one for one submitter. It deliberately has no global admission cap:
+existing work by unrelated people cannot make intake refuse everyone. The edge
+address throttle and the submitter's exponentially increasing start interval
+remain independent controls.
+
 `index/open.json` is likewise required. The server consumes only its
 `schema_version: 1` marker and an `open` array of unique current submission ids.
 Every other top-level field belongs to the reviewer: the server preserves it on
@@ -217,15 +223,17 @@ carries a short dispatch lease. The admitting request tries immediately. The
 ten-minute lifecycle first searches for the workflow run (covering a crash
 after GitHub accepted an ambiguous dispatch), then one reconciler claims an
 expired lease and retries. It does not release capacity or declare the dispatch
-lost merely because a credential or provider outage needs repair. Retries stop
-after three dispatch attempts and make the scheduled pass fail loudly while
-retaining the record and its slot; a pinned run that disappears is likewise
-never replaced by a namesake dispatch.
+lost merely because a credential or provider outage needs repair. After three
+complete searches and dispatch attempts, an undiscoverable run is irrecoverable:
+the scheduled pass records `verification-failed` before releasing its slot. A
+pinned run that GitHub confirms is gone is handled the same way and is never
+replaced by a namesake dispatch. Queued or running work remains reserved without
+an age timeout.
 
 Before pointing a fresh or staging Worker at a new state repository, copy the
 two files in `state-bootstrap/index/` to `index/` and commit them. Deploying the
 Worker before that initialization deliberately leaves intake unavailable; it
-does not silently grant unbounded capacity.
+does not silently disable the owner and submitter limits.
 
 Admission is the multi-file transaction described above. Later lifecycle and
 submitter decisions remain ordered Git commits rather than one global
