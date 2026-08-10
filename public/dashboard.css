@@ -1,0 +1,53 @@
+body {
+  max-width: 68rem;
+  margin: 0 auto;
+}
+
+header {
+  align-items: baseline;
+  display: flex;
+  gap: 1rem;
+  justify-content: space-between;
+}
+
+.cards {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
+}
+
+.card {
+  border: 1px solid var(--line);
+  border-radius: .5rem;
+  padding: 1rem;
+}
+
+.number {
+  font-size: 2rem;
+  font-weight: 700;
+}
+
+table {
+  border-collapse: collapse;
+  max-width: 38rem;
+  width: 100%;
+}
+
+th,
+td {
+  border-bottom: 1px solid var(--line);
+  padding: .35rem;
+  text-align: left;
+}
+
+meter {
+  width: 100%;
+}
+
+code {
+  font-size: .85em;
+}
+
+small {
+  color: var(--dim);
+}

@@ -72,6 +72,46 @@ Push access is not authorship. It does not establish approval from the
 responsible authors of a substantive formalization, and does not replace the
 declaration a submitter makes about that.
 
+## Private operational dashboard
+
+`/dashboard` shows aggregate submission throughput, review-round counts,
+landing distributions, and bounded model-spend distributions. It never reads a
+review or serves a submission id, repository, Comparator path, commit, or
+submitter identity. The State reporting workflow derives
+`reports/dashboard.json` in a daily or manually dispatched full sweep; the page
+reads that one private file and identifies the exact immutable State
+`submissions/` tree and latest event included, so lag is visible rather than
+disguised as current data.
+
+Dashboard sign-in uses the existing GitHub OAuth application with the additional
+read-only `read:org` scope. The callback requires an active membership in the
+closed `PalomarRegistry/technical-maintainers` team, discards the GitHub token
+immediately, and issues a signed host-only session lasting fifteen minutes.
+GitHub OAuth grants scopes cumulatively per application, so a maintainer who
+has granted `read:org` may also receive it on a later intake token; every such
+token is still single-use here and is discarded rather than stored.
+Removing a maintainer therefore takes effect no later than that expiry. The
+signature is domain-separated from submission-token digests while reusing the
+existing `TOKEN_PEPPER`; there is no additional secret or durable login store.
+The OAuth state and session cookie both reject duplicates and are never cached.
+Dashboard OAuth initiation and callback share the intake address limiter, so an
+unauthenticated loop cannot turn into unbounded GitHub token exchanges. Every
+dynamic OAuth response carries the same no-referrer and security headers as the
+rest of the Server. The API additionally requires a same-origin browser request;
+the OAuth landing page itself remains a top-level cross-site navigation.
+
+The machine-readable aggregate is available at `/api/dashboard` under the same
+session. The Server validates that the stored document has the identity-free
+dashboard contract with an exact field-name allowlist and deep value shapes,
+instead of trying to spot a few forbidden identity fields. The contract is
+tested against an aggregate fixture emitted by the State producer, so a
+producer/consumer contract change cannot be represented only by hand-written
+Server test data. The page and API also link moderators to the
+private Database issue-form chooser for takedown and restoration work, and to
+Database issue #123 while the direct forms are being implemented. Those links
+are operator conveniences, not State data; once #123 fixes the template names,
+the chooser links can become direct form links.
+
 ## Configuration
 
 Variables live in `wrangler.jsonc`. Secrets are set with `wrangler secret put`
@@ -79,7 +119,7 @@ and never appear in the repository:
 
 | Secret | What it is | Reach |
 | --- | --- | --- |
-| `OAUTH_CLIENT_ID` | GitHub OAuth App client id, for the push-access check | — |
+| `OAUTH_CLIENT_ID` | GitHub OAuth App client id, for submission push-access and dashboard team checks | — |
 | `OAUTH_CLIENT_SECRET` | its client secret | — |
 | `GITHUB_TOKEN` | reads and atomically advances submission State, asks the reviewer to run, and reads public repository metadata for the repository being submitted | `PalomarSubmissionState`, contents and actions, plus public reads |
 | `SUBMISSION_TOKEN` | starts and reads verification runs, and reads the submitter's public ref and gist while checking a proof | `PalomarSubmission`, actions, plus public reads |
@@ -305,6 +345,13 @@ Before the first deployment against a State repository, commit both files from
 reconciliation validate the contracts before using them; `/healthz` stays a
 network-free configuration check so public monitoring cannot spend the shared
 GitHub API budget.
+
+Merge the State reporting change and run `Refresh private operational report`
+to create `reports/dashboard.json` on State `main` before merging this Server
+change. A Server merge deploys automatically; if the report is not ready, the
+authenticated route fails closed with a typed 503 until it appears. No OAuth
+application callback change is needed: dashboard and intake both return through the existing
+`/oauth/callback`, and their bound state values are disjoint.
 
 To deploy manually:
 
