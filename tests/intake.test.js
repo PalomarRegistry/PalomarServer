@@ -26,6 +26,15 @@ const ENV = {
 };
 const form = intakeForm(ENV);
 
+test("the introduction summarizes the submission requirements", () => {
+  assert.match(form, /credible research interest/);
+  assert.match(form, /auditable Challenge, matching Solution/);
+  assert.match(form, /formalization\.yaml/);
+  assert.match(form, /responsible author or maintainer, or have their approval/);
+  assert.match(form, /PalomarPolicy\/blob\/main\/CONTRIBUTING\.md/);
+  assert.match(form, /Automated agents: read \/llms\.txt before submitting/);
+});
+
 test("the disclosure says what is recorded and when it becomes public", () => {
   assert.match(form, /permanently and publicly recorded/);
   assert.match(form, /will not be public until you have seen them/);
