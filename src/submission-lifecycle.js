@@ -56,6 +56,27 @@ function reportStateContract(error) {
   console.error("state-contract", error.message);
 }
 
+async function failUnrecoverableVerification(env, item, record, note) {
+  const failed = {
+    ...record.value,
+    status: "verification-failed",
+    events: [
+      ...record.value.events,
+      { at: recordedAt(), status: "verification-failed", note },
+    ],
+  };
+  delete failed.run_misses;
+  delete failed.dispatch_lease_at;
+  delete failed.dispatch_lease_count;
+  await writeState(
+    env,
+    statePath(item.id, "state.json"),
+    failed,
+    `Fail unrecoverable verification ${item.id}`,
+    record.sha,
+  );
+}
+
 /** Dispatch the verification described entirely by one durable State record. */
 export function dispatchSubmissionVerification(env, record) {
   return dispatchVerification(env, {
@@ -224,7 +245,13 @@ export async function reconcile(env) {
     // the request unless the run is recovered by name. Only a complete search
     // may authorize a retry; a truncated search leaves the item pending.
     if (!run && complete && pinned) {
-      dispatchFailures.push(`${item.id}: its pinned verification run is unavailable`);
+      await failUnrecoverableVerification(
+        env,
+        item,
+        record,
+        "The pinned verification run no longer exists",
+      );
+      continue;
     }
     if (!run && complete && !pinned) {
       const now = Date.now();
@@ -232,11 +259,18 @@ export async function reconcile(env) {
       const age = Number.isFinite(leaseAt) && leaseAt <= now ? now - leaseAt : Infinity;
       if (age >= DISPATCH_RETRY_MS) {
         const attempts = Number(record.value.dispatch_lease_count ?? 0);
-        if (!Number.isSafeInteger(attempts) || attempts < 0 || attempts >= MAX_DISPATCH_ATTEMPTS) {
-          dispatchFailures.push(
-            `${item.id}: verification dispatch was not discoverable after ${attempts} attempts`,
-          );
+        if (!Number.isSafeInteger(attempts) || attempts < 0) {
+          dispatchFailures.push(`${item.id}: verification dispatch attempt state is invalid`);
           still.push(item);
+          continue;
+        }
+        if (attempts >= MAX_DISPATCH_ATTEMPTS) {
+          await failUnrecoverableVerification(
+            env,
+            item,
+            record,
+            `Verification dispatch was not discoverable after ${attempts} attempts`,
+          );
           continue;
         }
         const claimed = {

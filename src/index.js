@@ -843,9 +843,10 @@ async function completeSubmission(request, env) {
 
   // Anyone who can prove push access to any public repository can reach this
   // point, including on a repository they created a minute ago. Verification
-  // is expensive and long-running, so admission is capped until real quotas
-  // exist. This is deliberately blunt: refusing a genuine submitter with a
-  // clear message is recoverable, exhausting the runners is not.
+  // is expensive and long-running, so owner and submitter limits apply. There
+  // is deliberately no shared global cap: unrelated people cannot make intake
+  // refuse everyone. The per-principal backoff and edge throttle remain the
+  // broader abuse controls.
   const owner = viewer.owner?.login ?? null;
   let admitted;
   try {

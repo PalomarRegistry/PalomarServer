@@ -1366,7 +1366,7 @@ test("browser intake also treats malformed rate state as a retryable contract fa
   assert.deepEqual(stub.dispatched, []);
 });
 
-test("a browser capacity refusal says the completed sign-in was spent", async () => {
+test("many unrelated browser admissions do not create a global refusal", async () => {
   const nonce = "3".repeat(64);
   const inflight = { open: Array.from({ length: 12 }, (_, index) => ({
     id: index.toString(36).padStart(12, "0"),
@@ -1381,17 +1381,10 @@ test("a browser capacity refusal says the completed sign-in was spent", async ()
   });
 
   const response = await callback(nonce);
-  assert.equal(response.status, 503);
-  const body = await response.text();
-  assert.match(body, /Palomar is at capacity/);
-  assert.match(body, /sign-in was spent/);
-  assert.match(body, /Start a new submission from the submission form/);
-  assert.match(response.headers.get("set-cookie"), /Max-Age=0/);
-  assert.deepEqual(
-    stub.written.filter((item) => !item.path.startsWith("pending/")),
-    [],
-  );
-  assert.deepEqual(stub.dispatched, []);
+  assert.equal(response.status, 303);
+  assert.equal(stub.store.get("index/inflight.json").open.length, 13);
+  assert.ok(stub.written.some((item) => item.path.endsWith("state.json")));
+  assert.equal(stub.dispatched.length, 1);
 });
 
 test("a refused submitter keeps what they typed, and the nonce", async () => {
@@ -1872,7 +1865,7 @@ test("agent intake fails closed and in JSON when admission indexes are unusable"
   }
 });
 
-test("an agent capacity refusal says its accepted proof was consumed", async () => {
+test("many unrelated agent admissions do not create a global refusal", async () => {
   const inflight = { open: Array.from({ length: 12 }, (_, index) => ({
     id: index.toString(36).padStart(12, "0"),
     owner: `owner${index}`,
@@ -1883,23 +1876,15 @@ test("an agent capacity refusal says its accepted proof was consumed", async () 
   const begun = await agentSubmit();
   stub.state.tag = { exists: true, sha: "1".repeat(40) };
   stub.state.gist = { exists: true, content: begun.challenge };
-  const before = stub.written.length;
-
   const response = await agentVerify({
     pending_secret: begun.pending_secret,
     gist_id: "abc123",
   });
-  assert.equal(response.status, 503);
+  assert.equal(response.status, 200);
   const body = await response.json();
-  assert.equal(body.error, "Palomar is at capacity");
-  assert.equal(body.proof_consumed, true);
-  assert.match(body.restart, /Start a new submission and create a new proof/);
-  assert.equal(stub.refUpdates.at(-1).length, 1, "a refusal changed more than its proof");
-  assert.deepEqual(
-    stub.written.slice(before).filter((item) => item.path.includes("submissions/")),
-    [],
-  );
-  assert.deepEqual(stub.dispatched, []);
+  assert.match(body.submission_id, /^[0-9a-z]{12}$/);
+  assert.equal(stub.store.get("index/inflight.json").open.length, 13);
+  assert.equal(stub.dispatched.length, 1);
 });
 
 test("agent admission applies owner and submitter caps after proof", async () => {
@@ -1916,7 +1901,7 @@ test("agent admission applies owner and submitter caps after proof", async () =>
     ],
     [
       "submitter",
-      Array.from({ length: 2 }, (_, index) => ({
+      Array.from({ length: 1 }, (_, index) => ({
         id: `${index}`.padStart(12, "0"),
         owner: `owner${index}`,
         submitter: "someone",
@@ -2091,7 +2076,9 @@ test("starting a submission doubles the wait, and only registering clears it", a
   assert.equal(refused.proof_consumed, true);
   assert.match(refused.restart, /Start a new submission and create a new proof/);
 
-  // Time passing lets it through, and doubles the wait again.
+  // Finishing without registration releases the principal slot but does not
+  // reset the rate record. Once its time has passed, another start doubles it.
+  stub.store.set("index/inflight.json", { open: [] });
   const file = [...stub.store.keys()].find((path) => path.startsWith("index/rate/"));
   stub.store.set(file, {
     ...stub.store.get(file),
@@ -2346,7 +2333,8 @@ test("two submissions in two tabs do not overwrite each other's binding", async 
   // A fixed cookie name would mean starting the second sign-in clobbered the
   // first one's cookie, and finishing the first would then look exactly like
   // the attack above: refused, and its intake deleted, for doing nothing wrong.
-  // A submitter may have two in flight, so this is ordinary use, not an edge.
+  // Two pending sign-ins may coexist before either is admitted, so this is
+  // ordinary browser use even though only one may proceed to verification.
   const first = "1".repeat(64);
   const second = "2".repeat(64);
   const names = await Promise.all(
@@ -2626,8 +2614,8 @@ test("a pinned run is asked for by id, not searched for by name", async () => {
 
 test("a durable dispatch retries under a lease without releasing its slot", async () => {
   // A verifying record is the outbox. Giving up would turn a crash before the
-  // first workflow_dispatch into a terminal submission; retrying forever is
-  // deliberate backpressure until the dispatch credential is repaired.
+  // first workflow_dispatch into a terminal submission. Bounded leased retries
+  // absorb ordinary ambiguity before a later pass can conclude no run exists.
   const { reconcile } = await import("../src/submission-lifecycle.js");
   const old = "2026-01-01T00:00:00Z";
   const files = {
@@ -2663,7 +2651,7 @@ test("a durable dispatch retries under a lease without releasing its slot", asyn
   assert.equal(dispatches, 1);
 });
 
-test("a missing pinned run fails loudly without dispatching a replacement", async () => {
+test("a missing pinned run becomes terminal and releases its reservation", async () => {
   const { reconcile } = await import("../src/submission-lifecycle.js");
   const old = "2026-01-01T00:00:00Z";
   const files = {
@@ -2681,13 +2669,16 @@ test("a missing pinned run fails loudly without dispatching a replacement", asyn
     }
     return inner(url, init);
   };
-  await assert.rejects(() => reconcile(ENV), /pinned verification run is unavailable/);
+  assert.deepEqual(await reconcile(ENV), { released: 1, open: 0 });
   assert.equal(dispatches, 0);
-  assert.equal(store.get(statePath("a1b2c3d4e5f6", "state.json")).run.id, 999);
-  assert.equal(store.get("index/inflight.json").open.length, 1);
+  const record = store.get(statePath("a1b2c3d4e5f6", "state.json"));
+  assert.equal(record.status, "verification-failed");
+  assert.equal(record.run.id, 999);
+  assert.match(record.events.at(-1).note, /pinned verification run no longer exists/);
+  assert.deepEqual(store.get("index/inflight.json").open, []);
 });
 
-test("an undiscoverable dispatch stops after the bounded attempt count", async () => {
+test("an undiscoverable dispatch becomes terminal after the bounded attempt count", async () => {
   const { reconcile } = await import("../src/submission-lifecycle.js");
   const old = "2026-01-01T00:00:00Z";
   const files = {
@@ -2708,10 +2699,14 @@ test("an undiscoverable dispatch stops after the bounded attempt count", async (
     }
     return inner(url, init);
   };
-  await assert.rejects(() => reconcile(ENV), /not discoverable after 3 attempts/);
+  assert.deepEqual(await reconcile(ENV), { released: 1, open: 0 });
   assert.equal(dispatches, 0);
-  assert.equal(store.get(statePath("a1b2c3d4e5f6", "state.json")).dispatch_lease_count, 3);
-  assert.equal(store.get("index/inflight.json").open.length, 1);
+  const record = store.get(statePath("a1b2c3d4e5f6", "state.json"));
+  assert.equal(record.status, "verification-failed");
+  assert.equal(record.dispatch_lease_at, undefined);
+  assert.equal(record.dispatch_lease_count, undefined);
+  assert.match(record.events.at(-1).note, /not discoverable after 3 attempts/);
+  assert.deepEqual(store.get("index/inflight.json").open, []);
 });
 
 test("an invalid or future dispatch lease cannot silently wedge the outbox", async () => {
@@ -2787,13 +2782,11 @@ test("a second run carrying the same submission id cannot settle the record", as
     },
   };
   const { store } = stubState(files, [impostor]);
-  await assert.rejects(
-    () => reconcile(ENV),
-    /pinned verification run is unavailable/,
-  );
+  assert.deepEqual(await reconcile(ENV), { released: 1, open: 0 });
   const record = store.get(statePath("a1b2c3d4e5f6", "state.json"));
-  assert.equal(record.status, "verifying", "an impostor run settled the record");
+  assert.equal(record.status, "verification-failed", "an impostor run settled the record");
   assert.equal(record.run.id, 12345);
+  assert.match(record.events.at(-1).note, /pinned verification run no longer exists/);
 });
 
 test("a submission that settles is put where the reviewer will find it", async () => {
