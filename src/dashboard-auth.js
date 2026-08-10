@@ -1,6 +1,5 @@
 /** Short-lived GitHub-team authorization for the private dashboard. */
 
-const OAUTH_COOKIE = "__Host-palomar_dashboard_oauth";
 const SESSION_COOKIE = "__Host-palomar_dashboard";
 const TEAM = "technical-maintainers";
 const ORG = "PalomarRegistry";
@@ -79,10 +78,28 @@ function setCookie(name, value, maxAge, sameSite) {
 }
 
 
+function oauthCookieName(nonce) {
+  return `__Host-palomar_dashboard_oauth_${nonce.slice(0, 16)}`;
+}
+
+
+function privateResponse(body, status, headers = {}) {
+  return new Response(body, {
+    status,
+    headers: {
+      "content-type": "text/plain; charset=utf-8",
+      "cache-control": "no-store",
+      "x-content-type-options": "nosniff",
+      ...headers,
+    },
+  });
+}
+
+
 export async function beginDashboardLogin(request, env) {
   const nonce = bytesToBase64Url(crypto.getRandomValues(new Uint8Array(32)));
   const state = `dashboard_${nonce}`;
-  const binding = await signed(env, { nonce, expires: Date.now() + 10 * 60_000 });
+  const binding = await signed(env, { kind: "oauth", nonce, expires: Date.now() + 10 * 60_000 });
   const authorize = new URL("https://github.com/login/oauth/authorize");
   authorize.searchParams.set("client_id", env.OAUTH_CLIENT_ID);
   authorize.searchParams.set("redirect_uri", `${new URL(request.url).origin}/oauth/callback`);
@@ -93,7 +110,8 @@ export async function beginDashboardLogin(request, env) {
     headers: {
       location: authorize.toString(),
       "cache-control": "no-store",
-      "set-cookie": setCookie(OAUTH_COOKIE, binding, 600, "Lax"),
+      "x-content-type-options": "nosniff",
+      "set-cookie": setCookie(oauthCookieName(nonce), binding, 600, "Lax"),
     },
   });
 }
@@ -118,13 +136,17 @@ export async function completeDashboardLogin(request, env) {
   const url = new URL(request.url);
   const state = url.searchParams.get("state") ?? "";
   const match = /^dashboard_([A-Za-z0-9_-]{43})$/.exec(state);
-  const binding = await verified(env, cookieValue(request, OAUTH_COOKIE));
-  const clear = setCookie(OAUTH_COOKIE, "", 0, "Lax");
-  if (!match || binding?.nonce !== match[1] || binding.expires < Date.now()) {
-    return new Response("Invalid or expired dashboard sign-in.\n", {
-      status: 403,
-      headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store", "set-cookie": clear },
-    });
+  const cookieName = match ? oauthCookieName(match[1]) : "__Host-palomar_dashboard_oauth_invalid";
+  const binding = await verified(env, cookieValue(request, cookieName));
+  const clear = setCookie(cookieName, "", 0, "Lax");
+  if (
+    !match ||
+    binding?.kind !== "oauth" ||
+    binding.nonce !== match[1] ||
+    typeof binding.expires !== "number" ||
+    binding.expires < Date.now()
+  ) {
+    return privateResponse("Invalid or expired dashboard sign-in.\n", 403, { "set-cookie": clear });
   }
   const tokenResponse = await fetch("https://github.com/login/oauth/access_token", {
     method: "POST",
@@ -137,29 +159,32 @@ export async function completeDashboardLogin(request, env) {
   });
   const granted = await tokenResponse.json();
   if (!granted?.access_token) {
-    return new Response("GitHub declined that sign-in.\n", { status: 403, headers: { "set-cookie": clear } });
+    return privateResponse("GitHub declined that sign-in.\n", 403, { "set-cookie": clear });
   }
   const user = await githubJson("https://api.github.com/user", granted.access_token);
   const login = user.value?.login;
   if (typeof login !== "string") {
-    return new Response("GitHub did not identify that account.\n", { status: 403, headers: { "set-cookie": clear } });
+    return privateResponse("GitHub did not identify that account.\n", 403, { "set-cookie": clear });
   }
   const membership = await githubJson(
     `https://api.github.com/orgs/${ORG}/teams/${TEAM}/memberships/${encodeURIComponent(login)}`,
     granted.access_token,
   );
   if (membership.value?.state !== "active") {
-    return new Response("This dashboard is limited to Palomar Technical Maintainers.\n", {
-      status: 403,
-      headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store", "set-cookie": clear },
-    });
+    return privateResponse(
+      "This dashboard is limited to Palomar Technical Maintainers.\n",
+      403,
+      { "set-cookie": clear },
+    );
   }
   // The GitHub token is deliberately not retained. Team removal takes effect
   // no later than this short session's expiry.
-  const session = await signed(env, { login, expires: Date.now() + 15 * 60_000 });
+  const session = await signed(env, { kind: "session", login, expires: Date.now() + 15 * 60_000 });
   const headers = new Headers({ location: "/dashboard", "cache-control": "no-store" });
+  headers.set("x-content-type-options", "nosniff");
   headers.append("set-cookie", clear);
-  headers.append("set-cookie", setCookie(SESSION_COOKIE, session, 900, "Strict"));
+  // Lax is required for the top-level navigation back from GitHub OAuth.
+  headers.append("set-cookie", setCookie(SESSION_COOKIE, session, 900, "Lax"));
   return new Response(null, {
     status: 303,
     headers,
@@ -170,12 +195,10 @@ export async function completeDashboardLogin(request, env) {
 export async function dashboardPrincipal(request, env) {
   const session = await verified(env, cookieValue(request, SESSION_COOKIE));
   if (
+    session?.kind !== "session" ||
     typeof session?.login !== "string" ||
     typeof session?.expires !== "number" ||
     session.expires < Date.now()
   ) return null;
   return session.login;
 }
-
-
-export const DASHBOARD_TEAM = `${ORG}/${TEAM}`;

@@ -63,7 +63,7 @@ import {
   completeDashboardLogin,
   dashboardPrincipal,
 } from "./dashboard-auth.js";
-import { dashboardHtml, validateDashboardReport } from "./dashboard.js";
+import { dashboardHtml, withDashboardActions } from "./dashboard.js";
 // One vocabulary for "this submission has stopped moving", shared with the
 // status page, which asks a slightly different question of the same words.
 import { CLOSED } from "../public/statuses.js";
@@ -1143,14 +1143,14 @@ export default {
         if (!stored.value) {
           return html(errorPage(env, "The operational report is not ready", []), 503);
         }
-        return html(dashboardHtml(validateDashboardReport(stored.value), principal));
+        return html(dashboardHtml(withDashboardActions(stored.value), principal));
       }
       if (request.method === "GET" && url.pathname === "/api/dashboard") {
         const principal = await dashboardPrincipal(request, env);
         if (!principal) return json({ error: "authentication required" }, 401);
         const stored = await readState(env, "reports/dashboard.json");
         if (!stored.value) return json({ error: "operational report is not ready" }, 503);
-        return json(validateDashboardReport(stored.value));
+        return json(withDashboardActions(stored.value));
       }
       if (request.method === "POST" && url.pathname === "/api/submit") {
         return (
