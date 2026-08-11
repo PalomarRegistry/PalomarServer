@@ -16,6 +16,7 @@ import {
   challengeGist,
   challengeTag,
   deleteState,
+  dispatchRepairer,
   dispatchReviewer,
   listState,
   readState,
@@ -45,13 +46,16 @@ import {
 import {
   INFLIGHT_INDEX_PATH,
   OPEN_INDEX_PATH,
+  REPAIR_INDEX_PATH,
   inflightOpen,
   isCurrentReview,
   StateContractError,
   submitterReview,
   reviewerOpen,
+  repairOpen,
 } from "./state-contract.js";
 import {
+  activeSubmissionPhase,
   assertInflightContract,
   dispatchSubmissionVerification,
   openSubmission,
@@ -103,6 +107,69 @@ async function operationalDashboard(env) {
 }
 
 const MAX_VERIFY_ATTEMPTS = 10;
+const REPAIRABLE_FIELDS = new Map([
+  ["project.name", "text"],
+  ["project.license", "text"],
+  ["classification.arxiv", "text-list"],
+  ["classification.msc2020", "text-list"],
+  ["review.status", "text"],
+]);
+
+function normalizedRepairEdits(value) {
+  if (!Array.isArray(value) || value.length < 1 || value.length > REPAIRABLE_FIELDS.size) {
+    throw new TypeError(
+      `edits must contain between one and ${REPAIRABLE_FIELDS.size} repairable fields`,
+    );
+  }
+  const seen = new Set();
+  return value.map((edit) => {
+    const field = typeof edit?.field === "string" ? edit.field : "";
+    const kind = REPAIRABLE_FIELDS.get(field);
+    if (!kind || seen.has(field)) throw new TypeError(`unsupported or duplicate repair field: ${field}`);
+    seen.add(field);
+    if (kind === "text") {
+      const text = typeof edit.value === "string" ? edit.value.trim() : "";
+      if (!text || text.length > 500 || /[\r\n]/.test(text)) {
+        throw new TypeError(`${field} must be one line of at most 500 characters`);
+      }
+      return { field, value: text };
+    }
+    if (!Array.isArray(edit.value) || edit.value.length < 1 || edit.value.length > 100) {
+      throw new TypeError(`${field} must contain between one and 100 values`);
+    }
+    const items = edit.value.map((item) => typeof item === "string" ? item.trim() : "");
+    if (items.some((item) => !item || item.length > 500 || /[\r\n]/.test(item))) {
+      throw new TypeError(`${field} contains an empty or overlong value`);
+    }
+    if (field === "classification.arxiv" && items.length > 2) {
+      throw new TypeError(`${field} accepts at most two classifications`);
+    }
+    if (field === "classification.msc2020" && items.length > 8) {
+      throw new TypeError(`${field} accepts at most eight classifications`);
+    }
+    return { field, value: items };
+  }).sort((left, right) => left.field.localeCompare(right.field));
+}
+
+function formalizationPath(record) {
+  const explicit = record.requested_paths?.formalization_metadata_path;
+  if (explicit) return explicit;
+  const project = record.requested_paths?.project_path;
+  return project ? `${project}/formalization.yaml` : "formalization.yaml";
+}
+
+function submitterRepair(repair) {
+  if (!repair || typeof repair !== "object" || typeof repair.status !== "string") return null;
+  return Object.fromEntries(Object.entries({
+    revision: repair.revision,
+    status: repair.status,
+    requested_at: repair.requested_at,
+    updated_at: repair.updated_at,
+    pr_url: repair.pr_url,
+    patch: repair.patch,
+    explanation: repair.explanation,
+  }).filter(([, value]) => value !== undefined));
+}
 
 // Without any one of these the server cannot do the thing it claims to do, and
 // two of them fail silently rather than loudly if they are missing: TOKEN_PEPPER
@@ -462,9 +529,9 @@ async function admitSubmission(
     // A durable outbox lease. This request owns the first dispatch; if it dies
     // before or after the ambiguous workflow_dispatch response, reconciliation
     // searches for the run and only claims another attempt after the lease.
-    dispatch_lease_at: createdAt,
-    dispatch_lease_count: 1,
-    events: [{ at: createdAt, status: "verifying", note: "Mechanical verification queued" }],
+    preflight_dispatch_lease_at: createdAt,
+    preflight_dispatch_lease_count: 1,
+    events: [{ at: createdAt, status: "preflighting", note: "Submission preflight queued" }],
   };
   let result;
   try {
@@ -557,11 +624,11 @@ async function admitSubmission(
     throw error;
   }
   if (result.refused) return result;
-  // `verifying` with no pinned run is the durable dispatch outbox. A failed or
+  // `preflighting` with no pinned run is the durable dispatch outbox. A failed or
   // ambiguous request does not undo admission: the scheduled lifecycle first
   // searches for a run, then safely retries one that still has none.
-  await dispatchSubmissionVerification(env, result.record).catch((error) => {
-    console.error("verification-dispatch", error?.stack ?? String(error));
+  await dispatchSubmissionVerification(env, result.record, "preflight").catch((error) => {
+    console.error("preflight-dispatch", error?.stack ?? String(error));
   });
   return { refused: false, id, token };
 }
@@ -966,8 +1033,9 @@ async function typicalReviewSeconds(env) {
 /** Refresh a verifying submission from the run it dispatched. */
 async function refresh(env, entry) {
   const record = entry.record;
-  // A completed registration is the one thing that puts a submitter's interval
-  // back to a minute, and the reviewer performs registration, not this server.
+  // A completed registration puts a submitter's interval back to a minute. A
+  // small number of first-pass metadata corrections gets the same concession,
+  // but repeated failed preflights retain their accumulated backoff.
   // This is where the server sees it: the status page and an agent both poll
   // until the status settles, and `registered` is settled, so the good news and
   // the reset arrive on the same request. Somebody who closes the tab between
@@ -975,7 +1043,8 @@ async function refresh(env, entry) {
   // The alternative, letting the reviewer reset it, would need TOKEN_PEPPER in
   // reviewer CI, and that pepper exists so a leaked state repository yields no
   // live links.
-  if (record.status === "registered" && !record.rate_reset_at && record.push_proof?.principal?.id) {
+  if (["registered", "changes-required"].includes(record.status)
+      && !record.rate_reset_at && record.push_proof?.principal?.id) {
     const path = await ratePath(env, record.push_proof.principal.id);
     const resetAt = recordedAt();
     // Absence already admits the next start at the floor. Do not synthesize a
@@ -985,7 +1054,9 @@ async function refresh(env, entry) {
     let projected = null;
     try {
       current = await readRateState(env, path);
-      if (current.sha !== null) {
+      const correctionConcession = record.status === "changes-required"
+        && current.value?.starts <= 2;
+      if (current.sha !== null && (record.status === "registered" || correctionConcession)) {
         projected = atRatePath(path, () => resetRateRecord(current.value, resetAt));
       }
     } catch (error) {
@@ -1002,7 +1073,7 @@ async function refresh(env, entry) {
         env,
         path,
         projected,
-        "Reset after a registration",
+        `Reset after ${record.status}`,
         current.sha,
       ).catch(() => {});
     }
@@ -1011,36 +1082,68 @@ async function refresh(env, entry) {
                      `Reset the interval for ${record.id}`, entry.sha).catch(() => {});
     return reset;
   }
-  if (record.status !== "verifying") return record;
+  const phase = activeSubmissionPhase(record);
+  if (!phase) return record;
   const { run } = await findVerificationRun(env, record.id, {
-    pinnedRunId: record.run?.id ?? null,
+    pinnedRunId: record[phase.runField]?.id ?? null,
     since: record.created_at,
+    mode: phase.mode,
   });
   if (!run) return record;
   // The run is pinned the first time it is seen. A second run carrying the
   // same public submission id must not be able to take its place.
-  if (record.run?.id && record.run.id !== run.id) return record;
+  if (record[phase.runField]?.id && record[phase.runField].id !== run.id) return record;
 
   // Finding it retires the outbox lease: this run is now the one durable thing
   // every later refresh asks for, so no path may dispatch another by name.
-  const next = { ...record, run };
-  delete next.run_misses;
-  delete next.dispatch_lease_at;
-  delete next.dispatch_lease_count;
+  const next = { ...record, [phase.runField]: run };
+  delete next[phase.missesField];
+  delete next[phase.leaseAtField];
+  delete next[phase.leaseCountField];
   if (run.status === "completed") {
-    next.status = run.conclusion === "success" ? "awaiting-review" : "verification-failed";
+    if (phase.mode === "preflight" && run.conclusion === "success") {
+      const queuedAt = recordedAt();
+      next.status = "verifying";
+      next.dispatch_lease_at = queuedAt;
+      next.dispatch_lease_count = 1;
+      next.events = [
+        ...record.events,
+        { at: queuedAt, status: "verifying", note: "Preflight passed; verification queued" },
+      ];
+      await writeState(
+        env,
+        statePath(record.id, "state.json"),
+        next,
+        `Queue full verification for ${record.id}`,
+        entry.sha,
+      );
+      await dispatchSubmissionVerification(env, next, "full").catch((error) => {
+        console.error("verification-dispatch", error?.stack ?? String(error));
+      });
+      return next;
+    }
+    next.status = phase.mode === "preflight"
+      ? "preflight-reporting"
+      : run.conclusion === "success" ? "awaiting-review" : "verification-reporting";
     next.events = [
       ...record.events,
-      { at: recordedAt(), status: next.status, note: `Verification ${run.conclusion}` },
+      {
+        at: recordedAt(),
+        status: next.status,
+        note: `${phase.mode === "preflight" ? "Preflight" : "Verification"} ${run.conclusion}`,
+      },
     ];
   }
-  if (next.status !== "verifying" && record.status === "verifying") {
+  if (!activeSubmissionPhase(next) && activeSubmissionPhase(record)) {
     // Validate the capacity contract before another index can be changed. The
     // release itself deliberately re-reads after queueing, so it does not carry
     // this older optimistic SHA across the intervening work.
     await assertInflightContract(env);
   }
-  if (next.status === "awaiting-review") {
+  const handoffToReviewer = [
+    "awaiting-review", "preflight-reporting", "verification-reporting",
+  ].includes(next.status);
+  if (handoffToReviewer) {
     // Before the record says `awaiting-review`, and not caught. A submission
     // that settles without an entry in the reviewer's queue is one nothing
     // looks at until the weekly rebuild, and a failure swallowed here leaves a
@@ -1048,14 +1151,6 @@ async function refresh(env, entry) {
     // looks like it needs anything. Failing leaves it `verifying`, which the
     // next pass retries.
     await openSubmission(env, record.id);
-    // `openSubmission` is idempotent, so a failed pass can safely retry it.
-    // Dispatch itself may be repeated on a retry, but each reviewer invocation
-    // reads the same queue with this id present and converges on the same
-    // record; the schedule is also a backstop. Failing to ask only costs that
-    // schedule's latency, so it is not fatal. Crucially, the slot remains held
-    // until both steps have been attempted, so a malformed queue cannot strand
-    // a verifying record outside reconciliation.
-    await dispatchReviewer(env).catch(() => false);
   }
   if (JSON.stringify(next) !== JSON.stringify(record)) {
     await writeState(
@@ -1066,7 +1161,14 @@ async function refresh(env, entry) {
       entry.sha,
     );
   }
-  if (next.status !== "verifying" && record.status === "verifying") {
+  if (handoffToReviewer) {
+    // Dispatch only after the reporting/reviewing state is durable. A runner
+    // can start immediately; waking it while the record still says
+    // `preflighting` or `verifying` makes that successful wake-up a no-op.
+    // The schedule remains the backstop for a rejected dispatch.
+    await dispatchReviewer(env).catch(() => false);
+  }
+  if (!activeSubmissionPhase(next) && activeSubmissionPhase(record)) {
     // Commit the terminal state before releasing capacity. If the fresh
     // compare-and-swap release then fails, scheduled reconciliation sees the
     // non-verifying record and drops the stale reservation. Releasing first
@@ -1359,6 +1461,106 @@ export default {
         await dispatchReviewer(env).catch(() => false);
         return json({ ok: true });
       }
+      if (request.method === "POST" && url.pathname === "/api/repair") {
+        const entry = await caller(env, request, { mutating: true });
+        if (entry instanceof Response) return entry;
+        const body = await request.json().catch(() => null);
+        let edits;
+        try {
+          edits = normalizedRepairEdits(body?.edits);
+        } catch (error) {
+          return json({ error: error.message }, 400);
+        }
+        const failureDigest = typeof body?.failure_digest === "string"
+          ? body.failure_digest : "";
+        if (!/^[0-9a-f]{64}$/.test(failureDigest)) {
+          return json({ error: "failure_digest must identify the current failure report" }, 400);
+        }
+        if (!entry.record.failure || await digest(JSON.stringify(entry.record.failure)) !== failureDigest) {
+          return json({ error: "the failure report changed; reload before requesting a repair" }, 409);
+        }
+        const id = entry.record.id;
+        const recordPath = statePath(id, "state.json");
+        const repairPath = statePath(id, "repair.json");
+        const requestedAt = recordedAt();
+        const revision = (await digest(JSON.stringify({ id, failureDigest, edits }))).slice(0, 16);
+        let result;
+        try {
+          result = await transactState(
+            env,
+            [recordPath, repairPath, REPAIR_INDEX_PATH],
+            (files) => {
+            const current = files[recordPath]?.value;
+            if (!current || current.status !== "changes-required") {
+              return { changes: [], message: "", result: { error: "this submission no longer accepts a repair request", status: 409 } };
+            }
+            // WebCrypto is asynchronous, so the digest was checked immediately
+            // before this transaction and the record's immutable terminal
+            // status/failure object is rechecked below by exact serialization.
+            if (JSON.stringify(current.failure) !== JSON.stringify(entry.record.failure)) {
+              return { changes: [], message: "", result: { error: "the failure report changed; reload before requesting a repair", status: 409 } };
+            }
+            if (current.failure?.profile_version !== 1) {
+              return { changes: [], message: "", result: { error: "this failure uses a metadata profile Palomar cannot repair automatically", status: 409 } };
+            }
+            const allowed = new Set(
+              (current.failure?.diagnostics ?? [])
+                .filter((item) => item?.repairable === true)
+                .map((item) => item.field),
+            );
+            if (edits.some((edit) => !allowed.has(edit.field))) {
+              return { changes: [], message: "", result: { error: "one of these fields is not repairable for the current failure", status: 409 } };
+            }
+            if (files[repairPath]?.sha !== null || current.repair) {
+              return { changes: [], message: "", result: { error: "a repair request already exists for this submission", status: 409 } };
+            }
+            const queueEntry = files[REPAIR_INDEX_PATH];
+            const open = repairOpen(queueEntry?.value);
+            const repair = {
+              schema_version: 1,
+              submission_id: id,
+              revision,
+              status: "queued",
+              requested_at: requestedAt,
+              source: {
+                repository: current.repository,
+                commit: current.commit,
+                formalization_path: formalizationPath(current),
+              },
+              failure_digest: failureDigest,
+              edits,
+            };
+            const next = {
+              ...current,
+              repair: { revision, status: "queued" },
+              events: [...current.events, {
+                at: requestedAt,
+                status: current.status,
+                note: "The submitter asked Palomar to prepare a formalization.yaml pull request",
+              }],
+            };
+            return {
+              changes: [
+                { path: recordPath, value: next },
+                { path: repairPath, value: repair },
+                { path: REPAIR_INDEX_PATH, value: { ...queueEntry.value, open: [...open, id] } },
+              ],
+              message: `Queue metadata repair for ${id}`,
+              result: { ok: true, revision },
+            };
+            },
+          );
+        } catch (error) {
+          if (!isDurableContractError(error)) throw error;
+          reportDurableContract(error);
+          return json({
+            error: "metadata repair is temporarily unavailable; your values were not queued, so keep them and try again",
+          }, 503);
+        }
+        if (result.error) return json({ error: result.error }, result.status);
+        await dispatchRepairer(env).catch(() => false);
+        return json(result, 202);
+      }
       if (request.method === "GET" && url.pathname === "/api/submission") {
         // A GET, but `refresh` writes records, releases capacity, spends the
         // shared GitHub budget and dispatches reviewer work, so it is guarded
@@ -1375,6 +1577,12 @@ export default {
           reportDurableContract(error);
           return json({ error: "submission status is temporarily unavailable" }, 503);
         }
+        const failureDigest = record.failure
+          ? await digest(JSON.stringify(record.failure))
+          : null;
+        const repairEntry = record.repair
+          ? await readState(env, statePath(record.id, "repair.json"))
+          : null;
         return json({
           id: record.id,
           status: record.status,
@@ -1387,7 +1595,20 @@ export default {
             Object.entries(record.requested_paths ?? {}).filter(([, value]) => value),
           ),
           created_at: record.created_at,
+          preflight_run: record.preflight_run ?? null,
           run: record.run ?? null,
+          failure: record.failure ?? null,
+          failure_digest: failureDigest,
+          repair: record.repair
+            ? submitterRepair(repairEntry?.value) ?? {
+                revision: record.repair.revision,
+                status: "failed",
+                explanation: (
+                  "Palomar could not retrieve the repair request. Update formalization.yaml " +
+                  "manually, or ask an operator to inspect this submission."
+                ),
+              }
+            : null,
           review_started_at: record.review_started_at ?? null,
           typical_review_seconds: await typicalReviewSeconds(env),
           registration_consent: record.registration_consent === true,

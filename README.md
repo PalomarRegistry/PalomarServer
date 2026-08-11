@@ -224,20 +224,27 @@ and the follow-up reachability checks are all unavailable, the Worker reports
 the outcome as unknown instead of claiming that the proof survived.
 
 The external verification dispatch cannot be part of a Git commit. A newly
-committed `verifying` record therefore doubles as a durable outbox item and
+committed `preflighting` record therefore doubles as a durable outbox item and
 carries a short dispatch lease. The admitting request tries immediately. The
 ten-minute lifecycle first searches for the workflow run (covering a crash
 after GitHub accepted an ambiguous dispatch), then one reconciler claims an
 expired lease and retries. It does not release capacity or declare the dispatch
 lost merely because a credential or provider outage needs repair. After three
 complete searches and dispatch attempts, an undiscoverable run is irrecoverable:
-the scheduled pass records `verification-failed` before releasing its slot. A
+the scheduled pass records the Palomar-owned `preflight-failed` or
+`dispatch-lost` status before releasing its slot. A
 pinned run that GitHub confirms is gone is handled the same way and is never
 replaced by a namesake dispatch. Queued or running work remains reserved without
 an age timeout.
 
+A successful preflight transitions the same record to `verifying`, creates a
+separate full-verification dispatch lease, and keeps the admission slot. A
+failed run first enters a reporting status; the Reviewer ingests the exact
+run's artifact and atomically records bounded, owner-labelled diagnostics before
+the status page treats the result as terminal.
+
 Before pointing a fresh or staging Worker at a new state repository, copy the
-two files in `state-bootstrap/index/` to `index/` and commit them. Deploying the
+three files in `state-bootstrap/index/` to `index/` and commit them. Deploying the
 Worker before that initialization deliberately leaves intake unavailable; it
 does not silently disable the owner and submitter limits.
 
@@ -257,13 +264,25 @@ silently reconstruct or overwrite it. A missing or malformed queue makes intake
 and affected status transitions unavailable until the reviewer or an operator
 restores it.
 
+`index/repairs.json` is a separate durable outbox for submitter-authorized
+metadata repairs. `POST /api/repair` requires the submission capability, the
+digest of the current failure, a `changes-required` record, and fields explicitly
+marked repairable in that failure. It atomically writes the request, its queue
+entry, and the record marker. The browser never offers this endpoint for
+malformed YAML or complex fields.
+
 `index/rate/<digest>.json` slows down a submitter who keeps starting and never
 finishes. Starting is the expensive act: it dispatches a verification run that
 takes a quarter of an hour of somebody's runners whether or not anything comes
 of it. So the interval is sixty seconds to begin with, doubles every time a
 submission is started, and is put back to that floor only by a completed
-registration. A submission that fails verification, or is withdrawn, leaves it
-where it is, because those are exactly the loops worth slowing down.
+registration or by one of the first two preflights that asks for repository
+changes. Later metadata failures keep the accumulated interval, so the
+correction concession cannot turn repeated preflight work into an unbounded
+cheap loop. A submission
+that fails full verification, or is withdrawn, leaves it where it is, because
+those are exactly the loops worth slowing down; ordinary metadata correction is
+not treated as abuse.
 
 The Server owns the rate document's current `schema_version: 1` contract. A
 present document records a GitHub `login`, positive integer `starts`, an integer
@@ -352,7 +371,7 @@ type-checked; it parses import declarations but does not resolve their targets.
 The lint packages are part of the complete audited development graph described
 above, so a future low-or-higher advisory in that graph also blocks deployment.
 
-Before the first deployment against a State repository, commit both files from
+Before the first deployment against a State repository, commit all three files from
 `state-bootstrap/index/` as described above. Admission and scheduled
 reconciliation validate the contracts before using them; `/healthz` stays a
 network-free configuration check so public monitoring cannot spend the shared

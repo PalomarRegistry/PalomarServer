@@ -9,6 +9,7 @@ export const INFLIGHT_INDEX_PATH = "index/inflight.json";
 // says there is nothing left to do to it. The reviewer can rebuild the derived
 // file from records; this server treats absence or damage as unavailable state.
 export const OPEN_INDEX_PATH = "index/open.json";
+export const REPAIR_INDEX_PATH = "index/repairs.json";
 
 const SUBMISSION_ID_RE = /^[0-9a-z]{12}$/;
 // GitHub.com logins are at most 39 characters. Accept the provider's safe
@@ -106,6 +107,24 @@ export function reviewerOpen(value) {
     if (ids.has(id)) {
       throw new StateContractError(`${OPEN_INDEX_PATH} open[${index}] is duplicated`);
     }
+    ids.add(id);
+  }
+  return value.open;
+}
+
+/** The repair worker's durable outbox, with the same fail-closed rules as review. */
+export function repairOpen(value) {
+  if (!plainObject(value) || value.schema_version !== 1 || !Array.isArray(value.open)) {
+    throw new StateContractError(
+      `${REPAIR_INDEX_PATH} must be a schema-version 1 object with an open array`,
+    );
+  }
+  const ids = new Set();
+  for (const [index, id] of value.open.entries()) {
+    if (typeof id !== "string" || !SUBMISSION_ID_RE.test(id)) {
+      throw new StateContractError(`${REPAIR_INDEX_PATH} open[${index}] is not a submission id`);
+    }
+    if (ids.has(id)) throw new StateContractError(`${REPAIR_INDEX_PATH} open[${index}] is duplicated`);
     ids.add(id);
   }
   return value.open;

@@ -55,6 +55,38 @@ export function intakeForm(env, values = {}, problems = []) {
       <a href="https://github.com/PalomarRegistry/PalomarPolicy/blob/main/CONTRIBUTING.md">full submission requirements</a>.
     </p>
 
+    <section class="disclosure metadata-warning">
+      <h2>Check <code>formalization.yaml</code> before you submit</h2>
+      <p>
+        Palomar checks this file strictly and requires some metadata beyond the
+        base mathlib-initiative format. It is normal for a first preflight to
+        find fields that need changing. If it does, this page will explain each
+        problem and what to do next; update the repository and submit the new
+        commit.
+      </p>
+      <details>
+        <summary>Prompt an LLM to check the file now</summary>
+        <p class="hint">
+          Paste the prompt below into an LLM along with your
+          <code>formalization.yaml</code>. Treat its answer as advice: Palomar's
+          preflight remains the authoritative check.
+        </p>
+        <pre id="formalization-prompt">Check the attached formalization.yaml for a Palomar Registry submission.
+
+Palomar uses mathlib-initiative formalization.yaml v0.3 as a base and requires these top-level sections: project, repository, classification, sources, automation, and review. Check all of the following Palomar requirements:
+- project has a nonempty name, authors, license, and responsible_maintainers;
+- repository.role is substantive-development or thin-wrapper. A thin wrapper has a substantive_formalization mapping with a GitHub repository id and full commit; a substantive-development repository must not have that mapping;
+- classification.arxiv has one or two valid arXiv category codes and classification.msc2020 has one to eight valid MSC 2020 codes;
+- sources is a nonempty list, and every source has a title and relationship. Do not use obsolete singular author or provenance spellings;
+- automation.methods is a nonempty list and every entry has a nonempty method;
+- review.status is nonempty.
+
+Identify every missing, malformed, obsolete, or inconsistent field. For each problem, name the exact dotted field, explain the expected value, and propose a concrete YAML change. Do not invent names, authorship, classifications, licences, source relationships, repository roles, commits, or review claims: mark values that I must supply myself. Return a corrected YAML draft and then a short checklist of assumptions I should verify.</pre>
+        <button type="button" class="secondary" id="copy-formalization-prompt">Copy prompt</button>
+        <span class="hint" id="formalization-prompt-status" role="status"></span>
+      </details>
+    </section>
+
     <section class="disclosure">
       <h2>What is public, and what is not</h2>
       <p>
@@ -202,9 +234,26 @@ export function statusPage(env) {
     <ol class="events" id="events"></ol>
 
     <section class="disclosure" id="verification-failure-section" hidden>
-      <h2>Why verification failed</h2>
+      <h2 id="failure-heading">What needs attention</h2>
+      <p id="failure-intro"></p>
+      <div id="failure-diagnostics"></div>
+      <form id="repair-form" hidden>
+        <h3>Let Palomar prepare the metadata changes</h3>
+        <p id="repair-explanation">
+          Fill in only the values you want Palomar to change. Palomar will
+          validate the result and open a pull request from its repair account;
+          it will never push to your repository directly. Review and merge the
+          pull request, then submit the merged commit as a new submission.
+        </p>
+        <div id="repair-fields"></div>
+        <button type="submit">Prepare pull request</button>
+        <p class="hint" id="repair-status" role="status"></p>
+      </form>
+      <details id="legacy-failure-details" hidden>
+        <summary>Technical details from the GitHub run</summary>
       <ul class="problems" id="verification-errors"></ul>
       <p id="verification-run-context"></p>
+      </details>
     </section>
 
     <section id="review-section" hidden>

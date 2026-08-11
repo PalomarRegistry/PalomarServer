@@ -67,8 +67,14 @@ export function statePath(id, name) {
 }
 
 export const STATUSES = {
+  preflighting: "Checking the repository before full verification",
+  "preflight-reporting": "Preparing the preflight results",
+  "changes-required": "Repository changes are required",
+  "preflight-failed": "Palomar could not complete preflight",
   verifying: "Mechanically verifying the submission",
+  "verification-reporting": "Preparing the verification results",
   "verification-failed": "Mechanical verification did not pass",
+  "verification-error": "Palomar could not complete mechanical verification",
   "awaiting-review": "Waiting for the automated review",
   reviewing: "The automated review is running",
   "review-ready": "The automated review is ready for you",
@@ -85,7 +91,7 @@ export function newRecord({
   return {
     schema_version: 1,
     id,
-    status: "verifying",
+    status: "preflighting",
     repository: repositoryName,
     commit,
     owner,

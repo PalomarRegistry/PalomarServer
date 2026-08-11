@@ -1,4 +1,5 @@
 import { SETTLED, nextPollDelay, pollFailureAction } from "/polling.js";
+import { FORMALIZATION_FIELDS, FORMALIZATION_PROFILE_VERSION } from "/formalization-profile.js";
 import {
   actionableVerificationErrors,
   decisionCopy,
@@ -18,8 +19,17 @@ const progress = document.getElementById("progress-detail");
 const waitingSection = document.getElementById("waiting-section");
 const waitingMessage = document.getElementById("waiting-message");
 const verificationFailureSection = document.getElementById("verification-failure-section");
+const failureHeading = document.getElementById("failure-heading");
+const failureIntro = document.getElementById("failure-intro");
+const failureDiagnostics = document.getElementById("failure-diagnostics");
 const verificationErrors = document.getElementById("verification-errors");
 const verificationRunContext = document.getElementById("verification-run-context");
+const legacyFailureDetails = document.getElementById("legacy-failure-details");
+const repairForm = document.getElementById("repair-form");
+const repairFields = document.getElementById("repair-fields");
+const repairStatus = document.getElementById("repair-status");
+const repairExplanation = document.getElementById("repair-explanation");
+const repairSubmit = repairForm?.querySelector("button[type=submit]");
 const reviewSection = document.getElementById("review-section");
 const reviewPrivacy = document.getElementById("review-privacy");
 const reviewSummary = document.getElementById("review-summary");
@@ -34,8 +44,16 @@ const registerWarning = document.getElementById("register-warning");
 const withdrawWarning = document.getElementById("withdraw-warning");
 
 const LABELS = {
+  preflighting: "Checking your submission before full verification.",
+  "preflight-reporting": "Preflight finished. Palomar is preparing the details.",
+  "changes-required": "Preflight found repository metadata that needs changing.",
+  "preflight-failed":
+    "Palomar could not complete preflight. This is a fault at our end, not with your submission.",
   verifying: "Mechanically verifying your submission.",
+  "verification-reporting": "Verification finished. Palomar is preparing the details.",
   "verification-failed": "Mechanical verification did not pass.",
+  "verification-error":
+    "Palomar could not complete mechanical verification. This is a fault at our end, not with your submission.",
   "awaiting-review": "Verification passed. Waiting for the automated review.",
   reviewing: "Running the automated review.",
   "review-ready": "Your automated review is ready.",
@@ -244,8 +262,15 @@ withdrawButton?.addEventListener("click", () =>
 );
 
 function link(href, text) {
+  let target;
+  try {
+    target = new URL(href);
+  } catch {
+    return document.createTextNode(text);
+  }
+  if (target.protocol !== "https:") return document.createTextNode(text);
   const a = document.createElement("a");
-  a.href = href;
+  a.href = target.href;
   a.textContent = text;
   a.rel = "noreferrer";
   return a;
@@ -261,6 +286,133 @@ function hideTransientSections() {
 
 let shownFailureRun = null;
 let failureDisplayToken = 0;
+
+function diagnosticLocation(location) {
+  if (!location?.path) return "";
+  return `${location.path}${location.line ? `:${location.line}` : ""}${location.column ? `:${location.column}` : ""}`;
+}
+
+function showStructuredFailure(data) {
+  const failure = data.failure;
+  const diagnostics = Array.isArray(failure?.diagnostics) ? failure.diagnostics : [];
+  if (!diagnostics.length) return false;
+  verificationFailureSection.hidden = false;
+  legacyFailureDetails.hidden = true;
+  failureDiagnostics.replaceChildren();
+  failureHeading.textContent = failure.mode === "preflight"
+    ? "Preflight found these problems"
+    : "Verification needs attention";
+  failureIntro.textContent = diagnostics.every((item) => item.owner === "submitter")
+    ? "Each item below says what needs changing and what to do next. Update the repository and submit the corrected commit."
+    : "The owner shown on each item tells you whether to change the repository or wait for Palomar.";
+
+  const repairable = [];
+  for (const diagnostic of diagnostics) {
+    const article = document.createElement("article");
+    article.className = "diagnostic";
+    article.append(el("h3", diagnostic.summary ?? "A check did not pass"));
+    const location = diagnosticLocation(diagnostic.location);
+    if (location) {
+      const locationNode = el("p", location);
+      locationNode.className = "location";
+      article.append(locationNode);
+    }
+    if (diagnostic.explanation) article.append(el("p", diagnostic.explanation));
+    article.append(el("p", `Who can fix this: ${diagnostic.owner === "submitter" ? "you" : "Palomar"}.`));
+    if (diagnostic.next_action) article.append(el("p", `Next: ${diagnostic.next_action}`));
+    failureDiagnostics.append(article);
+    const profile = FORMALIZATION_FIELDS[diagnostic.field];
+    if (
+      diagnostic.repairable === true && profile &&
+      failure.profile_version === FORMALIZATION_PROFILE_VERSION
+    ) repairable.push({ diagnostic, profile });
+  }
+
+  repairFields.replaceChildren();
+  const canRequestRepair = data.status === "changes-required" && !data.repair && repairable.length;
+  repairForm.hidden = !canRequestRepair;
+  repairExplanation.hidden = !canRequestRepair;
+  repairSubmit.hidden = !canRequestRepair;
+  if (canRequestRepair) {
+    for (const { diagnostic, profile } of repairable) {
+      const wrapper = document.createElement("div");
+      wrapper.className = "repair-field";
+      const id = `repair-${diagnostic.field.replaceAll(".", "-")}`;
+      const label = el("label", profile.label);
+      label.htmlFor = id;
+      const input = profile.input === "text-list"
+        ? document.createElement("textarea")
+        : document.createElement("input");
+      input.id = id;
+      input.name = diagnostic.field;
+      input.dataset.inputType = profile.input;
+      input.required = true;
+      input.maxLength = 4000;
+      if (input instanceof HTMLTextAreaElement) input.rows = 3;
+      const hint = el("p", profile.description);
+      if (profile.input === "text-list") {
+        hint.append(" Enter the complete replacement list, one value per line.");
+      }
+      hint.className = "hint";
+      wrapper.append(label, input, hint);
+      repairFields.append(wrapper);
+    }
+  }
+  if (data.repair) {
+    repairForm.hidden = false;
+    repairExplanation.hidden = true;
+    repairSubmit.hidden = true;
+    repairFields.replaceChildren();
+    const messages = {
+      queued: "The repair request is queued.",
+      preparing: "Palomar is validating the proposed metadata changes.",
+      "pr-open": "Palomar opened a pull request. Review and merge it, then make a new submission.",
+      merged: "The repair pull request was merged. Make a new submission using the merged commit.",
+      "needs-input": "Palomar could not safely prepare this change. Use the explanation below to update the file manually.",
+      failed: "Palomar could not create the repair pull request. This is a fault at our end; you can still make the changes manually.",
+      closed: "The repair pull request was closed without merging. Update the file manually or make a new submission after changing it.",
+    };
+    repairStatus.textContent = messages[data.repair.status] ?? `Repair status: ${data.repair.status}`;
+    if (data.repair.explanation) repairStatus.append(` ${data.repair.explanation}`);
+    if (data.repair.pr_url) repairStatus.append(" ", link(data.repair.pr_url, "Open the pull request."));
+    if (data.repair.patch) {
+      const pre = document.createElement("pre");
+      pre.textContent = data.repair.patch;
+      repairFields.append(el("p", "You can apply this patch manually:"), pre);
+    }
+  } else {
+    repairStatus.textContent = "";
+  }
+  return true;
+}
+
+repairForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const edits = [...repairFields.querySelectorAll("[name]")].map((input) => ({
+    field: input.name,
+    value: input.dataset.inputType === "text-list"
+      ? input.value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean)
+      : input.value.trim(),
+  }));
+  repairStatus.textContent = "Submitting the repair request…";
+  const response = await fetch("/api/repair", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ failure_digest: lastFailureDigest, edits }),
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    repairStatus.textContent = `That did not work: ${body.error ?? response.status}`;
+    return;
+  }
+  repairStatus.textContent = "The repair request is queued.";
+  repairSubmit.disabled = true;
+  pollDelay = 0;
+  poll();
+});
+
+let lastFailureDigest = null;
 
 /** Show public, bounded check annotations without asking for a GitHub credential. */
 async function showVerificationFailure(run) {
@@ -338,6 +490,7 @@ async function establishSession() {
 let pollTimer = null;
 let pollDelay = 0;
 let lastStatus = null;
+let lastRepairMoving = false;
 
 /**
  * Ask again later, or stop asking.
@@ -347,13 +500,18 @@ let lastStatus = null;
  * likely to move again, and something that has said the same thing for ten
  * minutes is not.
  */
-function askAgain(status, waitingOnAPerson = false) {
+function askAgain(status, waitingOnAPerson = false, repairMoving = false) {
   clearTimeout(pollTimer);
   pollTimer = null;
   if (status !== lastStatus) pollDelay = 0;
   lastStatus = status;
+  lastRepairMoving = repairMoving;
   const delay = nextPollDelay({
-    status,
+    // `changes-required` is normally settled, but a queued repair or open PR
+    // can still move underneath it. Keep the real submission status for UI
+    // change detection while asking the polling policy to treat this page as
+    // active until the repair reaches a terminal state.
+    status: repairMoving ? "repairing" : status,
     previous: pollDelay,
     hidden: document.visibilityState === "hidden",
     waitingOnAPerson,
@@ -372,7 +530,7 @@ document.addEventListener("visibilitychange", () => {
     pollTimer = null;
     return;
   }
-  if (SETTLED.has(lastStatus)) return;
+  if (SETTLED.has(lastStatus) && !lastRepairMoving) return;
   pollDelay = 0;
   poll();
 });
@@ -407,15 +565,17 @@ async function poll() {
     return;
   }
 
-  const failedRun = verificationRunLocation(data.run);
-  summary.textContent = data.status === "verification-failed" && !failedRun
+  const failedRun = verificationRunLocation(data.run ?? data.preflight_run);
+  lastFailureDigest = data.failure_digest ?? null;
+  const structuredFailure = showStructuredFailure(data);
+  summary.textContent = data.status === "verification-failed" && !failedRun && !structuredFailure
     ? "Palomar could not complete or recover the verification run. This is a fault at our end, not with your submission."
     : LABELS[data.status] ?? data.status;
   progress.replaceChildren();
   const waiting = waitingStatusMessage(data.status);
   waitingSection.hidden = !waiting;
   if (waitingMessage.textContent !== (waiting ?? "")) waitingMessage.textContent = waiting ?? "";
-  if (data.status !== "verification-failed" || !failedRun) {
+  if (!structuredFailure && (data.status !== "verification-failed" || !failedRun)) {
     verificationFailureSection.hidden = true;
     shownFailureRun = null;
     failureDisplayToken += 1;
@@ -453,6 +613,7 @@ async function poll() {
     if (value) row(label, value);
   }
   row("Submitted", data.created_at ?? "");
+  if (data.preflight_run?.url) row("Preflight run", link(data.preflight_run.url, data.preflight_run.url.split("/").pop()));
   if (data.run?.url) row("Verification run", link(data.run.url, data.run.url.split("/").pop()));
 
   events.replaceChildren();
@@ -535,10 +696,12 @@ async function poll() {
     data.status,
     data.status === "review-ready" && reviewShown &&
       !effectiveConsent && !reviewNeedsRerun,
+    ["queued", "pr-open"].includes(data.repair?.status),
   );
   // Public annotations are an enhancement to an already complete terminal
   // page. Never hold the repository, progress, or run link behind GitHub.
-  if (data.status === "verification-failed" && failedRun && shownFailureRun !== failedRun.runId) {
+  if (!structuredFailure && data.status === "verification-failed" && failedRun && shownFailureRun !== failedRun.runId) {
+    legacyFailureDetails.hidden = false;
     void showVerificationFailure(data.run);
   }
 }

@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   inflightOpen,
   isCurrentReview,
+  repairOpen,
   reviewerOpen,
   StateContractError,
   submitterReview,
@@ -54,6 +55,14 @@ test("the reviewer queue validates its owned fields and preserves the rest", () 
     /index\/open\.json open\[1\] is duplicated/,
   );
   assert.throws(() => reviewerOpen({ schema_version: 2, open: [] }), StateContractError);
+});
+
+test("the repair outbox is a strict unique submission-id queue", () => {
+  const value = { schema_version: 1, open: [ID] };
+  assert.equal(repairOpen(value), value.open);
+  assert.throws(() => repairOpen({ schema_version: 1, open: [ID, ID] }), /duplicated/);
+  assert.throws(() => repairOpen({ schema_version: 1, open: ["not-an-id"] }), /submission id/);
+  assert.throws(() => repairOpen({ open: [] }), StateContractError);
 });
 
 test("only a matching current review and decision passes the review contract", () => {

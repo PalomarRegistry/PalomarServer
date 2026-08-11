@@ -56,33 +56,76 @@ function reportStateContract(error) {
   console.error("state-contract", error.message);
 }
 
-async function failUnrecoverableVerification(env, item, record, note) {
+export function activeSubmissionPhase(record) {
+  if (record.status === "preflighting") {
+    return {
+      mode: "preflight",
+      runField: "preflight_run",
+      missesField: "preflight_run_misses",
+      leaseAtField: "preflight_dispatch_lease_at",
+      leaseCountField: "preflight_dispatch_lease_count",
+    };
+  }
+  if (record.status === "verifying") {
+    return {
+      mode: "full",
+      runField: "run",
+      missesField: "run_misses",
+      leaseAtField: "dispatch_lease_at",
+      leaseCountField: "dispatch_lease_count",
+    };
+  }
+  return null;
+}
+
+function clearPhaseOutbox(record, phase) {
+  delete record[phase.missesField];
+  delete record[phase.leaseAtField];
+  delete record[phase.leaseCountField];
+}
+
+async function failUnrecoverableRun(env, item, record, phase, note) {
+  const status = phase.mode === "preflight" ? "preflight-failed" : "dispatch-lost";
   const failed = {
     ...record.value,
-    status: "verification-failed",
+    status,
+    failure: {
+      schema_version: 1,
+      mode: phase.mode,
+      run: record.value[phase.runField] ?? null,
+      diagnostics: [{
+        code: "palomar.dispatch_lost",
+        stage: "dispatch",
+        owner: "palomar",
+        summary: "Palomar lost track of the workflow run it started.",
+        explanation: note,
+        next_action: "Do not change the repository. Retry the same commit later.",
+        retryable: true,
+        repairable: false,
+      }],
+    },
     events: [
       ...record.value.events,
-      { at: recordedAt(), status: "verification-failed", note },
+      { at: recordedAt(), status, note },
     ],
   };
-  delete failed.run_misses;
-  delete failed.dispatch_lease_at;
-  delete failed.dispatch_lease_count;
+  clearPhaseOutbox(failed, phase);
   await writeState(
     env,
     statePath(item.id, "state.json"),
     failed,
-    `Fail unrecoverable verification ${item.id}`,
+    `Fail unrecoverable ${phase.mode} ${item.id}`,
     record.sha,
   );
 }
 
 /** Dispatch the verification described entirely by one durable State record. */
-export function dispatchSubmissionVerification(env, record) {
+export function dispatchSubmissionVerification(env, record, mode = "full") {
   return dispatchVerification(env, {
     repositoryName: record.repository,
     commit: record.commit,
     requestId: record.id,
+    mode,
     options: {
       authorization_relationship: authorizationRelationshipLabel(
         record.authorization.relationship,
@@ -159,11 +202,13 @@ export async function reconcile(env) {
   for (const item of open) {
     const record = await readState(env, statePath(item.id, "state.json"));
     if (!record.value) continue;               // vanished: do not hold its slot
-    if (record.value.status !== "verifying") continue;
-    const pinned = record.value.run?.id ?? null;
+    const phase = activeSubmissionPhase(record.value);
+    if (!phase) continue;
+    const pinned = record.value[phase.runField]?.id ?? null;
     const { run, complete } = await findVerificationRun(env, item.id, {
       pinnedRunId: pinned,
       since: record.value.created_at,
+      mode: phase.mode,
     });
 
     // The same pinning that `refresh` in `src/index.js` documents, and for the
@@ -183,26 +228,55 @@ export async function reconcile(env) {
     // Only for a run still going: a completed one is written by the settle
     // below, in the same commit as the status it produced, and writing it twice
     // here would leave the second write holding a sha the first one replaced.
-    if (run && run.status !== "completed" && (!pinned || record.value.run_misses)) {
-      const seen = { ...record.value, run };
-      delete seen.run_misses;
-      delete seen.dispatch_lease_at;
-      delete seen.dispatch_lease_count;
+    if (run && run.status !== "completed" && (!pinned || record.value[phase.missesField])) {
+      const seen = { ...record.value, [phase.runField]: run };
+      clearPhaseOutbox(seen, phase);
       await writeState(env, statePath(item.id, "state.json"), seen,
-                       `Pin the run for ${item.id}`, record.sha);
+                       `Pin the ${phase.mode} run for ${item.id}`, record.sha);
       still.push(item);
       continue;
     }
 
     if (run?.status === "completed") {
-      const settled =
-        run.conclusion === "success" ? "awaiting-review" : "verification-failed";
+      if (phase.mode === "preflight" && run.conclusion === "success") {
+        const queuedAt = recordedAt();
+        const verifying = {
+          ...record.value,
+          [phase.runField]: run,
+          status: "verifying",
+          dispatch_lease_at: queuedAt,
+          dispatch_lease_count: 1,
+          events: [
+            ...record.value.events,
+            { at: queuedAt, status: "verifying", note: "Preflight passed; verification queued" },
+          ],
+        };
+        clearPhaseOutbox(verifying, phase);
+        await writeState(
+          env,
+          statePath(item.id, "state.json"),
+          verifying,
+          `Queue full verification for ${item.id}`,
+          record.sha,
+        );
+        try {
+          await dispatchSubmissionVerification(env, verifying, "full");
+        } catch (error) {
+          console.error("verification-dispatch", item.id, error?.stack ?? String(error));
+          dispatchFailures.push(`${item.id}: ${error}`);
+        }
+        still.push(item);
+        continue;
+      }
+      const settled = phase.mode === "preflight"
+        ? "preflight-reporting"
+        : run.conclusion === "success" ? "awaiting-review" : "verification-reporting";
       // Before the record stops saying `verifying`, and not caught. A failure
       // here has to leave something that will be tried again, and the only
       // thing that gets retried is a submission still in flight. The reviewer's
       // weekly sweep would rebuild the whole index eventually, but a week is
       // not a repair for a submitter waiting on a review.
-      if (settled === "awaiting-review") {
+      if (["awaiting-review", "preflight-reporting", "verification-reporting"].includes(settled)) {
         if (reviewerQueueUnavailable) {
           still.push(item);
           continue;
@@ -219,17 +293,19 @@ export async function reconcile(env) {
       }
       const done = {
         ...record.value,
-        run,
+        [phase.runField]: run,
         status: settled,
         events: [...record.value.events,
-                 { at: recordedAt(), status: settled, note: `Verification ${run.conclusion}` }],
+                 {
+                   at: recordedAt(),
+                   status: settled,
+                   note: `${phase.mode === "preflight" ? "Preflight" : "Verification"} ${run.conclusion}`,
+                 }],
       };
-      delete done.run_misses;
-      delete done.dispatch_lease_at;
-      delete done.dispatch_lease_count;
+      clearPhaseOutbox(done, phase);
       await writeState(env, statePath(item.id, "state.json"), done,
                        `Reconcile ${item.id}`, record.sha);
-      if (settled === "awaiting-review") {
+      if (["awaiting-review", "preflight-reporting", "verification-reporting"].includes(settled)) {
         // Idempotent and cheap. A submission that settles without an entry here
         // is one the reviewer's pass never looks at. The reviewer can rebuild
         // the derived queue on its maintenance path, but this server never
@@ -239,51 +315,53 @@ export async function reconcile(env) {
       continue;
     }
 
-    // A `verifying` record with no pinned run is the durable dispatch outbox.
+    // An active record with no pinned run is its mode-specific durable outbox.
     // Search before dispatching: workflow_dispatch returns no run id, so a
     // crash after GitHub accepted it is indistinguishable from a crash before
     // the request unless the run is recovered by name. Only a complete search
     // may authorize a retry; a truncated search leaves the item pending.
     if (!run && complete && pinned) {
-      await failUnrecoverableVerification(
+      await failUnrecoverableRun(
         env,
         item,
         record,
+        phase,
         "The pinned verification run no longer exists",
       );
       continue;
     }
     if (!run && complete && !pinned) {
       const now = Date.now();
-      const leaseAt = Date.parse(record.value.dispatch_lease_at ?? record.value.created_at);
+      const leaseAt = Date.parse(record.value[phase.leaseAtField] ?? record.value.created_at);
       const age = Number.isFinite(leaseAt) && leaseAt <= now ? now - leaseAt : Infinity;
       if (age >= DISPATCH_RETRY_MS) {
-        const attempts = Number(record.value.dispatch_lease_count ?? 0);
+        const attempts = Number(record.value[phase.leaseCountField] ?? 0);
         if (!Number.isSafeInteger(attempts) || attempts < 0) {
-          dispatchFailures.push(`${item.id}: verification dispatch attempt state is invalid`);
+          dispatchFailures.push(`${item.id}: ${phase.mode} dispatch attempt state is invalid`);
           still.push(item);
           continue;
         }
         if (attempts >= MAX_DISPATCH_ATTEMPTS) {
-          await failUnrecoverableVerification(
+          await failUnrecoverableRun(
             env,
             item,
             record,
+            phase,
             `Verification dispatch was not discoverable after ${attempts} attempts`,
           );
           continue;
         }
         const claimed = {
           ...record.value,
-          dispatch_lease_at: recordedAt(),
-          dispatch_lease_count: attempts + 1,
+          [phase.leaseAtField]: recordedAt(),
+          [phase.leaseCountField]: attempts + 1,
         };
         try {
           await writeState(
             env,
             statePath(item.id, "state.json"),
             claimed,
-            `Claim verification dispatch for ${item.id}`,
+            `Claim ${phase.mode} dispatch for ${item.id}`,
             record.sha,
           );
         } catch (error) {
@@ -296,9 +374,9 @@ export async function reconcile(env) {
           throw error;
         }
         try {
-          await dispatchSubmissionVerification(env, claimed);
+          await dispatchSubmissionVerification(env, claimed, phase.mode);
         } catch (error) {
-          console.error("verification-dispatch", item.id, error?.stack ?? String(error));
+          console.error(`${phase.mode}-dispatch`, item.id, error?.stack ?? String(error));
           dispatchFailures.push(`${item.id}: ${error}`);
         }
       }

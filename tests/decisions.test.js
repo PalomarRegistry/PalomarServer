@@ -713,8 +713,12 @@ test("the checked-in state bootstrap is the exact empty current contract", async
   const reviewer = JSON.parse(await readFile(
     new URL("../state-bootstrap/index/open.json", import.meta.url), "utf8",
   ));
+  const repairs = JSON.parse(await readFile(
+    new URL("../state-bootstrap/index/repairs.json", import.meta.url), "utf8",
+  ));
   assert.deepEqual(inflight, { open: [] });
   assert.deepEqual(reviewer, { schema_version: 1, open: [] });
+  assert.deepEqual(repairs, { schema_version: 1, open: [] });
 });
 
 test("a commit that does not exist is answered, not treated as a fault", async () => {
@@ -791,19 +795,25 @@ test("the page keeps asking while anything is still moving", async () => {
   // It only re-polled while verifying, so once verification passed the page
   // sat on "waiting for the automated review" and never showed the review.
   const { nextPollDelay } = await import("../public/polling.js");
-  for (const moving of ["verifying", "awaiting-review", "reviewing"]) {
+  for (const moving of [
+    "preflighting", "preflight-reporting", "verifying", "verification-reporting",
+    "awaiting-review", "reviewing", "repairing",
+  ]) {
     assert.ok(nextPollDelay({ status: moving }) > 0, `${moving} must not be treated as settled`);
   }
-  for (const done of ["registered", "withdrawn", "verification-failed", "review-failed"]) {
+  for (const done of [
+    "registered", "withdrawn", "changes-required", "preflight-failed",
+    "verification-failed", "verification-error", "review-failed",
+  ]) {
     assert.equal(nextPollDelay({ status: done }), null, `${done} should stop the polling`);
   }
 });
 
-test("the page stops asking about exactly one status more than the server calls closed", async () => {
+test("the page also stops asking about terminal Palomar-owned failures", async () => {
   // Two nearly identical sets, one in the server and one in the browser, with
   // names that read as synonyms. Every status the server will not act on is one
-  // there is no point asking about, and `review-failed` and `dispatch-lost` are
-  // the two that are the other way round: nothing moves them on their own, so
+  // there is no point asking about, and Palomar-owned terminal failures are the
+  // other way round: nothing moves them on their own, so
   // the page stops asking, but the submission is still the submitter's to
   // withdraw. Written as one derivation
   // from one list so that nobody can quietly make the two equal, in either
@@ -814,7 +824,7 @@ test("the page stops asking about exactly one status more than the server calls 
   }
   assert.deepEqual(
     [...SETTLED].filter((status) => !CLOSED.has(status)).sort(),
-    ["dispatch-lost", "review-failed"],
+    ["dispatch-lost", "preflight-failed", "review-failed", "verification-error"],
   );
   // And the page's own list is that same set, not a copy of it.
   const { SETTLED: fromPolling } = await import("../public/polling.js");
@@ -867,8 +877,14 @@ test("every status gets exactly the review and decision controls the server perm
   const { decisionCopy, statusPresentation, waitingMessage } =
     await import("../public/statuses.js");
   const expected = {
+    preflighting: { review: "hidden", register: false, withdraw: true },
+    "preflight-reporting": { review: "hidden", register: false, withdraw: true },
+    "changes-required": { review: "hidden", register: false, withdraw: false },
+    "preflight-failed": { review: "hidden", register: false, withdraw: true },
     verifying: { review: "hidden", register: false, withdraw: true },
+    "verification-reporting": { review: "hidden", register: false, withdraw: true },
     "verification-failed": { review: "hidden", register: false, withdraw: false },
+    "verification-error": { review: "hidden", register: false, withdraw: true },
     "awaiting-review": { review: "hidden", register: false, withdraw: true },
     reviewing: { review: "hidden", register: false, withdraw: true },
     "review-ready": { review: "interactive", register: false, withdraw: true },
@@ -949,7 +965,7 @@ test("every status gets exactly the review and decision controls the server perm
   assert.match(page, /Please wait — no action is needed/);
   assert.match(page, /id="waiting-message" role="status"/);
   assert.match(page, /id="verification-failure-section" hidden/);
-  assert.match(page, /Why verification failed/);
+  assert.match(page, /What needs attention/);
   assert.match(page, /id="decision-section" hidden/);
   assert.match(page, /<h2 id="decision-heading">Your decision<\/h2>/);
   assert.match(page, /id="decision-intro"/);
@@ -1100,7 +1116,7 @@ test("an event never claims a status the submission cannot be in", async () => {
   const stamped = sources.flatMap((source) =>
     [...source.matchAll(/\{\s*at: (?:recordedAt\(\)|createdAt), status: "([a-z-]+)"/g)]
       .map((m) => m[1]));
-  assert.ok(stamped.includes("verifying"), "the admission event escaped the status scan");
+  assert.ok(stamped.includes("preflighting"), "the admission event escaped the status scan");
   assert.ok(stamped.includes("withdrawn"), "the decision events escaped the status scan");
   for (const status of stamped) {
     assert.ok(status in STATUSES, `an event claims the status "${status}", which does not exist`);
@@ -1131,7 +1147,7 @@ test("the reviewer is asked to run the moment there is work", async () => {
     const path = new URL(url).pathname;
     if (path.includes("/actions/workflows/reviewer.yml/dispatches")) {
       dispatched.push(path);
-      return new Response("", { status: 204 });
+      return new Response(null, { status: 204 });
     }
     const run = {
       id: 12345, name: "Verify submission a1b2c3d4e5f6", status: "completed",
@@ -1915,9 +1931,143 @@ test("a rejected initial dispatch leaves a durable retryable verification", asyn
 
   assert.equal(response.status, 200);
   const record = stub.written.find((item) => item.path.endsWith("state.json"));
-  assert.equal(record.value.status, "verifying");
-  assert.equal(record.value.run, undefined);
+  assert.equal(record.value.status, "preflighting");
+  assert.equal(record.value.preflight_run, undefined);
   assert.equal(stub.deleted.length, 1);
+});
+
+test("a repair request is capability-bound, allowlisted, and queued atomically", async () => {
+  const failure = {
+    schema_version: 1,
+    mode: "preflight",
+    profile_version: 1,
+    run: { id: 101, url: "https://example.test/run" },
+    diagnostics: [{
+      code: "formalization.invalid_field",
+      stage: "formalization",
+      owner: "submitter",
+      summary: "Project name is required",
+      explanation: "project.name is missing",
+      next_action: "Supply the project name.",
+      retryable: false,
+      repairable: true,
+      field: "project.name",
+    }],
+  };
+  const record = {
+    schema_version: 1,
+    id: "a1b2c3d4e5f6",
+    status: "changes-required",
+    repository: "example/project",
+    commit: "1".repeat(40),
+    requested_paths: {},
+    authorization: { relationship: "maintainer" },
+    failure,
+    events: [],
+  };
+  const stub = stubAgent();
+  stub.store.set(`index/tokens/${await tokenDigest(ENV, TOKEN)}.json`, { id: record.id });
+  stub.store.set(statePath(record.id, "state.json"), record);
+  stub.store.set("index/repairs.json", { schema_version: 1, open: [] });
+  const response = await worker.fetch(
+    new Request("https://submit.palomar-registry.org/api/repair", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "sec-fetch-site": "same-origin",
+        cookie: `__Host-palomar_session=${TOKEN}`,
+      },
+      body: JSON.stringify({
+        failure_digest: await digest(JSON.stringify(failure)),
+        edits: [{ field: "project.name", value: "Correct name" }],
+      }),
+    }),
+    { ...ENV, REPAIR_WORKFLOW: "repairer.yml" },
+  );
+  assert.equal(response.status, 202);
+  const repair = stub.store.get(statePath(record.id, "repair.json"));
+  assert.equal(repair.status, "queued");
+  assert.deepEqual(repair.edits, [{ field: "project.name", value: "Correct name" }]);
+  assert.deepEqual(stub.store.get("index/repairs.json").open, [record.id]);
+  assert.equal(stub.store.get(statePath(record.id, "state.json")).repair.status, "queued");
+  assert.ok(stub.dispatched.some((item) => item.path.includes("repairer.yml")));
+});
+
+test("a non-repairable diagnostic cannot be turned into an automated edit", async () => {
+  const failure = {
+    schema_version: 1,
+    mode: "preflight",
+    profile_version: 1,
+    diagnostics: [{
+      owner: "submitter", repairable: false, field: "sources",
+    }],
+  };
+  const record = {
+    id: "a1b2c3d4e5f6", status: "changes-required", repository: "example/project",
+    commit: "1".repeat(40), requested_paths: {}, failure, events: [],
+  };
+  const stub = stubAgent();
+  stub.store.set(`index/tokens/${await tokenDigest(ENV, TOKEN)}.json`, { id: record.id });
+  stub.store.set(statePath(record.id, "state.json"), record);
+  stub.store.set("index/repairs.json", { schema_version: 1, open: [] });
+  const response = await worker.fetch(
+    new Request("https://submit.palomar-registry.org/api/repair", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json", "sec-fetch-site": "same-origin",
+        cookie: `__Host-palomar_session=${TOKEN}`,
+      },
+      body: JSON.stringify({
+        failure_digest: await digest(JSON.stringify(failure)),
+        edits: [{ field: "project.name", value: "Not authorized by this report" }],
+      }),
+    }),
+    ENV,
+  );
+  assert.equal(response.status, 409);
+  assert.equal(stub.store.has(statePath(record.id, "repair.json")), false);
+});
+
+test("repair queue contract failures return actionable JSON without writing", async () => {
+  const failure = {
+    schema_version: 1,
+    mode: "preflight",
+    profile_version: 1,
+    diagnostics: [{
+      owner: "submitter", repairable: true, field: "project.name",
+    }],
+  };
+  const record = {
+    id: "a1b2c3d4e5f6", status: "changes-required", repository: "example/project",
+    commit: "1".repeat(40), requested_paths: {}, failure, events: [],
+  };
+  const stub = stubAgent();
+  stub.store.set(`index/tokens/${await tokenDigest(ENV, TOKEN)}.json`, { id: record.id });
+  stub.store.set(statePath(record.id, "state.json"), record);
+  const originalError = console.error;
+  console.error = () => {};
+  let response;
+  try {
+    response = await worker.fetch(
+      new Request("https://submit.palomar-registry.org/api/repair", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json", "sec-fetch-site": "same-origin",
+          cookie: `__Host-palomar_session=${TOKEN}`,
+        },
+        body: JSON.stringify({
+          failure_digest: await digest(JSON.stringify(failure)),
+          edits: [{ field: "project.name", value: "Correct name" }],
+        }),
+      }),
+      ENV,
+    );
+  } finally {
+    console.error = originalError;
+  }
+  assert.equal(response.status, 503);
+  assert.match((await response.json()).error, /values were not queued.*try again/);
+  assert.equal(stub.store.has(statePath(record.id, "repair.json")), false);
 });
 
 test("agent intake fails closed and in JSON when admission indexes are unusable", async () => {
@@ -2296,6 +2446,30 @@ test("a registration puts the interval back to a minute", async () => {
   assert.equal(stub.store.get(file).interval_seconds, 60, "registering did not clear the wait");
 });
 
+test("repeated metadata failures do not erase the accumulated admission backoff", async () => {
+  const stub = stubAgent();
+  const begun = await agentSubmit();
+  stub.state.tag = { exists: true, sha: "1".repeat(40) };
+  stub.state.gist = { exists: true, content: begun.challenge };
+  const verified = await (await agentVerify({
+    pending_secret: begun.pending_secret, gist_id: "abc123",
+  })).json();
+  const rate = await agentRatePath();
+  stub.store.set(rate, {
+    ...stub.store.get(rate), starts: 6, interval_seconds: 3600,
+  });
+  const record = statePath(verified.submission_id, "state.json");
+  stub.store.set(record, { ...stub.store.get(record), status: "changes-required" });
+
+  const response = await worker.fetch(new Request(
+    "https://submit.palomar-registry.org/api/submission",
+    { headers: { authorization: `Bearer ${verified.access_token}` } },
+  ), ENV);
+  assert.equal(response.status, 200);
+  assert.equal(stub.store.get(rate).interval_seconds, 3600);
+  assert.match(stub.store.get(record).rate_reset_at, /^\d{4}-\d{2}-\d{2}T/);
+});
+
 test("registration reset leaves malformed rate state unapplied without hiding the result", async () => {
   const stub = stubAgent();
   const begun = await agentSubmit();
@@ -2661,8 +2835,8 @@ test("a broken reviewer queue leaves a completed verification held for a repaire
   assert.equal(store.get(statePath("a1b2c3d4e5f6", "state.json")).status, "awaiting-review");
   assert.deepEqual(activity, [
     "open queue",
-    "dispatch reviewer",
     "update record",
+    "dispatch reviewer",
     "release slot",
   ]);
 });
@@ -2702,6 +2876,74 @@ test("a pinned run is asked for by id, not searched for by name", async () => {
     !asked.some((path) => path.includes("/actions/workflows/")),
     "a pinned run was still searched for by name",
   );
+});
+
+test("a passing preflight queues full verification without releasing capacity", async () => {
+  const { reconcile } = await import("../src/submission-lifecycle.js");
+  const run = {
+    id: 12345, name: "Preflight submission a1b2c3d4e5f6", status: "completed",
+    conclusion: "success", html_url: "https://example.test/preflight",
+    run_started_at: "2026-08-01T00:00:00Z",
+  };
+  const files = {
+    ...(await fixture({
+      status: "preflighting", run: undefined, preflight_run: { id: 12345 },
+    })),
+    "index/inflight.json": {
+      open: [{
+        id: "a1b2c3d4e5f6", owner: "example", submitter: "someone",
+        at: "2026-08-01T00:00:00Z",
+      }],
+    },
+  };
+  const stub = stubState(files, [run]);
+  const dispatches = [];
+  const inner = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    if ((init.method ?? "GET") === "POST" && new URL(url).pathname.endsWith("/dispatches")) {
+      dispatches.push(JSON.parse(init.body));
+      return new Response(null, { status: 204 });
+    }
+    return inner(url, init);
+  };
+  assert.deepEqual(await reconcile({ ...ENV, VERIFY_WORKFLOW: "submission.yml" }), {
+    released: 0, open: 1,
+  });
+  const record = stub.store.get(statePath("a1b2c3d4e5f6", "state.json"));
+  assert.equal(record.status, "verifying");
+  assert.equal(record.preflight_run.id, 12345);
+  assert.equal(record.dispatch_lease_count, 1);
+  assert.deepEqual(dispatches[0].inputs.mode, "full");
+});
+
+test("a failed preflight is handed to diagnostic reporting before capacity is released", async () => {
+  const { reconcile } = await import("../src/submission-lifecycle.js");
+  const run = {
+    id: 12345, name: "Preflight submission a1b2c3d4e5f6", status: "completed",
+    conclusion: "failure", html_url: "https://example.test/preflight",
+    run_started_at: "2026-08-01T00:00:00Z",
+  };
+  const files = {
+    ...(await fixture({
+      status: "preflighting", run: undefined, preflight_run: { id: 12345 },
+    })),
+    "index/inflight.json": {
+      open: [{
+        id: "a1b2c3d4e5f6", owner: "example", submitter: "someone",
+        at: "2026-08-01T00:00:00Z",
+      }],
+    },
+  };
+  const stub = stubState(files, [run]);
+  assert.deepEqual(await reconcile({ ...ENV, REVIEW_WORKFLOW: "reviewer.yml" }), {
+    released: 1, open: 0,
+  });
+  assert.equal(
+    stub.store.get(statePath("a1b2c3d4e5f6", "state.json")).status,
+    "preflight-reporting",
+  );
+  assert.deepEqual(stub.store.get("index/open.json").open, ["a1b2c3d4e5f6"]);
+  assert.deepEqual(stub.store.get("index/inflight.json").open, []);
 });
 
 test("a durable dispatch retries under a lease without releasing its slot", async () => {
@@ -2764,7 +3006,7 @@ test("a missing pinned run becomes terminal and releases its reservation", async
   assert.deepEqual(await reconcile(ENV), { released: 1, open: 0 });
   assert.equal(dispatches, 0);
   const record = store.get(statePath("a1b2c3d4e5f6", "state.json"));
-  assert.equal(record.status, "verification-failed");
+  assert.equal(record.status, "dispatch-lost");
   assert.equal(record.run.id, 999);
   assert.match(record.events.at(-1).note, /pinned verification run no longer exists/);
   assert.deepEqual(store.get("index/inflight.json").open, []);
@@ -2794,7 +3036,7 @@ test("an undiscoverable dispatch becomes terminal after the bounded attempt coun
   assert.deepEqual(await reconcile(ENV), { released: 1, open: 0 });
   assert.equal(dispatches, 0);
   const record = store.get(statePath("a1b2c3d4e5f6", "state.json"));
-  assert.equal(record.status, "verification-failed");
+  assert.equal(record.status, "dispatch-lost");
   assert.equal(record.dispatch_lease_at, undefined);
   assert.equal(record.dispatch_lease_count, undefined);
   assert.match(record.events.at(-1).note, /not discoverable after 3 attempts/);
@@ -2876,7 +3118,7 @@ test("a second run carrying the same submission id cannot settle the record", as
   const { store } = stubState(files, [impostor]);
   assert.deepEqual(await reconcile(ENV), { released: 1, open: 0 });
   const record = store.get(statePath("a1b2c3d4e5f6", "state.json"));
-  assert.equal(record.status, "verification-failed", "an impostor run settled the record");
+  assert.equal(record.status, "dispatch-lost", "an impostor run settled the record");
   assert.equal(record.run.id, 12345);
   assert.match(record.events.at(-1).note, /pinned verification run no longer exists/);
 });
