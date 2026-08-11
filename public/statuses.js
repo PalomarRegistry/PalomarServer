@@ -53,6 +53,22 @@ const WITHDRAWABLE = new Set([
   "dispatch-lost",
 ]);
 
+const WAITING_MESSAGES = {
+  verifying:
+    "Palomar is mechanically checking the repository. If verification and review pass, " +
+    "the option to register will appear on this page.",
+  "awaiting-review":
+    "Mechanical verification passed and the automated review has been queued. If the " +
+    "review passes, the option to register will appear here.",
+  reviewing:
+    "The automated review is running. If it passes, the option to register will appear here.",
+};
+
+/** The primary explanation for a status that needs no submitter action. */
+export function waitingMessage(status) {
+  return WAITING_MESSAGES[status] ?? null;
+}
+
 /** The review and decision controls that belong to one current status. */
 export function statusPresentation(
   status,
@@ -66,4 +82,109 @@ export function statusPresentation(
     register: status === "review-ready" && reviewPassed && !registrationConsent,
     withdraw: WITHDRAWABLE.has(status),
   };
+}
+
+/** The heading and explanation above whichever decision controls are shown. */
+export function decisionCopy(
+  status,
+  {
+    reviewPassed = false,
+    registrationConsent = false,
+    reviewShown = false,
+    reviewNeedsRerun = false,
+  } = {},
+) {
+  const presentation = statusPresentation(status, { reviewPassed, registrationConsent });
+  if (presentation.register) {
+    return {
+      heading: "Your decision",
+      intro:
+        "Read the automated review above, then choose whether to register or withdraw this submission.",
+    };
+  }
+  if (!presentation.withdraw) return null;
+  if (registrationConsent) {
+    return {
+      heading: "Stop this submission",
+      intro: "Registration is already under way. Use this only if you want Palomar to stop it.",
+    };
+  }
+  if (reviewNeedsRerun) {
+    return {
+      heading: "Waiting for another review",
+      intro:
+        "No action is needed. Palomar's operators can see that the review must be rerun; " +
+        "withdraw only if you want to cancel the submission.",
+    };
+  }
+  if (status === "review-ready" && reviewShown && !reviewPassed) {
+    return {
+      heading: "This review did not pass",
+      intro:
+        "Registration is not offered. Update the repository and submit the corrected commit, " +
+        "or withdraw to close this submission.",
+    };
+  }
+  if (status === "review-ready") {
+    return {
+      heading: "Waiting for the review",
+      intro:
+        "No action is needed. This page will keep trying to retrieve the review; withdraw " +
+        "only if you want to cancel the submission.",
+    };
+  }
+  if (waitingMessage(status)) {
+    return {
+      heading: "Stop this submission",
+      intro: "This is optional. Palomar is still working; withdraw only if you want to cancel.",
+    };
+  }
+  return {
+    heading: "Stop this submission",
+    intro: "Withdraw only if you want to close this submission.",
+  };
+}
+
+const RUNNER_BOILERPLATE = [
+  /^Process completed with exit code \d+\.?$/i,
+  /^mechanical verification did not pass(?::\s*[a-z_-]+)?\.?$/i,
+];
+
+/** The exact public run whose unsuccessful completion is safe to explain. */
+export function verificationRunLocation(run) {
+  if (run?.status !== "completed" || !run.conclusion || run.conclusion === "success") {
+    return null;
+  }
+  const match = /^https:\/\/github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/actions\/runs\/(\d+)$/.exec(
+    String(run.url ?? ""),
+  );
+  if (!match || [match[1], match[2]].some((part) => part === "." || part === "..")) return null;
+  const runId = Number(match[3]);
+  if (!Number.isSafeInteger(runId) || runId !== Number(run.id)) return null;
+  return { repositoryPath: `${match[1]}/${match[2]}`, runId, runUrl: run.url };
+}
+
+/**
+ * Turn public GitHub check annotations into bounded, actionable diagnostics.
+ * Text remains text in the caller; repository-controlled markup is never used.
+ */
+export function actionableVerificationErrors(annotations, steps = []) {
+  const messages = [];
+  for (const annotation of Array.isArray(annotations) ? annotations : []) {
+    if (annotation?.annotation_level !== "failure") continue;
+    const message = String(annotation.message ?? "").trim().slice(0, 2000);
+    if (!message || RUNNER_BOILERPLATE.some((pattern) => pattern.test(message))) continue;
+    if (!messages.includes(message)) messages.push(message);
+    if (messages.length === 8) break;
+  }
+  if (messages.length) return messages;
+  for (const step of Array.isArray(steps) ? steps : []) {
+    const name = String(step?.name ?? "").trim();
+    if (step?.conclusion !== "failure" || !name ||
+        /^Fail the run when verification did not pass$/i.test(name)) continue;
+    const message = `The “${name.slice(0, 200)}” step failed.`;
+    if (!messages.includes(message)) messages.push(message);
+    if (messages.length === 8) break;
+  }
+  return messages;
 }

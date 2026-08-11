@@ -864,7 +864,8 @@ test("the status page stops asking when nobody is looking at it", async () => {
 });
 
 test("every status gets exactly the review and decision controls the server permits", async () => {
-  const { statusPresentation } = await import("../public/statuses.js");
+  const { decisionCopy, statusPresentation, waitingMessage } =
+    await import("../public/statuses.js");
   const expected = {
     verifying: { review: "hidden", register: false, withdraw: true },
     "verification-failed": { review: "hidden", register: false, withdraw: false },
@@ -899,6 +900,26 @@ test("every status gets exactly the review and decision controls the server perm
     review: "hidden", register: false, withdraw: false,
   });
 
+  assert.match(waitingMessage("verifying"), /mechanically checking/);
+  assert.match(waitingMessage("awaiting-review"), /review has been queued/);
+  assert.match(waitingMessage("reviewing"), /review is running/);
+  for (const status of ["verification-failed", "review-ready", "review-failed",
+    "dispatch-lost", "registered", "withdrawn", "unknown"]) {
+    assert.equal(waitingMessage(status), null, status);
+  }
+
+  assert.deepEqual(decisionCopy("review-ready", { reviewPassed: true }), {
+    heading: "Your decision",
+    intro: "Read the automated review above, then choose whether to register or withdraw this submission.",
+  });
+  assert.match(decisionCopy("verifying").intro, /still working/);
+  assert.match(decisionCopy("review-ready", { reviewShown: true }).heading, /did not pass/);
+  assert.match(decisionCopy("review-ready", { reviewNeedsRerun: true }).heading, /another review/);
+  assert.match(decisionCopy("review-ready").intro, /keep trying/);
+  assert.match(decisionCopy("review-failed").intro, /close this submission/);
+  assert.match(decisionCopy("review-ready", { registrationConsent: true }).intro, /under way/);
+  assert.equal(decisionCopy("verification-failed"), null);
+
   const script = await readFile(new URL("../public/status.js", import.meta.url), "utf8");
   assert.match(script, /let presentation = statusPresentation\(data\.status, \{/);
   assert.match(
@@ -924,11 +945,82 @@ test("every status gets exactly the review and decision controls the server perm
   const { statusPage } = await import("../src/html.js");
   const page = statusPage(ENV);
   assert.match(page, /id="review-privacy"/);
+  assert.match(page, /id="waiting-section" hidden/);
+  assert.match(page, /Please wait — no action is needed/);
+  assert.match(page, /id="waiting-message" role="status"/);
+  assert.match(page, /id="verification-failure-section" hidden/);
+  assert.match(page, /Why verification failed/);
   assert.match(page, /id="decision-section" hidden/);
-  assert.match(page, /<h2>Your decision<\/h2>/);
+  assert.match(page, /<h2 id="decision-heading">Your decision<\/h2>/);
+  assert.match(page, /id="decision-intro"/);
   assert.match(page, /id="withdraw"[^>]+aria-describedby="withdraw-warning"/);
   assert.match(page, /id="register-warning"/);
   assert.match(page, /id="withdraw-warning"/);
+
+  // While verification or review is moving, waiting is the primary message
+  // and withdrawal is explicitly labelled as an optional cancellation. Only
+  // a passed review is presented as a decision between two actions.
+  assert.match(script, /const waiting = waitingStatusMessage\(data\.status\)/);
+  assert.match(script, /waitingSection\.hidden = !waiting/);
+  assert.match(script, /const copy = decisionCopy\(data\.status, \{/);
+  assert.match(script, /decisionHeading\.textContent = copy\.heading/);
+});
+
+test("verification failures show actionable public annotations and repeat the run link", async () => {
+  const { actionableVerificationErrors, verificationRunLocation } =
+    await import("../public/statuses.js");
+  const useful =
+    "formalization.yaml is missing the sections Palomar requires: project and repository.";
+  assert.deepEqual(actionableVerificationErrors([
+    { annotation_level: "failure", message: "Process completed with exit code 1." },
+    { annotation_level: "warning", message: "not an error" },
+    { annotation_level: "failure", message: useful },
+    { annotation_level: "failure", message: useful },
+    { annotation_level: "failure", message: "mechanical verification did not pass: error" },
+  ]), [useful]);
+  assert.deepEqual(actionableVerificationErrors([], [
+    { conclusion: "failure", name: "Build pinned Comparator" },
+    { conclusion: "failure", name: "Fail the run when verification did not pass" },
+  ]), ["The “Build pinned Comparator” step failed."]);
+  const run = {
+    id: 31454081648,
+    status: "completed",
+    conclusion: "failure",
+    url: "https://github.com/PalomarRegistry/PalomarSubmission/actions/runs/31454081648",
+  };
+  assert.deepEqual(verificationRunLocation(run), {
+    repositoryPath: "PalomarRegistry/PalomarSubmission",
+    runId: 31454081648,
+    runUrl: run.url,
+  });
+  for (const invalid of [
+    null,
+    { ...run, status: "queued" },
+    { ...run, conclusion: "success" },
+    { ...run, id: run.id + 1 },
+    { ...run, url: "https://example.test/actions/runs/31454081648" },
+    { ...run, url: "https://github.com/../PalomarSubmission/actions/runs/31454081648" },
+  ]) assert.equal(verificationRunLocation(invalid), null);
+
+  const script = await readFile(new URL("../public/status.js", import.meta.url), "utf8");
+  assert.match(script, /actions\/runs\/\$\{runId\}\/jobs\?filter=latest&per_page=100/);
+  assert.match(script, /check-runs\/\$\{job\.id\}\/annotations\?per_page=100/);
+  assert.match(script, /actionableVerificationErrors\(annotationGroups\.flat\(\)/);
+  assert.match(script, /You can inspect the error message as part of the failed verification run at/);
+  assert.doesNotMatch(script, /innerHTML|outerHTML|insertAdjacentHTML/);
+  assert.match(script, /verification-failed[\s\S]*void showVerificationFailure\(data\.run\)/);
+  assert.match(script, /setTimeout\(\(\) => controller\.abort\(\), 8000\)/);
+  assert.match(script, /\.slice\(0, 3\)/);
+});
+
+test("every status-script element is present in the status page", async () => {
+  const script = await readFile(new URL("../public/status.js", import.meta.url), "utf8");
+  const { statusPage } = await import("../src/html.js");
+  const page = statusPage(ENV);
+  const ids = [...script.matchAll(/document\.getElementById\("([^"]+)"\)/g)]
+    .map((match) => match[1]);
+  assert.ok(ids.length > 10);
+  for (const id of ids) assert.match(page, new RegExp(`id="${id}"`), id);
 });
 
 test("a registered page names only the exact consented review as public", async () => {

@@ -57,6 +57,12 @@ exchange it for a short-lived cookie. Saying it is "never sent to a server"
 would be wrong, and the page does not say so: it says to treat the link like a
 password, which is the part a submitter can act on.
 
+For a completed verification failure, the browser reads the public run's job
+and check annotations directly from `api.github.com` so it can show the actual
+error beside the run link. Those bounded requests carry neither a GitHub
+credential nor the Palomar cookie or fragment, and the site's `no-referrer`
+policy keeps the private status URL out of them.
+
 Browser status sessions use a `__Host-` cookie: it is secure, scoped to `/`,
 and has no `Domain` attribute. Browsers therefore do not let a sibling host set
 or shadow that credential, and the server refuses an ambiguous request carrying

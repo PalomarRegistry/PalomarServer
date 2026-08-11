@@ -1,5 +1,11 @@
 import { SETTLED, nextPollDelay, pollFailureAction } from "/polling.js";
-import { statusPresentation } from "/statuses.js";
+import {
+  actionableVerificationErrors,
+  decisionCopy,
+  statusPresentation,
+  verificationRunLocation,
+  waitingMessage as waitingStatusMessage,
+} from "/statuses.js";
 
 // The access token lives in the URL fragment, which browsers never send to a
 // server. It is posted once in exchange for a short-lived cookie, then removed
@@ -9,11 +15,18 @@ const summary = document.getElementById("summary");
 const details = document.getElementById("details");
 const events = document.getElementById("events");
 const progress = document.getElementById("progress-detail");
+const waitingSection = document.getElementById("waiting-section");
+const waitingMessage = document.getElementById("waiting-message");
+const verificationFailureSection = document.getElementById("verification-failure-section");
+const verificationErrors = document.getElementById("verification-errors");
+const verificationRunContext = document.getElementById("verification-run-context");
 const reviewSection = document.getElementById("review-section");
 const reviewPrivacy = document.getElementById("review-privacy");
 const reviewSummary = document.getElementById("review-summary");
 const reviewBody = document.getElementById("review-body");
 const decisionSection = document.getElementById("decision-section");
+const decisionHeading = document.getElementById("decision-heading");
+const decisionIntro = document.getElementById("decision-intro");
 const decisionStatus = document.getElementById("decision-status");
 const registerButton = document.getElementById("register");
 const withdrawButton = document.getElementById("withdraw");
@@ -238,6 +251,77 @@ function link(href, text) {
   return a;
 }
 
+function hideTransientSections() {
+  waitingSection.hidden = true;
+  decisionSection.hidden = true;
+  verificationFailureSection.hidden = true;
+  reviewSection.hidden = true;
+  decisionStatus.replaceChildren();
+}
+
+let shownFailureRun = null;
+let failureDisplayToken = 0;
+
+/** Show public, bounded check annotations without asking for a GitHub credential. */
+async function showVerificationFailure(run) {
+  const location = verificationRunLocation(run);
+  if (!location) return;
+  const mine = ++failureDisplayToken;
+  verificationFailureSection.hidden = false;
+  verificationErrors.replaceChildren(el("li", "Retrieving the detailed error…"));
+  verificationRunContext.replaceChildren();
+
+  let messages = [];
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 8000);
+  try {
+    const { repositoryPath, runId } = location;
+    const options = {
+      headers: { accept: "application/vnd.github+json" },
+      // Deliberately no credentials. The verification repository and these
+      // annotations are public, while the status-page capability is private.
+      signal: controller.signal,
+    };
+    const jobsResponse = await fetch(
+      `https://api.github.com/repos/${repositoryPath}/actions/runs/${runId}/jobs?filter=latest&per_page=100`,
+      options,
+    );
+    if (!jobsResponse.ok) throw new Error("verification jobs unavailable");
+    const jobs = (await jobsResponse.json())?.jobs ?? [];
+    // Current verification has one job. The cap keeps a future matrix from
+    // spending a browser's unauthenticated GitHub allowance in one page load.
+    const failedJobs = jobs.filter((job) => job?.conclusion === "failure").slice(0, 3);
+    const annotationGroups = await Promise.all(failedJobs.map(async (job) => {
+      const response = await fetch(
+        `https://api.github.com/repos/${repositoryPath}/check-runs/${job.id}/annotations?per_page=100`,
+        options,
+      );
+      return response.ok ? response.json() : [];
+    }));
+    messages = actionableVerificationErrors(annotationGroups.flat(), failedJobs.flatMap(
+      (job) => job.steps ?? [],
+    ));
+  } catch {
+    // The run itself remains the complete fallback. GitHub annotations are a
+    // convenience and a rate limit or outage must not hide the settled record.
+  } finally {
+    clearTimeout(timeout);
+  }
+  if (mine !== failureDisplayToken) return;
+  if (!messages.length) {
+    messages = ["Palomar could not retrieve the detailed error automatically."];
+  }
+  verificationErrors.replaceChildren(...messages.map((message) => el("li", message)));
+  verificationRunContext.replaceChildren(
+    document.createTextNode(
+      "You can inspect the error message as part of the failed verification run at ",
+    ),
+    link(location.runUrl, location.runUrl),
+    document.createTextNode("."),
+  );
+  shownFailureRun = location.runId;
+}
+
 async function establishSession() {
   if (!token) return false;
   const body = new FormData();
@@ -301,11 +385,13 @@ async function poll() {
       const failure = pollFailureAction(response.status);
       if (failure === "missing") {
         summary.textContent = "This submission could not be found.";
+        hideTransientSections();
         return;
       }
       if (failure === "unauthorized") {
         summary.textContent =
           "This session has expired or is not authorized. Open the original submission link again.";
+        hideTransientSections();
         return;
       }
       summary.textContent = "Could not refresh this submission. Retrying.";
@@ -321,8 +407,19 @@ async function poll() {
     return;
   }
 
-  summary.textContent = LABELS[data.status] ?? data.status;
+  const failedRun = verificationRunLocation(data.run);
+  summary.textContent = data.status === "verification-failed" && !failedRun
+    ? "Palomar could not complete or recover the verification run. This is a fault at our end, not with your submission."
+    : LABELS[data.status] ?? data.status;
   progress.replaceChildren();
+  const waiting = waitingStatusMessage(data.status);
+  waitingSection.hidden = !waiting;
+  if (waitingMessage.textContent !== (waiting ?? "")) waitingMessage.textContent = waiting ?? "";
+  if (data.status !== "verification-failed" || !failedRun) {
+    verificationFailureSection.hidden = true;
+    shownFailureRun = null;
+    failureDisplayToken += 1;
+  }
 
   if (data.status === "awaiting-review" || data.status === "reviewing") {
     progress.append(el("p", REVIEW_EXPLANATION));
@@ -408,6 +505,16 @@ async function poll() {
     reviewSection.hidden = true;
   }
   decisionSection.hidden = !presentation.register && !presentation.withdraw;
+  const copy = decisionCopy(data.status, {
+    reviewPassed,
+    registrationConsent: effectiveConsent,
+    reviewShown,
+    reviewNeedsRerun,
+  });
+  if (copy) {
+    decisionHeading.textContent = copy.heading;
+    decisionIntro.textContent = copy.intro;
+  }
   registerButton.hidden = !presentation.register;
   withdrawButton.hidden = !presentation.withdraw;
   registerButton.disabled = decisionInFlight || !presentation.register;
@@ -429,6 +536,11 @@ async function poll() {
     data.status === "review-ready" && reviewShown &&
       !effectiveConsent && !reviewNeedsRerun,
   );
+  // Public annotations are an enhancement to an already complete terminal
+  // page. Never hold the repository, progress, or run link behind GitHub.
+  if (data.status === "verification-failed" && failedRun && shownFailureRun !== failedRun.runId) {
+    void showVerificationFailure(data.run);
+  }
 }
 
 const linkField = document.getElementById("submission-link");
