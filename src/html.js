@@ -191,11 +191,21 @@ export function statusPage(env) {
   return page(env, "Your submission", `
     <h1>Your submission</h1>
     <p class="lede" id="summary">Loading…</p>
+    <section class="disclosure waiting" id="waiting-section" hidden>
+      <h2>Please wait — no action is needed</h2>
+      <p id="waiting-message" role="status"></p>
+    </section>
     <div id="progress-detail"></div>
     <p class="hint">This page keeps itself up to date. You do not need to reload it.</p>
     <dl class="details" id="details"></dl>
     <h2>Progress</h2>
     <ol class="events" id="events"></ol>
+
+    <section class="disclosure" id="verification-failure-section" hidden>
+      <h2>Why verification failed</h2>
+      <ul class="problems" id="verification-errors"></ul>
+      <p id="verification-run-context"></p>
+    </section>
 
     <section id="review-section" hidden>
       <h2>Your automated review</h2>
@@ -213,7 +223,8 @@ export function statusPage(env) {
     </section>
 
     <div id="decision-section" hidden>
-      <h2>Your decision</h2>
+      <h2 id="decision-heading">Your decision</h2>
+      <p id="decision-intro"></p>
       <div class="decision">
         <button type="button" id="register" aria-describedby="register-warning">Register this result</button>
         <button type="button" id="withdraw" class="secondary" aria-describedby="withdraw-warning">Withdraw the submission</button>

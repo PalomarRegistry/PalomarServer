@@ -120,6 +120,12 @@ does not fail your submission faster, it fails everybody's. The status page
 starts faster than that and backs off to the same ceiling, and stops asking
 altogether while nobody is looking at it.
 
+On a browser status page, a completed failed run is supplemented with bounded,
+unauthenticated reads of that public GitHub run's check annotations. An API
+client receives the run URL in `GET /api/submission` and may inspect the same
+public annotations itself; Palomar never sends the submission access token to
+GitHub.
+
 A submission is settled at `registered`, `withdrawn`, `verification-failed`,
 `review-failed`, or `dispatch-lost`. `GET /api/review` tells you whether the
 review passed and what it asked for; it does not tell you whether the decision

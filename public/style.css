@@ -45,6 +45,8 @@ button { margin-top: 1.5rem; padding: .6rem 1.1rem; font: inherit; font-weight: 
 .disclosure { border: 1px solid var(--line); border-radius: 8px; padding: .25rem 1rem 1rem; margin: 1.5rem 0; }
 .disclosure ul { padding-left: 1.1rem; }
 .disclosure li { margin: .5rem 0; }
+.waiting { border-left: .3rem solid var(--accent); border-radius: 0 8px 8px 0; }
+.waiting h2 { margin-top: .75rem; }
 .details { display: grid; grid-template-columns: max-content 1fr; gap: .35rem 1rem; }
 .details dt { color: var(--dim); }
 .details dd { margin: 0; overflow-wrap: anywhere; }
