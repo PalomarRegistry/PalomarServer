@@ -86,7 +86,7 @@ export const STATUSES = {
 
 export function newRecord({
   id, repositoryName, commit, owner, submitter, existingId, context, authorization,
-  requestedPaths = {},
+  requestedPaths = {}, testSubmission = false,
 }) {
   return {
     schema_version: 1,
@@ -96,7 +96,8 @@ export function newRecord({
     commit,
     owner,
     submitter,
-    push_verified: true,
+    push_verified: !testSubmission,
+    ...(testSubmission ? { test_submission: true } : {}),
     existing_id: existingId || null,
     context: context || null,
     // What the submitter asked to be verified, which the reviewer binds the

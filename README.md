@@ -1,8 +1,8 @@
 # Palomar submission server
 
-A Cloudflare Worker that takes submissions, establishes that whoever submitted
-can push to the repository they submitted, and keeps every durable fact in
-GitHub.
+A Cloudflare Worker that takes submissions, establishes either that whoever
+submitted can push to the repository or that an active Technical Maintainer is
+running a non-registerable workflow test, and keeps every durable fact in GitHub.
 
 Live at <https://submit.palomar-registry.org>.
 
@@ -77,6 +77,14 @@ before it can read or consume pending State.
 Push access is not authorship. It does not establish approval from the
 responsible authors of a substantive formalization, and does not replace the
 declaration a submitter makes about that.
+
+An active member of `PalomarRegistry/technical-maintainers` may instead choose
+the explicit technical-test relationship. That browser-only path requests
+`read:org`, verifies the team membership, and permits a public repository and
+pinned commit without write access. Its durable record says `test_submission`,
+does not claim `push_verified`, and carries a distinct team-membership proof.
+The agent intake cannot use this exception because its tag-and-gist proof does
+not establish team membership.
 
 ## Private operational dashboard
 
@@ -159,7 +167,10 @@ leaves no public trace of the review or the decision. After consent, the reviewe
 still refuses to merge a withdrawn record, but source-preservation or rendering
 work that already started may remain public. Only an accepted review under the
 current review contract can be registered; an older in-flight review must be
-rerun.
+rerun. A technical-team test can reach the same accepted-review screen, but its
+registration control is disabled with an explanation. `/register`, State
+validation, and the reviewer independently refuse it even if a client bypasses
+the page or consent is edited by hand.
 
 ## The state a submission holds
 

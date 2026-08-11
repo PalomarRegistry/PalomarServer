@@ -184,6 +184,18 @@ test("registration consent is recorded, and only by the submitter", async () => 
   assert.equal(state.sha, `sha-${statePath("a1b2c3d4e5f6", "state.json")}`);
 });
 
+test("a technical-team test can never record registration consent", async () => {
+  const { written } = stubState(await fixture({
+    test_submission: true,
+    push_verified: false,
+    authorization: { relationship: "technical-test" },
+  }));
+  const response = await worker.fetch(request("/register", "POST"), ENV);
+  assert.equal(response.status, 409);
+  assert.match((await response.json()).error, /would be allowed if this were not.*test/i);
+  assert.equal(written.length, 0);
+});
+
 test("consent cannot be given before there is a review to consent to", async () => {
   const { written } = stubState(await fixture({ status: "awaiting-review" }));
   const response = await worker.fetch(request("/register", "POST"), ENV);
@@ -326,6 +338,13 @@ test("the status feed never carries the submitter or the review", async () => {
   assert.equal(response.status, 200);
   assert.ok(!body.includes("someone"), "the submitter's login must not be echoed");
   assert.ok(!body.includes("An example review"), "the review must not ride along");
+});
+
+test("the status feed tells the page when registration is blocked as a test", async () => {
+  stubState(await fixture({ test_submission: true, push_verified: false }));
+  const response = await worker.fetch(request("/api/submission"), ENV);
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).test_submission, true);
 });
 
 test("the health check says whether the service is up and nothing else", async () => {
@@ -956,6 +975,11 @@ test("every status gets exactly the review and decision controls the server perm
   assert.match(script, /data\.review_sha256 !== reviewDigest[\s\S]*resetReview\(\)/);
   assert.match(script, /path === "\/register"[\s\S]*resetReview\(\);[\s\S]*await poll\(\)/);
   assert.match(script, /withdrawButton\.disabled = decisionInFlight \|\| !presentation\.withdraw/);
+  assert.match(
+    script,
+    /registerButton\.disabled = decisionInFlight \|\| !presentation\.register \|\| testSubmission/,
+  );
+  assert.match(script, /Registration would be allowed here if this were not a technical-team test/);
   assert.match(script, /reviewShown &&[\s\S]*!effectiveConsent && !reviewNeedsRerun/);
 
   const { statusPage } = await import("../src/html.js");
@@ -1298,6 +1322,7 @@ function stubOAuth({
   push,
   files = {},
   login = "someone",
+  membership = "active",
   inflight = { open: [] },
   reviewer = { schema_version: 1, open: [] },
 }) {
@@ -1318,6 +1343,11 @@ function stubOAuth({
     if (target.pathname === "/user") {
       return Response.json({ login, id: 4242 });
     }
+    if (target.pathname.includes("/teams/technical-maintainers/memberships/")) {
+      return membership === null
+        ? new Response("", { status: 404 })
+        : Response.json({ state: membership, role: "member" });
+    }
     if (target.pathname === "/repos/example/project") {
       return Response.json({
         full_name: "example/project",
@@ -1327,7 +1357,7 @@ function stubOAuth({
       });
     }
     if (target.pathname.includes("/actions/workflows/")) {
-      dispatched.push(target.pathname);
+      dispatched.push({ path: target.pathname, body: JSON.parse(init.body) });
       return Response.json({ ok: true });
     }
     const git = stateGitApi(target, init, { store, written, deleted, refUpdates });
@@ -1415,6 +1445,47 @@ test("a submitter who can push is recorded as having proved it", async () => {
   assert.equal(record.value.push_verified, true);
   assert.equal(record.value.submitter, "someone");
   assert.equal(response.headers.get("set-cookie"), await clearedIntakeCookie(nonce));
+});
+
+test("an active Technical Maintainer can run a marked test without push access", async () => {
+  const nonce = "7".repeat(64);
+  const pending = {
+    ...PENDING,
+    authorization_relationship: "technical-test",
+  };
+  const stub = stubOAuth({
+    push: false,
+    membership: "active",
+    files: { [`pending/${await digest(nonce)}.json`]: pending },
+  });
+  const response = await callback(nonce);
+
+  assert.equal(response.status, 303);
+  const record = stub.written.find((item) => item.path.endsWith("state.json"));
+  assert.equal(record.value.test_submission, true);
+  assert.equal(record.value.push_verified, false);
+  assert.equal(record.value.authorization.relationship, "technical-test");
+  assert.equal(record.value.push_proof.method, "technical-team-test");
+  assert.equal(record.value.push_proof.binding, "active-technical-team-membership");
+  assert.equal(
+    JSON.parse(stub.dispatched[0].body.inputs.options).authorization_relationship,
+    "I am a Palomar Technical Maintainer testing the workflow",
+  );
+});
+
+test("selecting the test exception does not trust a nonmember", async () => {
+  const nonce = "8".repeat(64);
+  const pending = { ...PENDING, authorization_relationship: "technical-test" };
+  const stub = stubOAuth({
+    push: false,
+    membership: null,
+    files: { [`pending/${await digest(nonce)}.json`]: pending },
+  });
+  const response = await callback(nonce);
+
+  assert.equal(response.status, 403);
+  assert.match(await response.text(), /limited to Technical Maintainers/);
+  assert.equal(stub.written.filter((item) => item.path.endsWith("state.json")).length, 0);
 });
 
 test("browser intake fails closed and visibly when inflight state is unusable", async () => {
@@ -2285,7 +2356,7 @@ test("a browser sign-in cannot be completed as an agent submission", async () =>
   // The two intakes prove different things and record different bindings.
   // A pending record must be redeemed by the path that created it.
   const stub = stubAgent();
-  await worker.fetch(
+  const response = await worker.fetch(
     new Request("https://submit.palomar-registry.org/submit", {
       method: "POST",
       headers: { "sec-fetch-site": "same-origin" },
@@ -2295,6 +2366,40 @@ test("a browser sign-in cannot be completed as an agent submission", async () =>
   );
   const pending = stub.written.find((item) => item.path.startsWith("pending/"));
   assert.equal(pending.value.method, "oauth");
+  assert.equal(new URL(response.headers.get("location")).searchParams.get("scope"), "read:user");
+});
+
+test("a browser technical test requests team visibility and the agent path refuses it", async () => {
+  const stub = stubAgent();
+  const testSubmission = {
+    ...AGENT_SUBMISSION,
+    authorization_relationship: "technical-test",
+  };
+  const browser = await worker.fetch(
+    new Request("https://submit.palomar-registry.org/submit", {
+      method: "POST",
+      headers: { "sec-fetch-site": "same-origin" },
+      body: new URLSearchParams(testSubmission),
+    }),
+    ENV,
+  );
+  assert.equal(browser.status, 303);
+  assert.equal(
+    new URL(browser.headers.get("location")).searchParams.get("scope"),
+    "read:user read:org",
+  );
+
+  const agent = await worker.fetch(
+    new Request("https://submit.palomar-registry.org/api/submit", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(testSubmission),
+    }),
+    ENV,
+  );
+  assert.equal(agent.status, 400);
+  assert.match((await agent.json()).problems[0], /require browser GitHub sign-in/);
+  assert.ok(stub.written.some((item) => item.path.startsWith("pending/")));
 });
 
 test("starting a submission doubles the wait, and only registering clears it", async () => {

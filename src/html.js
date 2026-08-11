@@ -49,7 +49,8 @@ export function intakeForm(env, values = {}, problems = []) {
       <li>The result has credible research interest and a clear informal explanation.</li>
       <li>A public, pinned commit contains an auditable Challenge, matching Solution,
           Comparator configuration, <code>formalization.yaml</code>, and a licence.</li>
-      <li>You are a responsible author or maintainer, or have their approval.</li>
+      <li>For a registrable submission, you are a responsible author or maintainer, or have their approval.
+          Technical Maintainers may instead run a non-registerable test.</li>
     </ul>
     <p>See the
       <a href="https://github.com/PalomarRegistry/PalomarPolicy/blob/main/CONTRIBUTING.md">full submission requirements</a>.
@@ -168,9 +169,18 @@ Identify every missing, malformed, obsolete, or inconsistent field. For each pro
                  ${values.authorization_relationship === "approved" ? "checked" : ""}>
           I have approval from a responsible author or maintainer
         </label>
+        <label class="choice">
+          <input type="radio" name="authorization_relationship" value="technical-test"
+                 ${values.authorization_relationship === "technical-test" ? "checked" : ""}>
+          I am a Palomar Technical Maintainer testing the workflow
+        </label>
         <p class="hint">
           If this repository is only a thin wrapper around another formalization,
           answer about that underlying repository, not the wrapper.
+        </p>
+        <p class="hint warning">
+          A technical-team test may exercise the full workflow without repository
+          write access, but it can never be registered.
         </p>
       </fieldset>
 
@@ -209,9 +219,10 @@ Identify every missing, malformed, obsolete, or inconsistent field. For each pro
       <button type="submit">Authenticate via GitHub</button>
       <p class="hint">
         You may be asked to sign in, so Palomar can confirm you have write
-        access to the repository you are submitting. If you are already signed
-        in to GitHub you will not see anything. The sign-in is used once and
-        not stored.
+        access to the repository you are submitting, or active Technical
+        Maintainer membership for a marked test. If you are
+        already signed in to GitHub you will not see anything. The sign-in is
+        used once and not stored.
       </p>
       <p class="visually-hidden" role="status" id="live-status"></p>
     </form>

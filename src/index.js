@@ -66,6 +66,7 @@ import {
   beginDashboardLogin,
   completeDashboardLogin,
   dashboardPrincipal,
+  technicalTeamMembership,
 } from "./dashboard-auth.js";
 import { dashboardHtml, withDashboardActions } from "./dashboard.js";
 import { SECURITY_HEADERS } from "./response-security.js";
@@ -156,6 +157,13 @@ function formalizationPath(record) {
   if (explicit) return explicit;
   const project = record.requested_paths?.project_path;
   return project ? `${project}/formalization.yaml` : "formalization.yaml";
+}
+
+/** A redundant marker set: losing any one field must not make a test registrable. */
+function isTechnicalTest(record) {
+  return record?.test_submission === true ||
+    record?.authorization?.relationship === "technical-test" ||
+    record?.push_proof?.method === "technical-team-test";
 }
 
 function submitterRepair(repair) {
@@ -348,6 +356,13 @@ async function beginSubmission(request, env, { machine = false } = {}) {
     authorization_relationship: relationship,
     authorization_evidence: evidence,
   } = submission;
+  const technicalTest = relationship === "technical-test";
+
+  if (machine && technicalTest) {
+    return rejected(
+      "Technical-team tests require browser GitHub sign-in so Palomar can verify active team membership.",
+    );
+  }
 
   // Ahead of the two reads below and ahead of the write, so an intake refused
   // here costs one call rather than three. For one that is allowed it adds a
@@ -441,7 +456,7 @@ async function beginSubmission(request, env, { machine = false } = {}) {
       commit,
       instructions: [
         `Create a tag at the commit you are submitting. Creating a ref needs the`,
-        `same write access the browser sign-in checks for, which is why it is here:`,
+        `same write access an ordinary browser submission checks for, which is why it is here:`,
         `  gh api -X POST repos/${repositoryName}/git/refs \\`,
         `    -f ref=refs/tags/${CHALLENGE_TAG_PREFIX}${challenge} -f sha=${commit}`,
         `Then a secret gist carrying the same challenge, which is what tells`,
@@ -457,7 +472,7 @@ async function beginSubmission(request, env, { machine = false } = {}) {
   const authorize = new URL("https://github.com/login/oauth/authorize");
   authorize.searchParams.set("client_id", env.OAUTH_CLIENT_ID);
   authorize.searchParams.set("redirect_uri", `${new URL(request.url).origin}/oauth/callback`);
-  authorize.searchParams.set("scope", "read:user");
+  authorize.searchParams.set("scope", technicalTest ? "read:user read:org" : "read:user");
   authorize.searchParams.set("state", nonce);
   // `Response.redirect` answers with immutable headers, so the redirect is
   // built by hand in order to carry the cookie.
@@ -481,10 +496,10 @@ async function ratePath(env, principalId) {
 /**
  * Everything after the proof, shared so the two intakes cannot drift apart.
  *
- * A browser sign-in and an agent's tag prove the same thing by different
- * means. What follows must not depend on which: the same admission, the same
- * record, the same indexes, the same dispatch. Two copies of this would be two
- * definitions of what a submission is.
+ * Ordinary browser and agent intakes prove write access by different means; a
+ * marked browser test proves technical-team membership instead. What follows
+ * records that distinction but otherwise shares the same admission, indexes,
+ * and dispatch. Two copies would be two definitions of what a submission is.
  */
 async function admitSubmission(
   env,
@@ -516,6 +531,7 @@ async function admitSubmission(
       existingId: pending.existing_id,
       context: pending.context,
       requestedPaths: pending.requested_paths ?? {},
+      testSubmission: pending.authorization_relationship === "technical-test",
       authorization: {
         relationship: pending.authorization_relationship,
         ...(pending.authorization_evidence
@@ -809,11 +825,11 @@ async function refusedIntakeCredential(env, nonce) {
 }
 
 /**
- * Prove the submitter can push to the repository they are submitting.
+ * Prove ordinary repository write access or an explicit technical-team test.
  *
- * The token is used once, here, and never stored. Push access is not the same
- * as authorship, and does not replace the declaration a submitter makes about
- * their relationship to the substantive formalization.
+ * The token is used once, here, and never stored. Ordinary push access is not
+ * the same as authorship; the test exception claims neither, and its distinct
+ * relationship and proof make it permanently non-registerable.
  */
 async function completeSubmission(request, env) {
   const url = new URL(request.url);
@@ -885,16 +901,6 @@ async function completeSubmission(request, env) {
     })
   ).json();
 
-  if (!viewer?.permissions?.push) {
-    // Deliberately before the pending record is consumed. Consuming first
-    // meant a refused submitter lost everything they had typed, undoing the
-    // care `beginSubmission` takes to hand it back to them.
-    return html(errorPage(env, "You cannot push to that repository", [
-      `Palomar asks submitters to prove write access to ${pending.value.repository}.`,
-      "If you are submitting someone else's formalization, ask a maintainer to submit it.",
-    ]), 403);
-  }
-
   const submitter = user?.login;
   if (!submitter) {
     // Every quota keys on this. Without it the old code bucketed submissions
@@ -908,10 +914,44 @@ async function completeSubmission(request, env) {
     );
   }
 
-  // Anyone who can prove push access to any public repository can reach this
-  // point, including on a repository they created a minute ago. Verification
-  // is expensive and long-running, so owner and submitter limits apply. There
-  // is deliberately no shared global cap: unrelated people cannot make intake
+  const technicalTest = pending.value.authorization_relationship === "technical-test";
+  if (technicalTest) {
+    const membership = await technicalTeamMembership(granted.access_token, submitter);
+    if (membership.unavailable) {
+      console.error("technical-test-oauth-membership", membership.status);
+      return html(
+        errorPage(env, "Technical-team authorization is temporarily unavailable", spentSignInProblems([
+          "Palomar could not confirm the GitHub team membership just now.",
+        ])),
+        503,
+        { "set-cookie": await intakeCookie(nonce, null, { clear: true }) },
+      );
+    }
+    if (!membership.active) {
+      return html(
+        errorPage(env, "This test exception is limited to Technical Maintainers", spentSignInProblems([
+          "Choose an ordinary authorization relationship, or ask an active Technical Maintainer to run the test.",
+        ])),
+        403,
+        { "set-cookie": await intakeCookie(nonce, null, { clear: true }) },
+      );
+    }
+  }
+
+  if (!viewer?.permissions?.push && !technicalTest) {
+    // Deliberately before the pending record is consumed. Consuming first
+    // meant a refused submitter lost everything they had typed, undoing the
+    // care `beginSubmission` takes to hand it back to them.
+    return html(errorPage(env, "You cannot push to that repository", [
+      `Palomar asks submitters to prove write access to ${pending.value.repository}.`,
+      "If you are submitting someone else's formalization, ask a maintainer to submit it.",
+    ]), 403);
+  }
+
+  // Anyone with ordinary push access, and each explicitly verified Technical
+  // Maintainer test, can reach this point. Verification is expensive and
+  // long-running, so owner and submitter limits apply equally. There is
+  // deliberately no shared global cap: unrelated people cannot make intake
   // refuse everyone. The per-principal backoff and edge throttle remain the
   // broader abuse controls.
   const owner = viewer.owner?.login ?? null;
@@ -925,8 +965,8 @@ async function completeSubmission(request, env) {
       submitter,
       proof: {
         schema_version: 1,
-        method: "oauth",
-        binding: "same-account",
+        method: technicalTest ? "technical-team-test" : "oauth",
+        binding: technicalTest ? "active-technical-team-membership" : "same-account",
         verified_at: recordedAt(),
         repository_id: viewer.id ?? null,
         commit: pending.value.commit,
@@ -1403,6 +1443,11 @@ export default {
         if (CLOSED.has(entry.record.status)) {
           return json({ error: `already ${entry.record.status}` }, 409);
         }
+        if (isTechnicalTest(entry.record)) {
+          return json({
+            error: "registration would be allowed if this were not a technical-team test submission",
+          }, 409);
+        }
         // Consent is only meaningful once the submitter can see what they
         // would be registering.
         if (entry.record.status !== "review-ready") {
@@ -1612,6 +1657,7 @@ export default {
           review_started_at: record.review_started_at ?? null,
           typical_review_seconds: await typicalReviewSeconds(env),
           registration_consent: record.registration_consent === true,
+          test_submission: isTechnicalTest(record),
           // This lets a page that becomes visible again notice that the review
           // it rendered has been replaced before offering consent for it.
           review_sha256:

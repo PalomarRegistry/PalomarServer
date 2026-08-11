@@ -70,7 +70,7 @@ test("an invalid intake has stable actionable problems and no record projection"
     "Repository must be a GitHub owner/name or URL.",
     "Commit must be a full 40-character SHA. Branches and tags move.",
     "Existing Palomar ID is malformed.",
-    "Say whether you maintain this formalization or have approval to submit it.",
+    "Say whether you maintain this formalization, have approval, or are running a technical-team test.",
     "Comparator configuration is required. Give the repository-relative path to the one configuration this entry records.",
     "Project directory must be a path inside the repository, written with forward slashes.",
     "Comparator configuration must be a path inside the repository, written with forward slashes.",
@@ -133,5 +133,18 @@ test("the current relationship vocabulary maps exactly to verifier inputs", () =
     authorizationRelationshipLabel("approved"),
     "I have approval from a responsible author or maintainer",
   );
+  assert.equal(
+    authorizationRelationshipLabel("technical-test"),
+    "I am a Palomar Technical Maintainer testing the workflow",
+  );
   assert.equal(authorizationRelationshipLabel("delegated"), undefined);
+});
+
+test("a technical test is an explicit normalized relationship", () => {
+  const result = validateIntake(fields({
+    authorization_relationship: " technical-test ",
+    authorization_evidence: "",
+  }));
+  assert.deepEqual(result.problems, []);
+  assert.equal(result.submission.authorization_relationship, "technical-test");
 });

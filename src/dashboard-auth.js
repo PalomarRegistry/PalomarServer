@@ -141,6 +141,20 @@ function providerFailure(response) {
 }
 
 
+/** Resolve the one GitHub team that carries technical-maintainer authority. */
+export async function technicalTeamMembership(token, login) {
+  const membership = await githubJson(
+    `https://api.github.com/orgs/${ORG}/teams/${TEAM}/memberships/${encodeURIComponent(login)}`,
+    token,
+  );
+  return {
+    status: membership.response.status,
+    unavailable: providerFailure(membership.response),
+    active: membership.value?.state === "active",
+  };
+}
+
+
 export async function completeDashboardLogin(request, env) {
   const url = new URL(request.url);
   const state = url.searchParams.get("state") ?? "";
@@ -188,15 +202,12 @@ export async function completeDashboardLogin(request, env) {
   if (typeof login !== "string") {
     return privateResponse("GitHub did not identify that account.\n", 403, { "set-cookie": clear });
   }
-  const membership = await githubJson(
-    `https://api.github.com/orgs/${ORG}/teams/${TEAM}/memberships/${encodeURIComponent(login)}`,
-    granted.access_token,
-  );
-  if (providerFailure(membership.response)) {
-    console.error("dashboard-oauth-membership", membership.response.status);
+  const membership = await technicalTeamMembership(granted.access_token, login);
+  if (membership.unavailable) {
+    console.error("dashboard-oauth-membership", membership.status);
     return privateResponse("GitHub team authorization is temporarily unavailable.\n", 503, { "set-cookie": clear });
   }
-  if (membership.value?.state !== "active") {
+  if (!membership.active) {
     return privateResponse(
       "This dashboard is limited to Palomar Technical Maintainers.\n",
       403,
