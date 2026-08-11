@@ -27,6 +27,7 @@
     "STATE_REPO": "PalomarRegistry/PalomarSubmissionState",
     "VERIFY_WORKFLOW": "submission.yml",
     "REVIEW_WORKFLOW": "reviewer.yml",
+    "REPAIR_WORKFLOW": "repairer.yml",
     "SITE_URL": "https://palomar-registry.org"
   }
 }

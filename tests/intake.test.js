@@ -35,6 +35,17 @@ test("the introduction summarizes the submission requirements", () => {
   assert.match(form, /Automated agents: read \/llms\.txt before submitting/);
 });
 
+test("the self-check prompt names every strict Palomar metadata section", () => {
+  for (const section of [
+    "project", "repository", "classification", "sources", "automation", "review",
+  ]) assert.match(form, new RegExp(`top-level sections:[\\s\\S]*${section}`));
+  for (const requirement of [
+    "responsible_maintainers", "repository.role", "substantive_formalization",
+    "classification.arxiv", "classification.msc2020", "automation.methods",
+    "review.status",
+  ]) assert.match(form, new RegExp(requirement.replace(".", "\\.")));
+});
+
 test("the disclosure says what is recorded and when it becomes public", () => {
   assert.match(form, /permanently and publicly recorded/);
   assert.match(form, /will not be public until you have seen them/);

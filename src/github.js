@@ -368,6 +368,23 @@ export async function dispatchReviewer(env) {
   return response.ok;
 }
 
+/** Wake the metadata repair worker; its schedule remains the durable backstop. */
+export async function dispatchRepairer(env) {
+  if (!env.REPAIR_WORKFLOW) return false;
+  const response = await fetch(
+    `${API}/repos/${env.STATE_REPO}/actions/workflows/${env.REPAIR_WORKFLOW}/dispatches`,
+    {
+      method: "POST",
+      headers: { ...headers(env.GITHUB_TOKEN), "content-type": "application/json" },
+      body: JSON.stringify({ ref: "main" }),
+    },
+  );
+  if (!response.ok) {
+    console.warn("repairer dispatch rejected", response.status, env.REPAIR_WORKFLOW);
+  }
+  return response.ok;
+}
+
 // The contents API answers at most this many entries for one directory, and
 // says to use the git trees API past it.
 const CONTENTS_DIRECTORY_LIMIT = 1000;
@@ -417,7 +434,11 @@ export async function deleteState(env, path, sha, message) {
  * repository would carry write access to the verification code itself, and a
  * leaked server secret would become a way to forge mechanical verification.
  */
-export async function dispatchVerification(env, { repositoryName, commit, requestId, options }) {
+export async function dispatchVerification(
+  env,
+  { repositoryName, commit, requestId, options, mode = "full" },
+) {
+  if (!new Set(["preflight", "full"]).has(mode)) throw new Error("invalid verification mode");
   const response = await fetch(
     `${API}/repos/${env.SUBMISSION_REPO}/actions/workflows/${env.VERIFY_WORKFLOW}/dispatches`,
     {
@@ -429,6 +450,7 @@ export async function dispatchVerification(env, { repositoryName, commit, reques
           repository: repositoryName,
           commit,
           request_id: requestId,
+          mode,
           // The optional fields the issue form offers, so a server submitter
           // is not quietly told less than an issue submitter would be.
           ...(options && Object.keys(options).length
@@ -488,8 +510,15 @@ function describeRun(run) {
  * Reading a truncated search as "no such run" is how a live run gets its slot
  * taken away from it.
  */
-export async function findVerificationRun(env, requestId, { pinnedRunId = null, since = null } = {}) {
-  const expected = `Verify submission ${requestId}`;
+export async function findVerificationRun(
+  env,
+  requestId,
+  { pinnedRunId = null, since = null, mode = "full" } = {},
+) {
+  if (!new Set(["preflight", "full"]).has(mode)) throw new Error("invalid verification mode");
+  const expected = mode === "preflight"
+    ? `Preflight submission ${requestId}`
+    : `Verify submission ${requestId}`;
 
   if (pinnedRunId) {
     const run = await call(

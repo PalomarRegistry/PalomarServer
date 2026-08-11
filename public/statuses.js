@@ -17,8 +17,8 @@
  * would be a false claim, from a registry whose whole product is claims that
  * are true.
  *
- * `CLOSED` and `SETTLED` differ by `review-failed` and `dispatch-lost`, and the
- * difference is load-bearing both ways.
+ * `CLOSED` and `SETTLED` differ by the Palomar-owned service failures and by
+ * `dispatch-lost`; the difference is load-bearing both ways.
  * A review that could not be completed is a fault at this end, so the page has
  * nothing to poll for until an operator moves it; but the submission is still
  * the submitter's, and they must be able to withdraw it. Putting `review-failed`
@@ -40,12 +40,28 @@
  * the settled set relatively. The file therefore stays environment-neutral.
  */
 
-export const CLOSED = new Set(["registered", "withdrawn", "verification-failed"]);
+export const CLOSED = new Set([
+  "registered",
+  "withdrawn",
+  "changes-required",
+  "verification-failed",
+]);
 
-export const SETTLED = new Set([...CLOSED, "review-failed", "dispatch-lost"]);
+export const SETTLED = new Set([
+  ...CLOSED,
+  "preflight-failed",
+  "verification-error",
+  "review-failed",
+  "dispatch-lost",
+]);
 
 const WITHDRAWABLE = new Set([
+  "preflighting",
+  "preflight-reporting",
+  "preflight-failed",
   "verifying",
+  "verification-reporting",
+  "verification-error",
   "awaiting-review",
   "reviewing",
   "review-ready",
@@ -54,6 +70,10 @@ const WITHDRAWABLE = new Set([
 ]);
 
 const WAITING_MESSAGES = {
+  preflighting:
+    "Palomar is checking the repository's metadata and configuration before full verification.",
+  "preflight-reporting":
+    "Preflight finished and Palomar is preparing a complete, actionable explanation.",
   verifying:
     "Palomar is mechanically checking the repository. If verification and review pass, " +
     "the option to register will appear on this page.",
@@ -62,6 +82,8 @@ const WAITING_MESSAGES = {
     "review passes, the option to register will appear here.",
   reviewing:
     "The automated review is running. If it passes, the option to register will appear here.",
+  "verification-reporting":
+    "Mechanical verification finished and Palomar is preparing a complete explanation.",
 };
 
 /** The primary explanation for a status that needs no submitter action. */

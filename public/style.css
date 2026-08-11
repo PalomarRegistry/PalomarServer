@@ -100,6 +100,14 @@ button[data-busy="true"]::after {
   font-size: .8rem; width: 100%; }
 .details:has(> #submission-link) { display: flex; gap: .5rem; align-items: center; }
 .details:has(> #submission-link) button { margin-top: 0; white-space: nowrap; }
+.metadata-warning { border-left: .35rem solid var(--accent); }
+.metadata-warning pre { max-height: 24rem; overflow: auto; white-space: pre-wrap; }
+.diagnostic { border-left: .3rem solid var(--caution); padding: .15rem 0 .15rem 1rem; margin: 1.25rem 0; }
+.diagnostic h3 { margin-bottom: .35rem; }
+.diagnostic p { margin: .35rem 0; }
+.diagnostic .location { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+#repair-form { margin-top: 1.5rem; border-top: 1px solid var(--line); padding-top: .5rem; }
+#repair-fields .repair-field { margin: 1rem 0; }
 
 details.disclosure > summary { cursor: pointer; font-weight: 600; padding: .5rem 0; }
 details.disclosure[open] > summary { margin-bottom: .25rem; }
