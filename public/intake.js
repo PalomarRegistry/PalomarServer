@@ -14,6 +14,7 @@
  */
 
 import {
+  defaultCommitSuggestion,
   locateProject,
   normalizeCommit,
   normalizePalomarId,
@@ -116,19 +117,63 @@ const DEFAULT = {
   existing_id: existingId.message?.textContent,
 };
 
+let checkedRepository = null;
+let checkedDefaultHead = null;
+
+function offerDefaultCommit(parts, name) {
+  const known = checkedDefaultHead?.name === name ? checkedDefaultHead : null;
+  if (!known) return false;
+  const sha = defaultCommitSuggestion({
+    checkedRepository: name,
+    currentRepository: parts.input.value,
+    currentCommit: commit.input?.value,
+    headSha: known.data?.sha,
+    commitFocused: document.activeElement === commit.input,
+    suggestionDeclined: commit.input?.dataset.defaultDeclined === "true",
+  });
+  if (!sha) return false;
+  autofill(commit.input, sha);
+  checkCommit(commit, known);
+  return true;
+}
+
 const checkRepository = latest(async (settle, parts) => {
   const name = normalizeRepository(parts.input.value);
   if (!name) return settle("", DEFAULT.repository);
   settle("checking", `Looking for ${name}…`);
-  const data = await githubJson(`repos/${name}`);
+  const data = checkedRepository?.name === name
+    ? checkedRepository.data
+    : await githubJson(`repos/${name}`);
   if (data === "rate-limited") return settle("", DEFAULT.repository);
   if (!data) return settle("missing", `No public repository called ${name}.`);
   if (data.private) return settle("missing", `${name} is private; Palomar indexes public repositories.`);
+  if (normalizeRepository(parts.input.value) !== name) return;
+  checkedRepository = { name, data };
   settle("found", `Found ${data.full_name}`, `https://github.com/${data.full_name}`);
+
+  // A commit hash is important but tedious to find. Once GitHub has told us
+  // the repository exists, use the current tip of its default branch if the
+  // submitter has not chosen a commit. It remains an ordinary editable field,
+  // and the server still resolves the exact hash independently.
+  const defaultBranch = typeof data.default_branch === "string" ? data.default_branch : "";
+  if (!commit.input?.value.trim() &&
+      commit.input?.dataset.defaultDeclined !== "true" && defaultBranch) {
+    const head = await githubJson(
+      `repos/${name}/commits/${encodeURIComponent(defaultBranch)}`,
+    ).catch(() => null);
+    // A response for an earlier repository must not do any further work for
+    // the current form, and a commit typed or focused in flight always wins.
+    if (normalizeRepository(parts.input.value) !== name) return;
+    const sha = normalizeCommit(head?.sha);
+    if (sha) {
+      checkedDefaultHead = { name, sha, data: head, defaultBranch };
+      if (offerDefaultCommit(parts, name)) return;
+    }
+  }
   checkCommit(commit);
 });
 
-const checkCommit = latest(async (settle, parts) => {
+const checkCommit = latest(async (settle, parts, known = null) => {
   const sha = normalizeCommit(parts.input.value);
   const name = normalizeRepository(repository.input.value);
   if (!sha) {
@@ -141,7 +186,9 @@ const checkCommit = latest(async (settle, parts) => {
     return settle("", DEFAULT.commit);
   }
   settle("checking", "Looking for that commit…");
-  const data = await githubJson(`repos/${name}/commits/${sha}`);
+  const data = known?.name === name && known.sha === sha
+    ? known.data
+    : await githubJson(`repos/${name}/commits/${sha}`);
   if (data === "rate-limited") return settle("", DEFAULT.commit);
   if (!data?.sha) {
     describeLayout();
@@ -150,7 +197,9 @@ const checkCommit = latest(async (settle, parts) => {
   const when = String(data.commit?.committer?.date ?? "").slice(0, 10);
   settle(
     "found",
-    when ? `Found that commit, from ${when}` : "Found that commit",
+    known?.defaultBranch
+      ? `Filled in the current ${known.defaultBranch} commit${when ? `, from ${when}` : ""}`
+      : when ? `Found that commit, from ${when}` : "Found that commit",
     `https://github.com/${name}/commit/${sha}`,
   );
   describeLayout(name, sha);
@@ -219,6 +268,30 @@ function clearSuggestions() {
     ? "custom"
     : "unchecked");
 }
+
+// A default-branch commit belongs to the repository for which it was found.
+// Changing that repository clears only an untouched suggestion; a commit the
+// submitter typed or edited is never discarded.
+repository.input?.addEventListener("input", () => {
+  checkedRepository = null;
+  checkedDefaultHead = null;
+  if (commit.input) delete commit.input.dataset.defaultDeclined;
+  const suggestion = commit.input?.dataset.suggested;
+  if (suggestion !== undefined && commit.input.value === suggestion) {
+    autofill(commit.input, "");
+    checkCommit(commit);
+  }
+});
+
+// A real input event, unlike assigning `.value`, came from the submitter. Once
+// they edit or remove a suggestion, do not silently offer it again for the same
+// repository. A changed repository clears this flag above.
+commit.input?.addEventListener("input", () => {
+  commit.input.dataset.defaultDeclined = "true";
+  if (commit.input.dataset.suggested !== commit.input.value) {
+    delete commit.input.dataset.suggested;
+  }
+});
 
 /**
  * Work out where the project is, from the repository tree at that commit.
@@ -342,6 +415,10 @@ for (const [parts, check, normalize] of [
   // would move the caret out from under whoever is typing.
   parts.input?.addEventListener("blur", () => {
     settle(parts, normalize);
+    if (parts === commit) {
+      const name = normalizeRepository(repository.input?.value);
+      if (name && offerDefaultCommit(repository, name)) return;
+    }
     check(parts);
   });
 }

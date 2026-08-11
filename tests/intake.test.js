@@ -245,6 +245,49 @@ test("the live checks link back to what they found", async () => {
   assert.match(script, /link\.textContent = message/);
 });
 
+test("an empty commit is filled from the repository's default branch", async () => {
+  const script = await readFile(new URL("../public/intake.js", import.meta.url), "utf8");
+  const { defaultCommitSuggestion } = await import("../public/normalize.js");
+  const sha = "a".repeat(40);
+
+  // The repository response names a branch, not its immutable commit, so the
+  // browser resolves that branch and fills only the returned full SHA.
+  assert.match(script, /data\.default_branch/);
+  assert.match(script, /commits\/\$\{encodeURIComponent\(defaultBranch\)\}/);
+  assert.match(script, /const sha = defaultCommitSuggestion\(\{/);
+  assert.match(script, /autofill\(commit\.input, sha\)/);
+
+  const request = {
+    checkedRepository: "owner/project",
+    currentRepository: " https://github.com/owner/project ",
+    currentCommit: "",
+    headSha: sha.toUpperCase(),
+  };
+  assert.equal(defaultCommitSuggestion(request), sha);
+  assert.equal(defaultCommitSuggestion({ ...request, currentRepository: "owner/other" }), null);
+  assert.equal(defaultCommitSuggestion({ ...request, currentCommit: "b" }), null);
+  assert.equal(defaultCommitSuggestion({ ...request, commitFocused: true }), null);
+  assert.equal(defaultCommitSuggestion({ ...request, suggestionDeclined: true }), null);
+  assert.equal(defaultCommitSuggestion({ ...request, headSha: "short" }), null);
+
+  // Changing the repository withdraws only a still-untouched suggestion and
+  // immediately restores the empty-field explanation.
+  const repositoryListener = script.slice(
+    script.indexOf('repository.input?.addEventListener("input"'),
+    script.indexOf("// A real input event"),
+  );
+  assert.match(repositoryListener, /commit\.input\.value === suggestion/);
+  assert.match(repositoryListener, /autofill\(commit\.input, ""\)/);
+  assert.match(repositoryListener, /checkCommit\(commit\)/);
+
+  // Tabbing directly into the commit field defers the offer until blur; a
+  // commit the submitter edits or deletes is never offered again for the same
+  // repository.
+  assert.match(script, /parts === commit[\s\S]*offerDefaultCommit\(repository, name\)/);
+  assert.match(script, /commit\.input\?\.addEventListener\("input"[\s\S]*defaultDeclined = "true"/);
+  assert.match(script, /checkedDefaultHead = \{ name, sha, data: head, defaultBranch \}/);
+});
+
 test("the policy permits the sign-in the form redirects to", async () => {
   // form-action applies to the redirect chain, not only the first hop. The
   // submission posts here and is answered with a redirect to GitHub, so a

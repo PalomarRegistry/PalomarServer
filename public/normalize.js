@@ -33,6 +33,26 @@ export function normalizeCommit(raw) {
   return COMMIT_RE.test(value) ? value : null;
 }
 
+/**
+ * The immutable default-branch commit it is still safe to suggest.
+ *
+ * Repository and focus checks belong in this pure boundary so an answer that
+ * arrives while somebody is changing the form cannot be mistaken for one
+ * that was current when the lookup began.
+ */
+export function defaultCommitSuggestion({
+  checkedRepository,
+  currentRepository,
+  currentCommit,
+  headSha,
+  commitFocused = false,
+  suggestionDeclined = false,
+}) {
+  if (normalizeRepository(currentRepository) !== checkedRepository) return null;
+  if (String(currentCommit ?? "").trim() || commitFocused || suggestionDeclined) return null;
+  return normalizeCommit(headSha);
+}
+
 /** A Palomar identifier, uppercased, or null. */
 export function normalizePalomarId(raw) {
   const value = String(raw ?? "").trim().toUpperCase();
