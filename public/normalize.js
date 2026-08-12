@@ -265,6 +265,61 @@ function basenameOf(path) {
   return cut === -1 ? path : path.slice(cut + 1);
 }
 
+function repositoryFiles(entries) {
+  return entries
+    .map((entry) => (typeof entry === "string" ? { path: entry, type: "blob" } : entry))
+    .filter((entry) => entry?.type === "blob" && entry.mode !== SYMLINK)
+    .filter((entry) => !VENDORED.test(entry.path));
+}
+
+function comparePaths(left, right) {
+  const lowerLeft = left.toLowerCase();
+  const lowerRight = right.toLowerCase();
+  if (lowerLeft !== lowerRight) return lowerLeft < lowerRight ? -1 : 1;
+  return left === right ? 0 : (left < right ? -1 : 1);
+}
+
+const KNOWN_NON_COMPARATOR = new Set([
+  "lake-manifest.json", "package.json", "package-lock.json", "tsconfig.json",
+]);
+
+function comparatorLikelihood(path) {
+  const base = basenameOf(path).toLowerCase();
+  if (path === "comparator.json") return 0;
+  if (base === "comparator.json") return 1;
+  if (base.includes("comparator")) return 2;
+  if (KNOWN_NON_COMPARATOR.has(base) || /(^|\/)\.vscode\//.test(path)) return 5;
+  if (["config.json", "configuration.json", "settings.json"].includes(base)) return 3;
+  return 4;
+}
+
+/**
+ * Every regular JSON file that could be a Comparator configuration.
+ *
+ * Comparator has no required filename, so content-free Git tree metadata
+ * cannot narrow this further without silently hiding valid configurations.
+ * Likely names come first, while dependencies and symlinks are excluded for
+ * the same reasons they are excluded from automatic layout detection.
+ */
+export function comparatorConfigurationPaths(entries) {
+  return [...new Set(repositoryFiles(entries)
+    .map((entry) => entry.path)
+    .filter((path) => typeof path === "string" && /\.json$/i.test(path) &&
+      normalizeRepositoryPath(path) === path))]
+    .sort((left, right) =>
+      comparatorLikelihood(left) - comparatorLikelihood(right) || comparePaths(left, right));
+}
+
+/** A bounded native-datalist window; every candidate remains reachable by typing. */
+export function comparatorPathSuggestions(paths, typed, limit = 100) {
+  const query = String(typed ?? "").trim().toLowerCase();
+  if (!Number.isSafeInteger(limit) || limit < 1) return [];
+  const maximum = Math.min(limit, 100);
+  return paths
+    .filter((path) => !query || path.toLowerCase().includes(query))
+    .slice(0, maximum);
+}
+
 /**
  * Given a repository tree, work out which directory is the project.
  *
@@ -279,10 +334,7 @@ function basenameOf(path) {
  * verifier, so suggesting it would send somebody to a failed run.
  */
 export function locateProject(entries) {
-  const files = entries
-    .map((entry) => (typeof entry === "string" ? { path: entry, type: "blob" } : entry))
-    .filter((entry) => entry?.type === "blob" && entry.mode !== SYMLINK)
-    .filter((entry) => !VENDORED.test(entry.path));
+  const files = repositoryFiles(entries);
   const paths = files.map((entry) => entry.path);
   const named = (name) => paths.filter((path) => basenameOf(path) === name);
 
