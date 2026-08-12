@@ -164,7 +164,7 @@ test("public text speaks of registration, not publication", () => {
 
 test("the button says what it does", () => {
   assert.match(form, /Authenticate via GitHub/);
-  assert.match(form, /Find my submissions/);
+  assert.match(form, /Authenticate and find my submissions/);
   assert.match(form, /class="disclosure recovery-prompt"/);
   assert.doesNotMatch(form, /fresh private links/);
   assert.doesNotMatch(form, /You do not need the original link/);
@@ -176,13 +176,32 @@ test("finding submissions shows progress while GitHub authentication starts", as
   const css = await readFile(new URL("../public/style.css", import.meta.url), "utf8");
 
   assert.match(form, /<form method="get" action="\/submissions">/);
-  assert.match(form, /id="find-submissions">Find my submissions<\/button>/);
+  assert.match(form, /id="find-submissions">Authenticate and find my submissions<\/button>/);
   assert.match(script, /recoveryForm\?\.addEventListener\("submit"/);
   assert.match(script, /recoverySubmit\.dataset\.busy = "true"/);
   assert.match(script, /recoverySubmit\.setAttribute\("aria-busy", "true"\)/);
-  assert.match(script, /Finding your submissions…/);
+  assert.match(script, /Authenticating and finding submissions…/);
   assert.match(script, /window\.addEventListener\("pageshow", \(\) => setRecoveryBusy\(false\)\)/);
   assert.match(css, /button\[data-busy="true"\]::after/);
+});
+
+test("a remembered GitHub identity starts an accessible automatic recovery check", async () => {
+  const automatic = intakeForm(ENV, {}, [], { automaticRecovery: true });
+  const script = await readFile(new URL("../public/intake.js", import.meta.url), "utf8");
+  const css = await readFile(new URL("../public/style.css", import.meta.url), "utf8");
+
+  assert.match(automatic, /id="recovery-prompt"\s+data-automatic="true"/);
+  assert.match(automatic, /id="recovery-status" role="status"/);
+  assert.match(automatic, /Checking submissions…/);
+  assert.match(automatic, /class="spinner" aria-hidden="true"/);
+  assert.match(automatic, /<noscript>[\s\S]*Authenticate and find my submissions/);
+  assert.match(script, /fetch\("\/api\/submissions"/);
+  assert.match(script, /No submissions found\./);
+  assert.match(script, /recoveryPrompt\.dataset\.state = "dismissing"/);
+  assert.match(script, /prefers-reduced-motion: reduce/);
+  assert.match(script, /form\.action = "\/submissions\/open"/);
+  assert.match(css, /\.recovery-prompt\[data-state="dismissing"\]/);
+  assert.match(css, /@media \(prefers-reduced-motion: reduce\)/);
 });
 
 test("the browser's own validation accepts whatever the normaliser accepts", async () => {
@@ -384,6 +403,7 @@ test("the script never sends what the submitter typed anywhere but those origins
   for (const destination of destinations) {
     assert.ok(
       /api\.github\.com/.test(destination) ||
+        destination === '"/api/submissions"' ||
         /^`\$\{REGISTRY_VERSIONS\}\$\{value\}\.json`$/.test(destination) ||
         destination === "`${REGISTRY_DATA}${path}`",
       `unexpected fetch destination: ${destination}`,

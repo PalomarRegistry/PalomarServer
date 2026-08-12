@@ -45,10 +45,24 @@ button { margin-top: 1.5rem; padding: .6rem 1.1rem; font: inherit; font-weight: 
 .disclosure { border: 1px solid var(--line); border-radius: 8px; padding: .25rem 1rem 1rem; margin: 1.5rem 0; }
 .disclosure ul { padding-left: 1.1rem; }
 .disclosure li { margin: .5rem 0; }
-.recovery-prompt { display: flex; flex-wrap: wrap; align-items: center; gap: .75rem 1rem;
-  padding-top: .75rem; }
+.recovery-prompt { max-height: 50rem; padding-top: .75rem;
+  transition: opacity .2s ease, max-height .3s ease, margin .3s ease,
+    padding .3s ease, border-width .3s ease; }
 .recovery-prompt h2 { margin: 0; }
 .recovery-prompt button { margin-top: 0; }
+#recovery-content { margin-top: .75rem; }
+.recovery-status { margin: 0; color: var(--dim); }
+.spinner { display: inline-block; width: .8em; height: .8em; margin-left: .4rem;
+  vertical-align: -.05em; border: 2px solid currentColor; border-right-color: transparent;
+  border-radius: 50%; animation: spin .7s linear infinite; }
+.recovery-list { list-style: none; margin: 0; padding: 0 !important; }
+.recovery-list > li { border-top: 1px solid var(--line); padding: .75rem 0; margin: 0; }
+.recovery-list > li:first-child { border-top: 0; padding-top: 0; }
+.recovery-list h3 { font-size: 1rem; margin: 0 0 .35rem; }
+.recovery-list .details { font-size: .9rem; }
+.recovery-list form { margin-top: .65rem; }
+.recovery-prompt[data-state="dismissing"] { opacity: 0; max-height: 0; margin: 0;
+  padding-top: 0; padding-bottom: 0; border-width: 0; overflow: hidden; }
 .waiting { border-left: .3rem solid var(--accent); border-radius: 0 8px 8px 0; }
 .waiting h2 { margin-top: .75rem; }
 .details { display: grid; grid-template-columns: max-content 1fr; gap: .35rem 1rem; }
@@ -91,6 +105,8 @@ button[data-busy="true"]::after {
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) {
   button[data-busy="true"]::after { animation: none; border-right-color: currentColor; opacity: .4; }
+  .spinner { animation: none; border-right-color: currentColor; opacity: .4; }
+  .recovery-prompt { transition: none; }
 }
 .problems-block { border-color: var(--caution); }
 .problems { padding-left: 1.1rem; color: var(--caution); }

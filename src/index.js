@@ -38,6 +38,8 @@ import {
 import { validateIntake } from "./intake-contract.js";
 import {
   bearerToken,
+  githubIdentityCookie,
+  githubIdentityPrincipal,
   intakeCookie,
   intakeCredential,
   madeByThisSite,
@@ -92,6 +94,17 @@ function json(value, status = 200, extra = {}) {
       ...SECURITY_HEADERS,
       ...extra,
     },
+  });
+}
+
+/** Append another Set-Cookie field without collapsing an existing one. */
+function withCookie(response, cookie) {
+  const headers = new Headers(response.headers);
+  headers.append("set-cookie", cookie);
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
   });
 }
 
@@ -298,12 +311,13 @@ async function beginSubmission(request, env, { machine = false } = {}) {
     }, 400);
   }
   const { values, problems, submission } = validateIntake(form);
+  const automaticRecovery = !machine && Boolean(await githubIdentityPrincipal(request, env));
   // A browser gets its form back with everything still in it; an agent gets
   // the same problems as a list it can act on.
   const rejected = (...problems) =>
     machine
       ? json({ error: "that submission was refused", problems }, 400)
-      : html(intakeForm(env, values, problems), 400);
+      : html(intakeForm(env, values, problems, { automaticRecovery }), 400);
 
   if (problems.length) return rejected(...problems);
 
@@ -696,6 +710,176 @@ async function issueRecoveryLinks(
     if (!result.retry) return result;
   }
   throw new StateContractError("the open-submission list kept changing during recovery");
+}
+
+function submissionSummary(item) {
+  const record = item.entry.value;
+  return {
+    id: item.id,
+    repository: record.repository,
+    commit: record.commit,
+    status: record.status,
+    status_label: STATUSES[record.status] ?? record.status,
+  };
+}
+
+/** List current work without minting or rotating any submission capability. */
+async function automaticSubmissions(request, env) {
+  if (!madeByThisSite(request)) {
+    return json({ error: "that request did not come from this site" }, 403);
+  }
+  const principal = await githubIdentityPrincipal(request, env);
+  if (!principal) return json({ error: "authentication required" }, 401);
+  try {
+    const discovered = await openSubmissionsForPrincipal(env, principal);
+    return json({ submissions: discovered.entries.map(submissionSummary) });
+  } catch (error) {
+    if (isDurableContractError(error)) reportDurableContract(error);
+    else console.error("automatic-recovery", error?.stack ?? String(error));
+    return json({ error: "submissions are temporarily unavailable" }, 503);
+  }
+}
+
+/**
+ * Mint a recovery capability for one explicitly opened automatic result.
+ *
+ * Merely viewing the form remains read-only. This rotates the one recovery
+ * capability only after the authenticated browser chooses a submission, while
+ * preserving the original capability exactly as the full OAuth recovery does.
+ */
+async function issueRecoveryLink(env, principal, id) {
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const discovered = await openSubmissionsForPrincipal(env, principal);
+    const item = discovered.entries.find((entry) => entry.id === id);
+    if (!item) return null;
+
+    const token = newAccessToken();
+    const tokenSha256 = await tokenDigest(env, token);
+    const original = item.entry.value.token_sha256;
+    const oldRecovery = item.entry.value.recovery_token_sha256 ?? null;
+    if (!/^[0-9a-f]{64}$/.test(original)) {
+      throw new StateContractError(`${item.path}.token_sha256 must be a SHA-256 digest`);
+    }
+    if (oldRecovery !== null && !/^[0-9a-f]{64}$/.test(oldRecovery)) {
+      throw new StateContractError(
+        `${item.path}.recovery_token_sha256 must be a SHA-256 digest`,
+      );
+    }
+    if (oldRecovery === original) {
+      throw new StateContractError(
+        `${item.path}.recovery_token_sha256 must differ from token_sha256`,
+      );
+    }
+    const tokenPath = `index/tokens/${tokenSha256}.json`;
+    const originalTokenPath = `index/tokens/${original}.json`;
+    const oldTokenPath = oldRecovery ? `index/tokens/${oldRecovery}.json` : null;
+    const paths = [
+      OPEN_INDEX_PATH,
+      discovered.principalIndexPath,
+      item.path,
+      tokenPath,
+      originalTokenPath,
+      ...(oldTokenPath ? [oldTokenPath] : []),
+    ];
+    const result = await transactState(env, paths, (files) => {
+      if (
+        files[OPEN_INDEX_PATH]?.sha !== discovered.queue?.sha ||
+        files[discovered.principalIndexPath]?.sha !== discovered.principalIndex.sha ||
+        files[item.path]?.sha !== item.entry.sha
+      ) {
+        return { changes: [], message: "", result: { retry: true } };
+      }
+      const currentIds = reviewerOpen(files[OPEN_INDEX_PATH]?.value);
+      const principalIds = principalSubmissions(
+        files[discovered.principalIndexPath]?.value,
+        discovered.principalIndexPath,
+      );
+      const current = files[item.path]?.value;
+      if (!currentIds.includes(id) || !principalIds.includes(id) ||
+          !principalOwns(current, principal)) {
+        return { changes: [], message: "", result: { retry: true } };
+      }
+      if (files[tokenPath]?.sha !== null) {
+        throw new StateContractError("a generated recovery token already exists");
+      }
+      if (files[originalTokenPath]?.value?.id !== id) {
+        throw new StateContractError(`${item.path} has no matching original token pointer`);
+      }
+      if (oldTokenPath && files[oldTokenPath]?.value?.id !== id) {
+        throw new StateContractError(`${item.path} has no matching recovery token pointer`);
+      }
+      return {
+        changes: [
+          {
+            path: item.path,
+            value: {
+              ...current,
+              recovery_token_sha256: tokenSha256,
+              recovery_token_bound_at: recordedAt(),
+            },
+          },
+          ...(oldTokenPath ? [{ path: oldTokenPath, delete: true }] : []),
+          { path: tokenPath, value: { id } },
+        ],
+        message: `Recover submission link for ${id}`,
+        result: { retry: false, token },
+      };
+    });
+    if (!result.retry) return result.token;
+  }
+  throw new StateContractError("the selected submission kept changing during recovery");
+}
+
+async function openAutomaticSubmission(request, env) {
+  if (!madeByThisSite(request)) {
+    return html(errorPage(env, "That request did not come from this site", [
+      "Return to Palomar's submission form before opening the submission.",
+    ]), 403);
+  }
+  const principal = await githubIdentityPrincipal(request, env);
+  if (!principal) {
+    return new Response(null, {
+      status: 303,
+      headers: { ...SECURITY_HEADERS, location: "/submissions" },
+    });
+  }
+  let form;
+  try {
+    form = await request.formData();
+  } catch {
+    return html(errorPage(env, "That submission could not be opened", []), 400);
+  }
+  const id = String(form.get("submission_id") ?? "");
+  if (!/^[0-9a-z]{12}$/.test(id)) {
+    return html(errorPage(env, "That submission could not be opened", []), 400);
+  }
+  try {
+    const token = await issueRecoveryLink(env, principal, id);
+    if (!token) {
+      return html(errorPage(env, "That submission is no longer in progress", [
+        "Return to the submission form to refresh the list.",
+      ]), 404);
+    }
+    return new Response(null, {
+      status: 303,
+      headers: {
+        ...SECURITY_HEADERS,
+        location: `${new URL(request.url).origin}/s#${token}`,
+      },
+    });
+  } catch (error) {
+    if (error instanceof StateUpdateOutcomeError) {
+      console.error("automatic-recovery-open", error.message);
+      return html(errorPage(env, "That submission link could not be confirmed", [
+        "The original submission link remains valid. Return to the submission form and try opening it again.",
+      ]), 503);
+    }
+    if (!isDurableContractError(error)) throw error;
+    reportDurableContract(error);
+    return html(errorPage(env, "That submission is temporarily unavailable", [
+      "The original submission link remains valid. Please try again in a moment.",
+    ]), 503);
+  }
 }
 
 /**
@@ -1227,6 +1411,8 @@ async function completeSubmission(request, env) {
       { "set-cookie": await intakeCookie(nonce, null, { clear: true }) },
     );
   }
+  const identityCookie = await githubIdentityCookie(env, principal);
+  const identified = (response) => withCookie(response, identityCookie);
 
   if (pending.value.method === "oauth-recovery") {
     try {
@@ -1236,11 +1422,11 @@ async function completeSubmission(request, env) {
         principal,
         consumePending: true,
       });
-      return html(
+      return identified(html(
         submissionsPage(env, { submissions: recovered.submissions }),
         200,
         { "set-cookie": await intakeCookie(nonce, null, { clear: true }) },
-      );
+      ));
     } catch (error) {
       if (error instanceof StateUpdateOutcomeError) {
         console.error("submission-recovery", error.message);
@@ -1249,20 +1435,20 @@ async function completeSubmission(request, env) {
       } else {
         console.error("submission-recovery", error?.stack ?? String(error));
       }
-      return html(
+      return identified(html(
         errorPage(env, "Submission recovery is temporarily unavailable", [
           "No original link was invalidated. Please try recovery again in a moment.",
         ]),
         503,
         { "set-cookie": await intakeCookie(nonce, null, { clear: true }) },
-      );
+      ));
     }
   }
 
   if (pending.value.oauth_verification) {
-    return html(errorPage(env, "That sign-in is already waiting for your choice", [
+    return identified(html(errorPage(env, "That sign-in is already waiting for your choice", [
       "Return to the choice page, or start again from the submission form.",
-    ]), 409);
+    ]), 409));
   }
 
   const viewer = await fetchRepository(granted.access_token, pending.value.repository);
@@ -1277,19 +1463,19 @@ async function completeSubmission(request, env) {
                             "Discard a technical test whose repository changed"))) {
       console.error("pending", `could not discard ${pendingPath}`);
     }
-    return html(
+    return identified(html(
       errorPage(env, "That repository is not the one this test began for", spentSignInProblems([
         `${pending.value.repository} could not be read as the same public repository.`,
       ])),
       409,
       { "set-cookie": await intakeCookie(nonce, null, { clear: true }) },
-    );
+    ));
   }
   if (!viewer) {
-    return html(errorPage(env, "That repository can no longer be read", [
+    return identified(html(errorPage(env, "That repository can no longer be read", [
       `${pending.value.repository} may have been deleted, transferred, or made private.`,
       "Start again after confirming that the public repository is available.",
-    ]), 403);
+    ]), 403));
   }
   const membership = await technicalTeamMembership(granted.access_token, submitter);
   if (membership.unavailable) {
@@ -1298,13 +1484,13 @@ async function completeSubmission(request, env) {
                             "Discard an intake whose membership could not be verified"))) {
       console.error("pending", `could not discard ${pendingPath}`);
     }
-    return html(
+    return identified(html(
       errorPage(env, "Submission authorization is temporarily unavailable", spentSignInProblems([
         "Palomar could not check Technical Maintainer membership just now.",
       ])),
       503,
       { "set-cookie": await intakeCookie(nonce, null, { clear: true }) },
-    );
+    ));
   }
   const technicalMaintainer = membership.active;
   if (technicalTest && !technicalMaintainer) {
@@ -1312,23 +1498,23 @@ async function completeSubmission(request, env) {
                             "Discard a test requested by a nonmember"))) {
       console.error("pending", `could not discard ${pendingPath}`);
     }
-    return html(
+    return identified(html(
       errorPage(env, "This submission is not authorized", spentSignInProblems([
         "Choose one of the authorization relationships offered on the submission form.",
       ])),
       403,
       { "set-cookie": await intakeCookie(nonce, null, { clear: true }) },
-    );
+    ));
   }
 
   if (!viewer?.permissions?.push && !technicalTest) {
     // Deliberately before the pending record is consumed. Consuming first
     // meant a refused submitter lost everything they had typed, undoing the
     // care `beginSubmission` takes to hand it back to them.
-    return html(errorPage(env, "You cannot push to that repository", [
+    return identified(html(errorPage(env, "You cannot push to that repository", [
       `Palomar asks submitters to prove write access to ${pending.value.repository}.`,
       "If you are submitting someone else's formalization, ask a maintainer to submit it.",
-    ]), 403);
+    ]), 403));
   }
 
   // Anyone with ordinary push access, and each explicitly verified Technical
@@ -1358,11 +1544,11 @@ async function completeSubmission(request, env) {
       onlyIfAny: true,
     });
     if (current.submissions.length) {
-      return html(submissionsPage(env, {
+      return identified(html(submissionsPage(env, {
         submissions: current.submissions,
         pending: pending.value,
         nonce,
-      }));
+      })));
     }
     admitted = await admitSubmission(env, {
       pendingPath,
@@ -1375,18 +1561,18 @@ async function completeSubmission(request, env) {
   } catch (error) {
     if (error instanceof StateUpdateOutcomeError) {
       console.error("browser-admission", error.message);
-      return html(
+      return identified(html(
         errorPage(env, "Submission intake outcome is unknown", [
           "Do not start another submission yet; ask the registry operator to inspect State.",
         ]),
         503,
         { "set-cookie": await intakeCookie(nonce, null, { clear: true }) },
-      );
+      ));
     }
     const contractFailure = isDurableContractError(error);
     if (contractFailure) reportDurableContract(error);
     else console.error("browser-admission", error?.stack ?? String(error));
-    return html(
+    return identified(html(
       errorPage(
         env,
         contractFailure
@@ -1396,17 +1582,17 @@ async function completeSubmission(request, env) {
       ),
       contractFailure ? 503 : 500,
       { "set-cookie": await intakeCookie(nonce, null, { clear: true }) },
-    );
+    ));
   }
   if (admitted.refused) {
-    return html(
+    return identified(html(
       errorPage(env, admitted.title, spentSignInProblems(admitted.detail)),
       admitted.status,
       { "set-cookie": await intakeCookie(nonce, null, { clear: true }) },
-    );
+    ));
   }
   const { token } = admitted;
-  return new Response(null, {
+  return identified(new Response(null, {
     status: 303,
     headers: {
       location: `${new URL(request.url).origin}/s#${token}`,
@@ -1415,7 +1601,7 @@ async function completeSubmission(request, env) {
       "set-cookie": await intakeCookie(nonce, null, { clear: true }),
       ...SECURITY_HEADERS,
     },
-  });
+  }));
 }
 
 /** Finish a new intake after the authenticated submitter has seen current work. */
@@ -1760,7 +1946,8 @@ export default {
       }
 
       if (request.method === "GET" && url.pathname === "/") {
-        return html(intakeForm(env));
+        const identity = await githubIdentityPrincipal(request, env);
+        return html(intakeForm(env, {}, [], { automaticRecovery: Boolean(identity) }));
       }
       if (request.method === "GET" && url.pathname === "/dashboard/login") {
         return (
@@ -1814,6 +2001,9 @@ export default {
           (await verifySubmission(request, env))
         );
       }
+      if (request.method === "POST" && url.pathname === "/api/submissions") {
+        return automaticSubmissions(request, env);
+      }
       if (request.method === "POST" && url.pathname === "/submit") {
         // Guarded as well as bound. The cookie stops a sign-in being finished
         // elsewhere, but not an intake being *started* in somebody's browser by
@@ -1840,6 +2030,12 @@ export default {
         }
         return (
           (await intakeThrottle(env, request)) ?? (await beginRecovery(request, env))
+        );
+      }
+      if (request.method === "POST" && url.pathname === "/submissions/open") {
+        return (
+          (await intakeThrottle(env, request)) ??
+          (await openAutomaticSubmission(request, env))
         );
       }
       if (request.method === "POST" && url.pathname === "/submission-choice") {

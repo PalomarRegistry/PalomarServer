@@ -1079,6 +1079,143 @@ if (configPath?.value) scheduleComparatorPathLookup();
 if (existingId.input?.value) checkExistingId(existingId);
 scheduleRegistrationLookup();
 
+/** Find current work automatically after this browser has completed GitHub OAuth. */
+const recoveryPrompt = document.getElementById("recovery-prompt");
+const recoveryContent = document.getElementById("recovery-content");
+
+function recoveryAuthentication() {
+  const form = document.createElement("form");
+  form.method = "get";
+  form.action = "/submissions";
+  const button = document.createElement("button");
+  button.type = "submit";
+  button.className = "secondary";
+  button.id = "find-submissions";
+  button.textContent = "Authenticate and find my submissions";
+  form.append(button);
+  return form;
+}
+
+function recoveryStatus(message) {
+  const status = document.createElement("p");
+  status.className = "recovery-status";
+  status.id = "recovery-status";
+  status.setAttribute("role", "status");
+  status.textContent = message;
+  return status;
+}
+
+function detailList(submission) {
+  const details = document.createElement("dl");
+  details.className = "details";
+  for (const [label, value, code] of [
+    ["Submission", submission.id, true],
+    ["Commit", submission.commit, true],
+    ["Status", submission.status_label, false],
+  ]) {
+    const term = document.createElement("dt");
+    term.textContent = label;
+    const description = document.createElement("dd");
+    const content = code ? document.createElement("code") : document.createElement("span");
+    content.textContent = value;
+    description.append(content);
+    details.append(term, description);
+  }
+  return details;
+}
+
+function recoveryItem(submission) {
+  const item = document.createElement("li");
+  const heading = document.createElement("h3");
+  heading.textContent = submission.repository;
+  const form = document.createElement("form");
+  form.method = "post";
+  form.action = "/submissions/open";
+  const identifier = document.createElement("input");
+  identifier.type = "hidden";
+  identifier.name = "submission_id";
+  identifier.value = submission.id;
+  const open = document.createElement("button");
+  open.type = "submit";
+  open.className = "secondary";
+  open.textContent = "Open this submission";
+  form.append(identifier, open);
+  item.append(heading, detailList(submission), form);
+  return item;
+}
+
+function showRecoveryAuthentication() {
+  recoveryPrompt?.removeAttribute("data-state");
+  recoveryContent?.replaceChildren(recoveryAuthentication());
+}
+
+function showRecoveryFailure() {
+  if (!recoveryContent) return;
+  const status = recoveryStatus("Palomar could not check submissions just now.");
+  const retry = document.createElement("button");
+  retry.type = "button";
+  retry.className = "secondary";
+  retry.textContent = "Try again";
+  retry.addEventListener("click", () => { void checkRecovery(); });
+  recoveryContent.replaceChildren(status, retry);
+}
+
+function dismissEmptyRecovery() {
+  const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
+  setTimeout(() => {
+    if (!recoveryPrompt) return;
+    recoveryPrompt.dataset.state = "dismissing";
+    if (reduced) {
+      recoveryPrompt.hidden = true;
+      return;
+    }
+    setTimeout(() => {
+      recoveryPrompt.hidden = true;
+    }, 350);
+  }, 1000);
+}
+
+async function checkRecovery() {
+  if (!recoveryContent) return;
+  const checking = recoveryStatus("Checking submissions…");
+  const spinner = document.createElement("span");
+  spinner.className = "spinner";
+  spinner.setAttribute("aria-hidden", "true");
+  checking.append(" ", spinner);
+  recoveryContent.replaceChildren(checking);
+  try {
+    const response = await fetch("/api/submissions", {
+      method: "POST",
+      headers: { accept: "application/json" },
+      credentials: "same-origin",
+    });
+    if (response.status === 401) return showRecoveryAuthentication();
+    if (!response.ok) return showRecoveryFailure();
+    const answer = await response.json();
+    if (!Array.isArray(answer?.submissions)) return showRecoveryFailure();
+    if (answer.submissions.length === 0) {
+      recoveryContent.replaceChildren(recoveryStatus("No submissions found."));
+      dismissEmptyRecovery();
+      return;
+    }
+    const list = document.createElement("ul");
+    list.className = "recovery-list";
+    for (const submission of answer.submissions) list.append(recoveryItem(submission));
+    recoveryContent.replaceChildren(
+      recoveryStatus(
+        answer.submissions.length === 1
+          ? "Found one submission in progress."
+          : `Found ${answer.submissions.length} submissions in progress.`,
+      ),
+      list,
+    );
+  } catch {
+    showRecoveryFailure();
+  }
+}
+
+if (recoveryPrompt?.dataset.automatic === "true") void checkRecovery();
+
 /**
  * Say that something is happening.
  *
@@ -1097,12 +1234,12 @@ function setRecoveryBusy(busy) {
   if (busy) {
     recoverySubmit.dataset.busy = "true";
     recoverySubmit.setAttribute("aria-busy", "true");
-    recoverySubmit.textContent = "Finding your submissions…";
+    recoverySubmit.textContent = "Authenticating and finding submissions…";
     return;
   }
   delete recoverySubmit.dataset.busy;
   recoverySubmit.removeAttribute("aria-busy");
-  recoverySubmit.textContent = "Find my submissions";
+  recoverySubmit.textContent = "Authenticate and find my submissions";
 }
 
 recoveryForm?.addEventListener("submit", () => {

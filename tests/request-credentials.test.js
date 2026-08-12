@@ -4,6 +4,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   bearerToken,
+  githubIdentityCookie,
+  githubIdentityPrincipal,
   intakeCookie,
   intakeCredential,
   madeByThisSite,
@@ -14,6 +16,7 @@ import { digest } from "../src/submission.js";
 
 const TOKEN = "a".repeat(64);
 const ORIGIN = "https://submit.palomar-registry.org";
+const ENV = { TOKEN_PEPPER: "identity-test-pepper" };
 
 function request(headers = {}) {
   return new Request(`${ORIGIN}/api/submission`, { headers });
@@ -62,6 +65,56 @@ test("legacy and duplicate session-cookie names fail closed", () => {
     `${name} =${TOKEN}`,
   ]) {
     assert.equal(sessionToken(request({ cookie })), null, cookie);
+  }
+});
+
+test("a signed host-only cookie remembers a GitHub identity but no OAuth token", async () => {
+  const principal = { id: 4242, login: "someone" };
+  const cookie = await githubIdentityCookie(ENV, principal);
+  assert.match(
+    cookie,
+    /^__Host-palomar_github_identity=[A-Za-z0-9_-]+\.[0-9a-f]{64}; Path=\/; HttpOnly; Secure; SameSite=Strict; Max-Age=43200$/,
+  );
+  assert.doesNotMatch(cookie, /access|oauth|token/i);
+  assert.doesNotMatch(cookie, /(?:^|;)\s*Domain=/i);
+  assert.deepEqual(
+    await githubIdentityPrincipal(request({ cookie }), ENV),
+    principal,
+  );
+});
+
+test("GitHub identity cookies fail closed when forged, duplicated, expired, or signed elsewhere", async () => {
+  const principal = { id: 4242, login: "someone" };
+  const originalNow = Date.now;
+  let cookie;
+  try {
+    Date.now = () => 1_000;
+    cookie = await githubIdentityCookie(ENV, principal);
+  } finally {
+    Date.now = originalNow;
+  }
+  const pair = cookie.split(";", 1)[0];
+  const [name, value] = pair.split("=");
+  const forged = `${name}=${value.slice(0, -1)}${value.endsWith("0") ? "1" : "0"}`;
+  assert.equal(await githubIdentityPrincipal(request({ cookie: forged }), ENV), null);
+  assert.equal(
+    await githubIdentityPrincipal(request({ cookie: `${pair}; ${pair}` }), ENV),
+    null,
+  );
+  assert.equal(
+    await githubIdentityPrincipal(request({ cookie: pair }), { TOKEN_PEPPER: "another-pepper" }),
+    null,
+  );
+  assert.equal(await githubIdentityPrincipal(request({ cookie: pair }), ENV), null);
+});
+
+test("the GitHub identity cookie rejects principals the provider could not have returned", async () => {
+  for (const principal of [
+    { id: 0, login: "someone" },
+    { id: 4242, login: "" },
+    { id: 4242, login: "not a login!" },
+  ]) {
+    await assert.rejects(() => githubIdentityCookie(ENV, principal), /invalid GitHub principal/);
   }
 });
 

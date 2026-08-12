@@ -11,6 +11,7 @@ import test from "node:test";
 import { readFile } from "node:fs/promises";
 import worker from "../src/index.js";
 import { digest, statePath, tokenDigest } from "../src/submission.js";
+import { githubIdentityCookie } from "../src/request-credentials.js";
 
 const ENV = {
   STATE_REPO: "PalomarRegistry/PalomarSubmissionState",
@@ -1449,6 +1450,25 @@ const PENDING = {
 const PRINCIPAL_INDEX_PATH =
   `index/principals/${await digest(`${ENV.TOKEN_PEPPER}:4242`)}.json`;
 
+async function identityCookieHeader(principal = { login: "someone", id: 4242 }) {
+  return (await githubIdentityCookie(ENV, principal)).split(";", 1)[0];
+}
+
+function responseCookies(response) {
+  return response.headers.getSetCookie?.() ?? [response.headers.get("set-cookie")];
+}
+
+async function assertIdentityResponse(response, { clearedNonce = null } = {}) {
+  const cookies = responseCookies(response).filter(Boolean);
+  assert.ok(
+    cookies.some((cookie) => cookie.startsWith("__Host-palomar_github_identity=")),
+    "GitHub OAuth did not establish its short-lived identity session",
+  );
+  if (clearedNonce) {
+    assert.ok(cookies.includes(await clearedIntakeCookie(clearedNonce)));
+  }
+}
+
 function currentSubmission(overrides = {}) {
   return {
     schema_version: 1,
@@ -1517,7 +1537,12 @@ test("a submitter who cannot push writes no submission", async () => {
 
   assert.equal(response.status, 403);
   assert.match(await response.text(), /cannot push to that repository/);
-  assert.equal(response.headers.get("set-cookie"), null, "a retryable intake lost its binding");
+  await assertIdentityResponse(response);
+  assert.doesNotMatch(
+    responseCookies(response).join("\n"),
+    /palomar_intake.*Max-Age=0/,
+    "a retryable intake lost its binding",
+  );
   // Nothing may be admitted, indexed, or dispatched on a failed proof.
   assert.deepEqual(written.map((item) => item.path), []);
 });
@@ -1539,7 +1564,7 @@ test("a submitter who can push is recorded as having proved it", async () => {
     written.find((item) => item.path === PRINCIPAL_INDEX_PATH).value.submissions,
     [record.value.id],
   );
-  assert.equal(response.headers.get("set-cookie"), await clearedIntakeCookie(nonce));
+  await assertIdentityResponse(response, { clearedNonce: nonce });
 });
 
 test("an active Technical Maintainer's ordinary submission bypasses account limits", async () => {
@@ -1663,6 +1688,150 @@ test("submission recovery is a first-class GitHub sign-in with no new submission
   );
 });
 
+test("the form checks automatically only with a valid remembered GitHub identity", async () => {
+  const unauthenticated = await worker.fetch(
+    new Request("https://submit.palomar-registry.org/"),
+    ENV,
+  );
+  assert.match(await unauthenticated.text(), /data-automatic="false"/);
+
+  const authenticated = await worker.fetch(
+    new Request("https://submit.palomar-registry.org/", {
+      headers: { cookie: await identityCookieHeader() },
+    }),
+    ENV,
+  );
+  const body = await authenticated.text();
+  assert.match(body, /data-automatic="true"/);
+  assert.match(body, /Checking submissions…/);
+});
+
+test("automatic recovery returns owned metadata without rotating any capability", async () => {
+  const old = currentSubmission({ status: "review-ready" });
+  const other = currentSubmission({
+    id: "othersubmit1",
+    repository: "other/project",
+    token_sha256: "f".repeat(64),
+    push_proof: {
+      schema_version: 1,
+      method: "oauth",
+      binding: "same-account",
+      principal: { login: "another-person", id: 9999 },
+    },
+  });
+  const stub = stubOAuth({
+    push: true,
+    reviewer: { schema_version: 1, open: [old.id, other.id] },
+    files: {
+      [statePath(old.id, "state.json")]: old,
+      [statePath(other.id, "state.json")]: other,
+    },
+  });
+  const response = await worker.fetch(
+    new Request("https://submit.palomar-registry.org/api/submissions", {
+      method: "POST",
+      headers: {
+        "sec-fetch-site": "same-origin",
+        cookie: await identityCookieHeader(),
+      },
+    }),
+    ENV,
+  );
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {
+    submissions: [{
+      id: old.id,
+      repository: old.repository,
+      commit: old.commit,
+      status: old.status,
+      status_label: "The automated review is ready for you",
+    }],
+  });
+  assert.deepEqual(stub.written, [], "viewing the form rotated a recovery capability");
+  assert.equal(stub.store.get(statePath(old.id, "state.json")).recovery_token_sha256, undefined);
+});
+
+test("automatic recovery requires both its identity cookie and this exact origin", async () => {
+  stubOAuth({ push: true });
+  const missing = await worker.fetch(
+    new Request("https://submit.palomar-registry.org/api/submissions", {
+      method: "POST",
+      headers: { "sec-fetch-site": "same-origin" },
+    }),
+    ENV,
+  );
+  assert.equal(missing.status, 401);
+
+  const sibling = await worker.fetch(
+    new Request("https://submit.palomar-registry.org/api/submissions", {
+      method: "POST",
+      headers: {
+        "sec-fetch-site": "same-site",
+        cookie: await identityCookieHeader(),
+      },
+    }),
+    ENV,
+  );
+  assert.equal(sibling.status, 403);
+});
+
+test("opening an automatic result rotates only its recovery capability on demand", async () => {
+  const previousRecovery = "d".repeat(64);
+  const old = currentSubmission({ recovery_token_sha256: previousRecovery });
+  const stub = stubOAuth({
+    push: true,
+    reviewer: { schema_version: 1, open: [old.id] },
+    files: {
+      [statePath(old.id, "state.json")]: old,
+      [`index/tokens/${old.token_sha256}.json`]: { id: old.id },
+      [`index/tokens/${previousRecovery}.json`]: { id: old.id },
+    },
+  });
+  const response = await worker.fetch(
+    new Request("https://submit.palomar-registry.org/submissions/open", {
+      method: "POST",
+      headers: {
+        "sec-fetch-site": "same-origin",
+        cookie: await identityCookieHeader(),
+      },
+      body: new URLSearchParams({ submission_id: old.id }),
+    }),
+    ENV,
+  );
+  assert.equal(response.status, 303);
+  assert.match(response.headers.get("location"), /^https:\/\/submit\.palomar-registry\.org\/s#[0-9a-f]{64}$/);
+  assert.ok(stub.store.has(`index/tokens/${old.token_sha256}.json`));
+  assert.ok(!stub.store.has(`index/tokens/${previousRecovery}.json`));
+  const recovered = stub.store.get(statePath(old.id, "state.json"));
+  assert.match(recovered.recovery_token_sha256, /^[0-9a-f]{64}$/);
+  assert.equal(stub.store.get(`index/tokens/${recovered.recovery_token_sha256}.json`).id, old.id);
+});
+
+test("automatic recovery opening is throttled before it can write State", async () => {
+  const old = currentSubmission();
+  const stub = stubOAuth({
+    push: true,
+    reviewer: { schema_version: 1, open: [old.id] },
+    files: {
+      [statePath(old.id, "state.json")]: old,
+      [`index/tokens/${old.token_sha256}.json`]: { id: old.id },
+    },
+  });
+  const response = await worker.fetch(
+    new Request("https://submit.palomar-registry.org/submissions/open", {
+      method: "POST",
+      headers: {
+        "sec-fetch-site": "same-origin",
+        cookie: await identityCookieHeader(),
+      },
+      body: new URLSearchParams({ submission_id: old.id }),
+    }),
+    { ...ENV, INTAKE_LIMITER: { limit: async () => ({ success: false }) } },
+  );
+  assert.equal(response.status, 429);
+  assert.deepEqual(stub.written, []);
+});
+
 test("a recovery sign-in issues fresh links to every current submission owned by the account", async () => {
   const nonce = "6".repeat(64);
   const pendingPath = `pending/${await digest(nonce)}.json`;
@@ -1710,7 +1879,7 @@ test("a recovery sign-in issues fresh links to every current submission owned by
   assert.match(body, new RegExp(old.id));
   assert.match(body, /href="\/s#[0-9a-f]{64}"/);
   assert.doesNotMatch(body, new RegExp(other.id));
-  assert.equal(response.headers.get("set-cookie"), await clearedIntakeCookie(nonce));
+  await assertIdentityResponse(response, { clearedNonce: nonce });
   assert.ok(!stub.store.has(pendingPath), "a completed recovery retained its OAuth proof");
   assert.ok(
     stub.store.has(`index/tokens/${old.token_sha256}.json`),
@@ -2015,7 +2184,7 @@ test("browser intake fails closed and visibly when inflight state is unusable", 
     assert.match(body, /sign-in was spent/);
     assert.match(body, /Start a new submission from the submission form/);
     assert.doesNotMatch(body, /inflight|open array|state-contract/);
-    assert.equal(response.headers.get("set-cookie"), await clearedIntakeCookie(nonce));
+    await assertIdentityResponse(response, { clearedNonce: nonce });
     assert.deepEqual(stub.deleted, [], "damaged State consumed a proof without admitting it");
     assert.ok(stub.store.has(pendingPath), "damaged State did not leave the proof retryable");
     assert.deepEqual(
