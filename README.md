@@ -318,8 +318,13 @@ restores it.
 metadata repairs. `POST /api/repair` requires the submission capability, the
 digest of the current failure, a `changes-required` record, and fields explicitly
 marked repairable in that failure. It atomically writes the request, its queue
-entry, and the record marker. The browser never offers this endpoint for
-malformed YAML or complex fields.
+entry, and the record marker. Profile 2 covers every mechanically required
+metadata field, including structured people, source, and automation lists, and
+requires one complete submitter-confirmed payload before it queues a pull
+request. Safe values from an older metadata shape may be shown as editable
+prefills, but classifications, maintainers, source relationships, repository
+roles, and review claims are never inferred. Malformed YAML, non-mapping roots,
+aliases, unsafe paths, and mixed unsupported failures remain manual-only.
 
 `index/rate/<digest>.json` slows down a submitter who keeps starting and never
 finishes. Starting is the expensive act: it dispatches a verification run that
