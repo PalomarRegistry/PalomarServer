@@ -226,7 +226,7 @@ test("the form still works without the script", () => {
   assert.doesNotMatch(form, /name="authorization_relationship" value="technical-test"/);
   assert.doesNotMatch(form, /I am a Palomar Technical Maintainer testing the workflow/);
   assert.doesNotMatch(form, /technical-team test may exercise the full workflow/);
-  assert.doesNotMatch(form, /Technical Maintainer membership for a marked test/);
+  assert.doesNotMatch(form, /Technical\s+Maintainer membership for a marked test/);
 });
 
 test("the policy reaches exactly the two origins the form looks things up on", async () => {
