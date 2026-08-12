@@ -49,8 +49,7 @@ export function intakeForm(env, values = {}, problems = []) {
       <li>The result has credible research interest and a clear informal explanation.</li>
       <li>A public, pinned commit contains an auditable Challenge, matching Solution,
           Comparator configuration, <code>formalization.yaml</code>, and a licence.</li>
-      <li>For a registrable submission, you are a responsible author or maintainer, or have their approval.
-          Technical Maintainers may instead run a non-registerable test.</li>
+      <li>For a registrable submission, you are a responsible author or maintainer, or have their approval.</li>
     </ul>
     <p>See the
       <a href="https://github.com/PalomarRegistry/PalomarPolicy/blob/main/CONTRIBUTING.md">full submission requirements</a>.
