@@ -432,7 +432,11 @@ async function beginSubmission(request, env, { machine = false } = {}) {
   const authorize = new URL("https://github.com/login/oauth/authorize");
   authorize.searchParams.set("client_id", env.OAUTH_CLIENT_ID);
   authorize.searchParams.set("redirect_uri", `${new URL(request.url).origin}/oauth/callback`);
-  authorize.searchParams.set("scope", technicalTest ? "read:user read:org" : "read:user");
+  // Every browser submission needs enough visibility to distinguish an active
+  // Technical Maintainer from an ordinary submitter. The exemption belongs to
+  // the authenticated account, not to the authorization relationship selected
+  // on the form.
+  authorize.searchParams.set("scope", "read:user read:org");
   authorize.searchParams.set("state", nonce);
   // `Response.redirect` answers with immutable headers, so the redirect is
   // built by hand in order to carry the cookie.
@@ -721,10 +725,15 @@ async function admitSubmission(
   const createdAt = new Date(createdAtMs).toISOString().replace(/\.\d+Z$/, "Z");
   const tokenSha256 = await tokenDigest(env, token);
   const testSubmission = pending.authorization_relationship === "technical-test";
-  // Registration clears an ordinary submitter's exponential backoff. A test
-  // can never register, so applying that same record would make the explicitly
-  // authorized testing path less usable after every successful exercise.
-  const rate = proof?.principal?.id && !testSubmission
+  // New proofs carry the explicit marker. Accept the existing dedicated proof
+  // method too, so a choice page minted by the previous deployment does not
+  // suddenly acquire a throttle after this Worker is deployed.
+  const technicalMaintainer = proof?.technical_maintainer === true ||
+    proof?.method === "technical-team-test";
+  // Registration clears an ordinary submitter's exponential backoff. Active
+  // Technical Maintainers are operationally exempt regardless of whether this
+  // is a marked test or an ordinary submission.
+  const rate = proof?.principal?.id && !technicalMaintainer
     ? await ratePath(env, proof.principal.id)
     : null;
   const principalIndexPath = proof?.principal?.id
@@ -872,12 +881,10 @@ async function admitSubmission(
           : atRatePath(rate, () => rateRecord(current.value).value);
         limit = rateDecision(value, createdAtMs);
       }
-      // The technical-test marker reaches this function only after the browser
-      // OAuth path has verified active Technical Maintainer membership. Those
-      // maintainers exercise the workflow itself, so neither the ordinary
-      // submitter backoff above nor its owner/submitter concurrency caps should
-      // prevent a test from starting.
-      const admission = limit.refused || testSubmission
+      // Membership is proved by OAuth before this point. Neither the ordinary
+      // submitter backoff above nor its owner/submitter concurrency caps applies
+      // to an active Technical Maintainer's account.
+      const admission = limit.refused || technicalMaintainer
         ? limit
         : admissionDecision(availableInflight, { owner, submitter });
       if (admission.refused) {
@@ -1284,35 +1291,34 @@ async function completeSubmission(request, env) {
       "Start again after confirming that the public repository is available.",
     ]), 403);
   }
-  if (technicalTest) {
-    const membership = await technicalTeamMembership(granted.access_token, submitter);
-    if (membership.unavailable) {
-      console.error("technical-test-oauth-membership", membership.status);
-      if (!(await deleteState(env, pendingPath, pending.sha,
-                              "Discard a test whose membership could not be verified"))) {
-        console.error("pending", `could not discard ${pendingPath}`);
-      }
-      return html(
-        errorPage(env, "Submission authorization is temporarily unavailable", spentSignInProblems([
-          "Palomar could not confirm that authorization just now.",
-        ])),
-        503,
-        { "set-cookie": await intakeCookie(nonce, null, { clear: true }) },
-      );
+  const membership = await technicalTeamMembership(granted.access_token, submitter);
+  if (membership.unavailable) {
+    console.error("submission-oauth-membership", membership.status);
+    if (!(await deleteState(env, pendingPath, pending.sha,
+                            "Discard an intake whose membership could not be verified"))) {
+      console.error("pending", `could not discard ${pendingPath}`);
     }
-    if (!membership.active) {
-      if (!(await deleteState(env, pendingPath, pending.sha,
-                              "Discard a test requested by a nonmember"))) {
-        console.error("pending", `could not discard ${pendingPath}`);
-      }
-      return html(
-        errorPage(env, "This submission is not authorized", spentSignInProblems([
-          "Choose one of the authorization relationships offered on the submission form.",
-        ])),
-        403,
-        { "set-cookie": await intakeCookie(nonce, null, { clear: true }) },
-      );
+    return html(
+      errorPage(env, "Submission authorization is temporarily unavailable", spentSignInProblems([
+        "Palomar could not check Technical Maintainer membership just now.",
+      ])),
+      503,
+      { "set-cookie": await intakeCookie(nonce, null, { clear: true }) },
+    );
+  }
+  const technicalMaintainer = membership.active;
+  if (technicalTest && !technicalMaintainer) {
+    if (!(await deleteState(env, pendingPath, pending.sha,
+                            "Discard a test requested by a nonmember"))) {
+      console.error("pending", `could not discard ${pendingPath}`);
     }
+    return html(
+      errorPage(env, "This submission is not authorized", spentSignInProblems([
+        "Choose one of the authorization relationships offered on the submission form.",
+      ])),
+      403,
+      { "set-cookie": await intakeCookie(nonce, null, { clear: true }) },
+    );
   }
 
   if (!viewer?.permissions?.push && !technicalTest) {
@@ -1326,11 +1332,10 @@ async function completeSubmission(request, env) {
   }
 
   // Anyone with ordinary push access, and each explicitly verified Technical
-  // Maintainer test, can reach this point. Ordinary submissions receive the
-  // per-principal backoff and owner/submitter caps in `admitSubmission`;
-  // verified Technical Maintainer tests bypass both. The unauthenticated edge
-  // throttle remains in front of this flow because a form choice alone cannot
-  // be trusted as team membership.
+  // Maintainer test, can reach this point. `admitSubmission` exempts every
+  // active Technical Maintainer account from the per-principal backoff and
+  // owner/submitter caps. The unauthenticated edge throttle remains in front of
+  // this flow because identity is not known until OAuth completes.
   const owner = viewer.owner?.login ?? null;
   const proof = {
     schema_version: 1,
@@ -1340,6 +1345,7 @@ async function completeSubmission(request, env) {
     repository_id: viewer.id ?? null,
     commit: pending.value.commit,
     principal,
+    ...(technicalMaintainer ? { technical_maintainer: true } : {}),
   };
   const verification = { owner, submitter, proof };
   let admitted;

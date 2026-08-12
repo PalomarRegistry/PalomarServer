@@ -165,10 +165,11 @@ export function resetRateRecord(value, resetAt) {
  * push access by this point. The owner cap stops one project's repositories
  * monopolising the runners; the one-per-submitter cap stops one person doing it
  * across many repositories, which the owner cap alone never noticed, because a
- * fresh organisation buys fresh slots. Verified Technical Maintainer tests are
- * exempted by the composition root before this ordinary-submission policy is
- * called. There is no global cap: unrelated submitters must not be able to make
- * intake refuse everyone.
+ * fresh organisation buys fresh slots. Verified Technical Maintainer accounts
+ * are exempted by the composition root before this ordinary-submission policy
+ * is called, regardless of the submission's authorization relationship. There
+ * is no global cap: unrelated submitters must not be able to make intake refuse
+ * everyone.
  */
 export function admissionDecision(open, { owner, submitter }) {
   if (owner && open.filter((item) => item.owner === owner).length >= MAX_INFLIGHT_PER_OWNER) {
