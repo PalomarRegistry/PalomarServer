@@ -317,7 +317,9 @@ function showStructuredFailure(data) {
       locationNode.className = "location";
       article.append(locationNode);
     }
-    if (diagnostic.explanation) article.append(el("p", diagnostic.explanation));
+    if (diagnostic.explanation && diagnostic.explanation !== diagnostic.summary) {
+      article.append(el("p", diagnostic.explanation));
+    }
     article.append(el("p", `Who can fix this: ${diagnostic.owner === "submitter" ? "you" : "Palomar"}.`));
     if (diagnostic.next_action) article.append(el("p", `Next: ${diagnostic.next_action}`));
     failureDiagnostics.append(article);

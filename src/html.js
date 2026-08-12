@@ -67,11 +67,12 @@ export function intakeForm(env, values = {}, problems = []) {
     <section class="disclosure metadata-warning">
       <h2>Check <code>formalization.yaml</code> before you submit</h2>
       <p>
-        Palomar checks this file strictly and requires some metadata beyond the
-        base mathlib-initiative format. It is normal for a first preflight to
-        find fields that need changing. If it does, this page will explain each
-        problem and what to do next; update the repository and submit the new
-        commit.
+        Palomar uses a
+        <a href="https://github.com/PalomarRegistry/PalomarTemplate/blob/main/formalization.yaml">complete copyable template</a>
+        based on mathlib-initiative <code>formalization.yaml</code> v0.3, with
+        additional classification and provenance fields. If preflight finds a
+        problem, this page will explain it; update the file, commit the change,
+        and submit the new commit.
       </p>
       <details>
         <summary>Prompt an LLM to check the file now</summary>
@@ -82,15 +83,15 @@ export function intakeForm(env, values = {}, problems = []) {
         </p>
         <pre id="formalization-prompt">Check the attached formalization.yaml for a Palomar Registry submission.
 
-Palomar uses mathlib-initiative formalization.yaml v0.3 as a base and requires these top-level sections: project, repository, classification, sources, automation, and review. Check all of the following Palomar requirements:
+Palomar uses mathlib-initiative formalization.yaml v0.3 as a base and requires these top-level sections: project, classification, sources, automation, and review. Check all of the following Palomar requirements:
 - project has a nonempty name, authors, license, and responsible_maintainers;
-- repository.role is substantive-development or thin-wrapper. A thin wrapper has a substantive_formalization mapping with a GitHub repository id and full commit; a substantive-development repository must not have that mapping;
+- omit repository for an ordinary project: the submitted repository is the substantive development by default. Only a thin wrapper needs repository.substantive_formalization with a GitHub repository id and full commit; an explicit repository.role of thin-wrapper remains accepted but is unnecessary;
 - classification.arxiv has one or two valid arXiv category codes and classification.msc2020 has one to eight valid MSC 2020 codes;
 - sources is a nonempty list, and every source has a title and relationship. Do not use obsolete singular author or provenance spellings;
 - automation.methods is a nonempty list and every entry has a nonempty method;
 - review.status is nonempty.
 
-Identify every missing, malformed, obsolete, or inconsistent field. For each problem, name the exact dotted field, explain the expected value, and propose a concrete YAML change. Do not invent names, authorship, classifications, licences, source relationships, repository roles, commits, or review claims: mark values that I must supply myself. Return a corrected YAML draft and then a short checklist of assumptions I should verify.</pre>
+Identify every missing, malformed, obsolete, or inconsistent field. For each problem, name the exact dotted field, explain the expected value, and propose a concrete YAML change. Do not invent names, authorship, classifications, licences, source relationships, substantive repositories, commits, or review claims: mark values that I must supply myself. Return a corrected YAML draft and then a short checklist of assumptions I should verify.</pre>
         <button type="button" class="secondary" id="copy-formalization-prompt">Copy prompt</button>
         <span class="hint" id="formalization-prompt-status" role="status"></span>
       </details>
@@ -211,9 +212,10 @@ Identify every missing, malformed, obsolete, or inconsistent field. For each pro
       <button type="submit">Authenticate via GitHub</button>
       <p class="hint">
         You may be asked to sign in, so Palomar can confirm you have write
-        access to the repository you are submitting. If you are already signed
-        in to GitHub you will not see anything. The sign-in is used once and
-        not stored.
+        access to the repository you are submitting, or active Technical
+        Maintainer membership for a marked test. Even if you are already signed
+        in, GitHub may ask you to authorize Palomar on your first submission.
+        The authorization is used once and not stored.
       </p>
       <p class="visually-hidden" role="status" id="live-status"></p>
     </form>
