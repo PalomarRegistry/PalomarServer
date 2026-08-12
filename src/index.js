@@ -58,7 +58,18 @@ import {
   reviewerOpen,
   repairOpen,
 } from "./state-contract.js";
-import { normalizedRepairEdits } from "../public/repair-contract.js";
+import { normalizedQueuedRepairEdits } from "../public/repair-contract.js";
+import arxivCategories from "../public/taxonomies/arxiv-categories.json" with { type: "json" };
+import msc2020Codes from "../public/taxonomies/msc2020-codes.json" with { type: "json" };
+
+const REPAIR_TAXONOMIES = Object.freeze({
+  "classification.arxiv": new Map(
+    arxivCategories.map((code) => [code.toUpperCase(), code]),
+  ),
+  "classification.msc2020": new Map(
+    Object.keys(msc2020Codes).map((code) => [code.toUpperCase(), code]),
+  ),
+});
 import {
   activeSubmissionPhase,
   assertInflightContract,
@@ -2253,7 +2264,7 @@ export default {
         const profileVersion = body?.profile_version === 2 ? 2 : 1;
         let edits;
         try {
-          edits = normalizedRepairEdits(body?.edits, profileVersion);
+          edits = normalizedQueuedRepairEdits(body?.edits, profileVersion, REPAIR_TAXONOMIES);
         } catch (error) {
           return json({ error: error.message }, 400);
         }

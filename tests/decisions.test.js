@@ -1102,7 +1102,11 @@ test("guided metadata repair renders structured repeatable fields and safe prefi
   assert.match(script, /classification-summary/);
   assert.match(script, /validateRepairForm/);
   assert.match(script, /dataset\.needsAction/);
-  assert.match(script, /shouldShowDiagnostic\(diagnostic, canRequestRepair, repairedFields\)/);
+  assert.match(
+    script,
+    /shouldShowDiagnostic\(diagnostic, canRequestRepair \|\| repairInFlight, repairedFields\)/,
+  );
+  assert.match(script, /Apply the proposed patch manually/);
   assert.match(script, /diagnostics\.every/);
   assert.match(script, /profile_version: lastFailureProfileVersion/);
   assert.equal(
