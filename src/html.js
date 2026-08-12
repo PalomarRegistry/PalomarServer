@@ -55,12 +55,8 @@ export function intakeForm(env, values = {}, problems = []) {
       <a href="https://github.com/PalomarRegistry/PalomarPolicy/blob/main/CONTRIBUTING.md">full submission requirements</a>.
     </p>
 
-    <section class="disclosure">
+    <section class="disclosure recovery-prompt">
       <h2>Already have a submission in progress?</h2>
-      <p>
-        Sign in with GitHub to get fresh private links to every submission
-        Palomar is still working on for you. You do not need the original link.
-      </p>
       <form method="get" action="/submissions">
         <button type="submit" class="secondary">Find my submissions</button>
       </form>
