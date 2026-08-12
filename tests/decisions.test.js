@@ -10,6 +10,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readFile } from "node:fs/promises";
 import worker from "../src/index.js";
+import { submissionsPage } from "../src/html.js";
 import { digest, statePath, tokenDigest } from "../src/submission.js";
 import { githubIdentityCookie } from "../src/request-credentials.js";
 
@@ -1990,6 +1991,32 @@ test("a new repository still pauses to list the submitter's other current work",
   assert.match(body, /Start the new submission/);
   assert.doesNotMatch(body, /Abandon this submission and start the new one/);
   assert.equal(stub.dispatched.length, 0);
+});
+
+test("starting the new submission shows progress while the choice is submitted", async () => {
+  const script = await readFile(new URL("../public/submissions.js", import.meta.url), "utf8");
+  const css = await readFile(new URL("../public/style.css", import.meta.url), "utf8");
+  const body = submissionsPage(ENV, {
+    submissions: [{
+      id: "oldsubmission",
+      repository: "other/project",
+      commit: "1".repeat(40),
+      statusLabel: "Review ready",
+      replaceable: true,
+      token: "a".repeat(64),
+    }],
+    pending: PENDING,
+    nonce: "2".repeat(64),
+  });
+
+  assert.match(body, /id="start-new-submission">Start the new submission<\/button>/);
+  assert.match(body, /<script type="module" src="\/submissions\.js"><\/script>/);
+  assert.match(script, /form\?\.addEventListener\("submit", \(\) => setStarting\(true\)\)/);
+  assert.match(script, /button\.dataset\.busy = "true"/);
+  assert.match(script, /button\.setAttribute\("aria-busy", "true"\)/);
+  assert.match(script, /Starting the new submission…/);
+  assert.match(script, /window\.addEventListener\("pageshow", \(\) => setStarting\(false\)\)/);
+  assert.match(css, /button\[data-busy="true"\]::after/);
 });
 
 test("replacing a same-repository submission atomically withdraws the old and admits the new", async () => {

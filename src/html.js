@@ -318,7 +318,7 @@ export function submissionsPage(
          </p>
          <form method="post" action="/submission-choice">
            <input type="hidden" name="state" value="${escape(nonce)}">
-           <button type="submit">Start the new submission</button>
+           <button type="submit" id="start-new-submission">Start the new submission</button>
          </form>
        </section>`
     : "";
@@ -339,6 +339,7 @@ export function submissionsPage(
     ${rows ? `<ul class="submission-list">${rows}</ul>` : ""}
     ${continueNew}
     <p><a href="/">Return to the submission form</a></p>
+    <script type="module" src="/submissions.js"></script>
   `);
 }
 
