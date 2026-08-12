@@ -120,6 +120,9 @@ test("public text speaks of registration, not publication", () => {
 test("the button says what it does", () => {
   assert.match(form, /Authenticate via GitHub/);
   assert.match(form, /Find my submissions/);
+  assert.match(form, /class="disclosure recovery-prompt"/);
+  assert.doesNotMatch(form, /fresh private links/);
+  assert.doesNotMatch(form, /You do not need the original link/);
   assert.doesNotMatch(form, /Continue with GitHub/);
 });
 
