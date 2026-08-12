@@ -484,3 +484,10 @@ npx wrangler deploy --config redirect/wrangler.jsonc --dry-run
 npm run deploy:redirect
 curl -sSI https://palomarregistry.org/about.html
 ```
+
+## Classification snapshots
+
+The guided metadata form serves the checked-in arXiv and MSC 2020 taxonomy
+snapshots from `public/taxonomies/`. Their sources, retrieval date, and
+third-party licensing terms are recorded in `public/taxonomies/LICENSE.md`.
+Keep that notice with the assets when updating or redistributing them.

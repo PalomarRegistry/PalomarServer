@@ -24,10 +24,10 @@ export const FORMALIZATION_FIELDS = Object.freeze({
     label: "Responsible maintainers", description: "People responsible for the submitted formalization. Palomar does not infer this from authorship.", input: "people",
   },
   "classification.arxiv": {
-    label: "arXiv classifications", description: "One or two official arXiv category codes, one per line.", input: "text-list",
+    label: "arXiv classifications", description: "One or two official arXiv category codes.", input: "text-list",
   },
   "classification.msc2020": {
-    label: "MSC 2020 classifications", description: "Between one and eight official MSC 2020 codes, one per line.", input: "text-list",
+    label: "MSC 2020 classifications", description: "Between one and eight official MSC 2020 codes.", input: "text-list",
   },
   sources: {
     label: "Mathematical sources", description: "Every source needs a title and an accurate relationship to the formalized result.", input: "sources",
@@ -36,7 +36,7 @@ export const FORMALIZATION_FIELDS = Object.freeze({
     label: "Automation methods", description: "Describe each distinct way the formalization was produced; use manual when appropriate.", input: "methods",
   },
   "review.status": {
-    label: "Review status", description: "The review completed before submission; this is not a Palomar endorsement.", input: "text",
+    label: "Review status", description: "This describes the review process you have already undertaken for this repository; it is not a Palomar endorsement.", input: "text",
   },
   "repository.substantive_formalization": {
     label: "Substantive formalization", description: "Only for a thin wrapper: the underlying owner/repository and full commit.", input: "substantive-repository",

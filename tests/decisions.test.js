@@ -1078,9 +1078,14 @@ test("every status-script element is present in the status page", async () => {
 
 test("guided metadata repair renders structured repeatable fields and safe prefills", async () => {
   const script = await readFile(new URL("../public/status.js", import.meta.url), "utf8");
+  const { statusPage } = await import("../src/html.js");
+  const page = statusPage(ENV);
   const profile = await readFile(
     new URL("../public/formalization-profile.js", import.meta.url), "utf8",
   );
+  const msc2020 = JSON.parse(await readFile(
+    new URL("../public/taxonomies/msc2020-codes.json", import.meta.url), "utf8",
+  ));
   assert.match(profile, /FORMALIZATION_PROFILE_VERSION = 2/);
   for (const field of [
     "project.authors", "project.responsible_maintainers", "sources",
@@ -1093,8 +1098,25 @@ test("guided metadata repair renders structured repeatable fields and safe prefi
   assert.match(script, /Add another source/);
   assert.match(script, /Add another method/);
   assert.match(script, /taxonomies\/\$\{name\}\.json/);
+  assert.match(script, /item\.label = summary/);
+  assert.match(script, /classification-summary/);
+  assert.match(script, /validateRepairForm/);
+  assert.match(script, /dataset\.needsAction/);
+  assert.match(script, /shouldShowDiagnostic\(diagnostic, canRequestRepair, repairedFields\)/);
   assert.match(script, /diagnostics\.every/);
   assert.match(script, /profile_version: lastFailureProfileVersion/);
+  assert.equal(
+    msc2020["05C10"],
+    "Planar graphs; geometric and topological aspects of graph theory",
+  );
+  assert.match(
+    profile,
+    /This describes the review process you have already undertaken for this repository; it is not a Palomar endorsement\./,
+  );
+  assert.match(
+    page,
+    /Palomar can help prepare a pull request for <code>formalization\.yaml<\/code>/,
+  );
 });
 
 test("a registered page names only the exact consented review as public", async () => {
