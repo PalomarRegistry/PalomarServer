@@ -56,6 +56,7 @@ import {
   reviewerOpen,
   repairOpen,
 } from "./state-contract.js";
+import { normalizedRepairEdits } from "../public/repair-contract.js";
 import {
   activeSubmissionPhase,
   assertInflightContract,
@@ -110,49 +111,6 @@ async function operationalDashboard(env) {
 }
 
 const MAX_VERIFY_ATTEMPTS = 10;
-const REPAIRABLE_FIELDS = new Map([
-  ["project.name", "text"],
-  ["project.license", "text"],
-  ["classification.arxiv", "text-list"],
-  ["classification.msc2020", "text-list"],
-  ["review.status", "text"],
-]);
-
-function normalizedRepairEdits(value) {
-  if (!Array.isArray(value) || value.length < 1 || value.length > REPAIRABLE_FIELDS.size) {
-    throw new TypeError(
-      `edits must contain between one and ${REPAIRABLE_FIELDS.size} repairable fields`,
-    );
-  }
-  const seen = new Set();
-  return value.map((edit) => {
-    const field = typeof edit?.field === "string" ? edit.field : "";
-    const kind = REPAIRABLE_FIELDS.get(field);
-    if (!kind || seen.has(field)) throw new TypeError(`unsupported or duplicate repair field: ${field}`);
-    seen.add(field);
-    if (kind === "text") {
-      const text = typeof edit.value === "string" ? edit.value.trim() : "";
-      if (!text || text.length > 500 || /[\r\n]/.test(text)) {
-        throw new TypeError(`${field} must be one line of at most 500 characters`);
-      }
-      return { field, value: text };
-    }
-    if (!Array.isArray(edit.value) || edit.value.length < 1 || edit.value.length > 100) {
-      throw new TypeError(`${field} must contain between one and 100 values`);
-    }
-    const items = edit.value.map((item) => typeof item === "string" ? item.trim() : "");
-    if (items.some((item) => !item || item.length > 500 || /[\r\n]/.test(item))) {
-      throw new TypeError(`${field} contains an empty or overlong value`);
-    }
-    if (field === "classification.arxiv" && items.length > 2) {
-      throw new TypeError(`${field} accepts at most two classifications`);
-    }
-    if (field === "classification.msc2020" && items.length > 8) {
-      throw new TypeError(`${field} accepts at most eight classifications`);
-    }
-    return { field, value: items };
-  }).sort((left, right) => left.field.localeCompare(right.field));
-}
 
 function formalizationPath(record) {
   const explicit = record.requested_paths?.formalization_metadata_path;
@@ -2057,9 +2015,10 @@ export default {
           return json({ error: "a test submission does not open repair pull requests" }, 409);
         }
         const body = await request.json().catch(() => null);
+        const profileVersion = body?.profile_version === 2 ? 2 : 1;
         let edits;
         try {
-          edits = normalizedRepairEdits(body?.edits);
+          edits = normalizedRepairEdits(body?.edits, profileVersion);
         } catch (error) {
           return json({ error: error.message }, 400);
         }
@@ -2092,16 +2051,24 @@ export default {
             if (JSON.stringify(current.failure) !== JSON.stringify(entry.record.failure)) {
               return { changes: [], message: "", result: { error: "the failure report changed; reload before requesting a repair", status: 409 } };
             }
-            if (current.failure?.profile_version !== 1) {
+            if (current.failure?.profile_version !== profileVersion) {
               return { changes: [], message: "", result: { error: "this failure uses a metadata profile Palomar cannot repair automatically", status: 409 } };
             }
+            const diagnostics = current.failure?.diagnostics ?? [];
             const allowed = new Set(
-              (current.failure?.diagnostics ?? [])
+              diagnostics
                 .filter((item) => item?.repairable === true)
                 .map((item) => item.field),
             );
             if (edits.some((edit) => !allowed.has(edit.field))) {
               return { changes: [], message: "", result: { error: "one of these fields is not repairable for the current failure", status: 409 } };
+            }
+            const completeGuidedFailure = diagnostics.length > 0 && diagnostics.every((item) =>
+              item?.owner === "submitter" && item?.repairable === true && allowed.has(item.field));
+            if (profileVersion === 2 && (
+              !completeGuidedFailure || edits.length !== allowed.size
+            )) {
+              return { changes: [], message: "", result: { error: "complete every field in the guided metadata repair", status: 409 } };
             }
             if (files[repairPath]?.sha !== null || current.repair) {
               return { changes: [], message: "", result: { error: "a repair request already exists for this submission", status: 409 } };
@@ -2109,7 +2076,7 @@ export default {
             const queueEntry = files[REPAIR_INDEX_PATH];
             const open = repairOpen(queueEntry?.value);
             const repair = {
-              schema_version: 1,
+              schema_version: profileVersion,
               submission_id: id,
               revision,
               status: "queued",

@@ -1,5 +1,15 @@
 import { SETTLED, nextPollDelay, pollFailureAction } from "/polling.js";
-import { FORMALIZATION_FIELDS, FORMALIZATION_PROFILE_VERSION } from "/formalization-profile.js";
+import {
+  AUTOMATION_METHODS,
+  FORMALIZATION_FIELDS,
+  FORMALIZATION_PROFILE_VERSION,
+  LEGACY_REPAIR_FIELDS,
+  lines,
+  safeDraft,
+  SOURCE_ENDORSEMENTS,
+  SOURCE_RELATIONSHIPS,
+  SOURCE_TYPES,
+} from "/formalization-profile.js";
 import {
   actionableVerificationErrors,
   decisionCopy,
@@ -292,6 +302,255 @@ function diagnosticLocation(location) {
   return `${location.path}${location.line ? `:${location.line}` : ""}${location.column ? `:${location.column}` : ""}`;
 }
 
+function option(value, selected = false) {
+  const node = document.createElement("option");
+  node.value = value;
+  node.textContent = value || "Not specified";
+  node.selected = selected;
+  return node;
+}
+
+function selectControl(name, values, selected = "") {
+  const select = document.createElement("select");
+  select.dataset.part = name;
+  for (const value of values) select.append(option(value, value === selected));
+  return select;
+}
+
+function textControl(name, value = "", { required = false, placeholder = "" } = {}) {
+  const input = document.createElement("input");
+  input.dataset.part = name;
+  input.value = value;
+  input.required = required;
+  input.maxLength = 2048;
+  input.placeholder = placeholder;
+  return input;
+}
+
+const taxonomyLists = new Map();
+
+function taxonomyList(field) {
+  const name = field === "classification.arxiv" ? "arxiv-categories" : "msc2020-codes";
+  if (taxonomyLists.has(name)) return taxonomyLists.get(name);
+  const list = document.createElement("datalist");
+  list.id = `repair-${name}`;
+  document.body.append(list);
+  taxonomyLists.set(name, list);
+  void fetch(`/taxonomies/${name}.json`, { credentials: "same-origin" })
+    .then((response) => response.ok ? response.json() : [])
+    .then((codes) => {
+      if (!Array.isArray(codes)) return;
+      const fragment = document.createDocumentFragment();
+      for (const code of codes) {
+        if (typeof code !== "string") continue;
+        const item = document.createElement("option");
+        item.value = code;
+        fragment.append(item);
+      }
+      list.replaceChildren(fragment);
+    })
+    .catch(() => {});
+  return list;
+}
+
+function classificationRow(field, value = "") {
+  const row = document.createElement("div");
+  row.className = "repair-classification";
+  const input = textControl("code", value, { required: true });
+  input.setAttribute("list", taxonomyList(field).id);
+  const remove = el("button", "Remove");
+  remove.type = "button";
+  remove.className = "secondary compact";
+  remove.addEventListener("click", () => row.remove());
+  row.append(input, remove);
+  return row;
+}
+
+function sourceRow(value = {}) {
+  const row = document.createElement("fieldset");
+  row.className = "repair-repeatable";
+  row.dataset.kind = "source";
+  row.append(el("legend", "Source"));
+  const guidance = el(
+    "p",
+    "Relationship describes what this formalization does with the source: " +
+      "formalizes follows it, adapts changes it, independently-proves reaches the same result, " +
+      "background supplies context, and other covers an original proof or another relationship. " +
+      "Source-author response records whether an author was contacted or involved; leave it " +
+      "unspecified when it does not apply.",
+  );
+  guidance.className = "hint";
+  row.append(guidance);
+  const relationship = selectControl("relationship", ["", ...SOURCE_RELATIONSHIPS], value.relationship);
+  relationship.required = true;
+  for (const [labelText, control] of [
+    ["Title", textControl("title", value.title, { required: true })],
+    ["Authors", (() => {
+      const input = document.createElement("textarea");
+      input.dataset.part = "authors";
+      input.rows = 2;
+      input.value = (value.authors ?? []).join("\n");
+      return input;
+    })()],
+    ["Type", selectControl("type", SOURCE_TYPES, value.type)],
+    ["Relationship", relationship],
+    ["Identifier", textControl("id", value.id, { placeholder: "DOI, arXiv id, URL, or citation" })],
+    ["Location", textControl("location", value.location)],
+    ["License", textControl("license", value.license)],
+    ["Source-author response", selectControl("author_endorsement", SOURCE_ENDORSEMENTS, value.author_endorsement)],
+  ]) {
+    const label = el("label", labelText);
+    label.append(control);
+    row.append(label);
+  }
+  const remove = el("button", "Remove source");
+  remove.type = "button";
+  remove.className = "secondary compact";
+  remove.addEventListener("click", () => row.remove());
+  row.append(remove);
+  return row;
+}
+
+function methodRow(value = {}) {
+  const row = document.createElement("fieldset");
+  row.className = "repair-repeatable";
+  row.dataset.kind = "method";
+  row.append(el("legend", "Method"));
+  const guidance = el(
+    "p",
+    "Choose manual for work written without generative assistance, copilot for interactive " +
+      "suggestions, agent for a directed coding agent, autonomous for an independently run " +
+      "system, or other. Framework and model names are optional provenance details.",
+  );
+  guidance.className = "hint";
+  row.append(guidance);
+  const method = selectControl("method", AUTOMATION_METHODS, value.method);
+  method.required = true;
+  const framework = textControl("framework", value.framework, { placeholder: "Optional framework or tool" });
+  const models = document.createElement("textarea");
+  models.dataset.part = "models";
+  models.rows = 2;
+  models.placeholder = "Optional model names, one per line";
+  models.value = (value.models ?? []).join("\n");
+  for (const [labelText, control] of [["Method", method], ["Framework", framework], ["Models", models]]) {
+    const label = el("label", labelText);
+    label.append(control);
+    row.append(label);
+  }
+  const remove = el("button", "Remove method");
+  remove.type = "button";
+  remove.className = "secondary compact";
+  remove.addEventListener("click", () => row.remove());
+  row.append(remove);
+  return row;
+}
+
+function appendRepairControl(wrapper, diagnostic, profile, failure) {
+  const field = diagnostic.field;
+  const draft = safeDraft(failure, field);
+  wrapper.dataset.field = field;
+  if (["text", "people"].includes(profile.input)) {
+    const input = profile.input === "text" ? document.createElement("input") : document.createElement("textarea");
+    input.name = field;
+    input.dataset.inputType = profile.input;
+    input.required = true;
+    input.maxLength = 4000;
+    if (input instanceof HTMLTextAreaElement) input.rows = profile.input === "people" ? 3 : 2;
+    input.value = Array.isArray(draft) ? draft.join("\n") : draft ?? "";
+    wrapper.append(input);
+    return;
+  }
+  if (profile.input === "text-list") {
+    const rows = document.createElement("div");
+    rows.dataset.rows = "classifications";
+    for (const value of Array.isArray(draft) && draft.length ? draft : [""]) {
+      rows.append(classificationRow(field, value));
+    }
+    const maximum = field === "classification.arxiv" ? 2 : 8;
+    const add = el("button", "Add another classification");
+    add.type = "button";
+    add.className = "secondary compact";
+    add.addEventListener("click", () => {
+      if (rows.children.length < maximum) rows.append(classificationRow(field));
+    });
+    wrapper.append(rows, add);
+    return;
+  }
+  if (profile.input === "sources") {
+    const rows = document.createElement("div");
+    rows.dataset.rows = "sources";
+    for (const value of Array.isArray(draft) && draft.length ? draft : [{}]) rows.append(sourceRow(value));
+    const add = el("button", "Add another source");
+    add.type = "button";
+    add.className = "secondary compact";
+    add.addEventListener("click", () => rows.append(sourceRow()));
+    wrapper.append(rows, add);
+    return;
+  }
+  if (profile.input === "methods") {
+    const rows = document.createElement("div");
+    rows.dataset.rows = "methods";
+    for (const value of Array.isArray(draft) && draft.length ? draft : [{ method: "manual" }]) {
+      rows.append(methodRow(value));
+    }
+    const add = el("button", "Add another method");
+    add.type = "button";
+    add.className = "secondary compact";
+    add.addEventListener("click", () => rows.append(methodRow()));
+    wrapper.append(rows, add);
+    return;
+  }
+  const repository = textControl("id", draft?.id, { required: true, placeholder: "owner/repository" });
+  const revision = textControl("revision", draft?.revision, { required: true, placeholder: "40-character commit" });
+  repository.name = `${field}.id`;
+  revision.name = `${field}.revision`;
+  for (const [labelText, control] of [["Repository", repository], ["Commit", revision]]) {
+    const label = el("label", labelText);
+    label.append(control);
+    wrapper.append(label);
+  }
+}
+
+function rowValue(row) {
+  const value = {};
+  for (const control of row.querySelectorAll("[data-part]")) {
+    const item = control.dataset.part === "authors" || control.dataset.part === "models"
+      ? lines(control.value) : control.value.trim();
+    if (Array.isArray(item) ? item.length : item) value[control.dataset.part] = item;
+  }
+  return value;
+}
+
+function repairEdits() {
+  return [...repairFields.querySelectorAll(".repair-field")].map((wrapper) => {
+    const field = wrapper.dataset.field;
+    const profile = FORMALIZATION_FIELDS[field];
+    if (profile.input === "people") {
+      return { field, value: lines(wrapper.querySelector("[name]").value) };
+    }
+    if (profile.input === "text-list") {
+      return {
+        field,
+        value: [...wrapper.querySelectorAll('[data-rows="classifications"] [data-part="code"]')]
+          .map((input) => input.value.trim()).filter(Boolean),
+      };
+    }
+    if (profile.input === "text") {
+      return { field, value: wrapper.querySelector("[name]").value.trim() };
+    }
+    if (profile.input === "sources" || profile.input === "methods") {
+      return {
+        field,
+        value: [...wrapper.querySelectorAll(`[data-kind="${profile.input === "sources" ? "source" : "method"}"]`)].map(rowValue),
+      };
+    }
+    return { field, value: {
+      id: wrapper.querySelector('[data-part="id"]').value.trim(),
+      revision: wrapper.querySelector('[data-part="revision"]').value.trim(),
+    } };
+  });
+}
+
 function showStructuredFailure(data) {
   const failure = data.failure;
   const diagnostics = Array.isArray(failure?.diagnostics) ? failure.diagnostics : [];
@@ -326,12 +585,16 @@ function showStructuredFailure(data) {
     const profile = FORMALIZATION_FIELDS[diagnostic.field];
     if (
       diagnostic.repairable === true && profile &&
-      failure.profile_version === FORMALIZATION_PROFILE_VERSION
+      (failure.profile_version === FORMALIZATION_PROFILE_VERSION ||
+        (failure.profile_version === 1 && LEGACY_REPAIR_FIELDS.has(diagnostic.field)))
     ) repairable.push({ diagnostic, profile });
   }
 
   repairFields.replaceChildren();
-  const canRequestRepair = data.status === "changes-required" && !data.repair && repairable.length;
+  const canRequestRepair = data.status === "changes-required" && !data.repair &&
+    [1, FORMALIZATION_PROFILE_VERSION].includes(failure.profile_version) && repairable.length &&
+    diagnostics.every((item) =>
+      item.owner === "submitter" && item.repairable === true && FORMALIZATION_FIELDS[item.field]);
   repairForm.hidden = !canRequestRepair;
   repairExplanation.hidden = !canRequestRepair;
   repairSubmit.hidden = !canRequestRepair;
@@ -342,21 +605,15 @@ function showStructuredFailure(data) {
       const id = `repair-${diagnostic.field.replaceAll(".", "-")}`;
       const label = el("label", profile.label);
       label.htmlFor = id;
-      const input = profile.input === "text-list"
-        ? document.createElement("textarea")
-        : document.createElement("input");
-      input.id = id;
-      input.name = diagnostic.field;
-      input.dataset.inputType = profile.input;
-      input.required = true;
-      input.maxLength = 4000;
-      if (input instanceof HTMLTextAreaElement) input.rows = 3;
       const hint = el("p", profile.description);
-      if (profile.input === "text-list") {
-        hint.append(" Enter the complete replacement list, one value per line.");
-      }
+      const origin = failure.repair_draft?.origins?.[diagnostic.field];
+      if (origin) hint.append(` Palomar carried this value forward from ${origin}; confirm it before submitting.`);
       hint.className = "hint";
-      wrapper.append(label, input, hint);
+      wrapper.append(label);
+      appendRepairControl(wrapper, diagnostic, profile, failure);
+      const firstControl = wrapper.querySelector("input, textarea, select");
+      if (firstControl) firstControl.id = id;
+      wrapper.append(hint);
       repairFields.append(wrapper);
     }
   }
@@ -390,18 +647,17 @@ function showStructuredFailure(data) {
 
 repairForm?.addEventListener("submit", async (event) => {
   event.preventDefault();
-  const edits = [...repairFields.querySelectorAll("[name]")].map((input) => ({
-    field: input.name,
-    value: input.dataset.inputType === "text-list"
-      ? input.value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean)
-      : input.value.trim(),
-  }));
+  const edits = repairEdits();
   repairStatus.textContent = "Submitting the repair request…";
   const response = await fetch("/api/repair", {
     method: "POST",
     credentials: "same-origin",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ failure_digest: lastFailureDigest, edits }),
+    body: JSON.stringify({
+      failure_digest: lastFailureDigest,
+      profile_version: lastFailureProfileVersion,
+      edits,
+    }),
   });
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
@@ -415,6 +671,7 @@ repairForm?.addEventListener("submit", async (event) => {
 });
 
 let lastFailureDigest = null;
+let lastFailureProfileVersion = null;
 
 /** Show public, bounded check annotations without asking for a GitHub credential. */
 async function showVerificationFailure(run) {
@@ -569,6 +826,7 @@ async function poll() {
 
   const failedRun = verificationRunLocation(data.run ?? data.preflight_run);
   lastFailureDigest = data.failure_digest ?? null;
+  lastFailureProfileVersion = data.failure?.profile_version ?? null;
   const structuredFailure = showStructuredFailure(data);
   summary.textContent = data.status === "verification-failed" && !failedRun && !structuredFailure
     ? "Palomar could not complete or recover the verification run. This is a fault at our end, not with your submission."

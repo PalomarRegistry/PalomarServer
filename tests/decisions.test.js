@@ -1072,6 +1072,27 @@ test("every status-script element is present in the status page", async () => {
   for (const id of ids) assert.match(page, new RegExp(`id="${id}"`), id);
 });
 
+test("guided metadata repair renders structured repeatable fields and safe prefills", async () => {
+  const script = await readFile(new URL("../public/status.js", import.meta.url), "utf8");
+  const profile = await readFile(
+    new URL("../public/formalization-profile.js", import.meta.url), "utf8",
+  );
+  assert.match(profile, /FORMALIZATION_PROFILE_VERSION = 2/);
+  for (const field of [
+    "project.authors", "project.responsible_maintainers", "sources",
+    "automation.methods", "repository.substantive_formalization",
+  ]) assert.match(profile, new RegExp(field.replaceAll(".", "\\.")));
+  assert.match(script, /safeDraft\(failure, field\)/);
+  assert.match(script, /carried this value forward/);
+  assert.match(script, /sourceRow\(value/);
+  assert.match(script, /methodRow\(value/);
+  assert.match(script, /Add another source/);
+  assert.match(script, /Add another method/);
+  assert.match(script, /taxonomies\/\$\{name\}\.json/);
+  assert.match(script, /diagnostics\.every/);
+  assert.match(script, /profile_version: lastFailureProfileVersion/);
+});
+
 test("a registered page names only the exact consented review as public", async () => {
   const data = await fixture();
   const statePathName = "submissions/a1b2c3d4e5f6/state.json";
@@ -2480,6 +2501,106 @@ test("a repair request is capability-bound, allowlisted, and queued atomically",
   assert.deepEqual(stub.store.get("index/repairs.json").open, [record.id]);
   assert.equal(stub.store.get(statePath(record.id, "state.json")).repair.status, "queued");
   assert.ok(stub.dispatched.some((item) => item.path.includes("repairer.yml")));
+});
+
+test("a profile-two repair requires every diagnosed field and queues structured values", async () => {
+  const diagnostics = ["project.authors", "sources", "automation.methods"].map((field) => ({
+    code: "formalization.invalid_field", stage: "formalization", owner: "submitter",
+    summary: `${field} is required`, explanation: `${field} is required`,
+    next_action: "Complete the guided form.", retryable: false, repairable: true, field,
+  }));
+  const failure = {
+    schema_version: 1, mode: "preflight", profile_version: 2, diagnostics,
+    repair_draft: { values: { "project.authors": ["Ada Lovelace"] },
+      origins: { "project.authors": "artifact.authors" } },
+  };
+  const record = {
+    schema_version: 1, id: "a1b2c3d4e5f6", status: "changes-required",
+    repository: "example/project", commit: "1".repeat(40), requested_paths: {},
+    authorization: { relationship: "maintainer" }, failure, events: [],
+  };
+  const stub = stubAgent();
+  stub.store.set(`index/tokens/${await tokenDigest(ENV, TOKEN)}.json`, { id: record.id });
+  stub.store.set(statePath(record.id, "state.json"), record);
+  stub.store.set("index/repairs.json", { schema_version: 1, open: [] });
+  const request = async (edits) => worker.fetch(
+    new Request("https://submit.palomar-registry.org/api/repair", {
+      method: "POST",
+      headers: { "content-type": "application/json", "sec-fetch-site": "same-origin",
+        cookie: `__Host-palomar_session=${TOKEN}` },
+      body: JSON.stringify({
+        profile_version: 2, failure_digest: await digest(JSON.stringify(failure)), edits,
+      }),
+    }),
+    { ...ENV, REPAIR_WORKFLOW: "repairer.yml" },
+  );
+  const partial = await request([
+    { field: "project.authors", value: ["Ada Lovelace"] },
+  ]);
+  assert.equal(partial.status, 409);
+  assert.equal(stub.store.has(statePath(record.id, "repair.json")), false);
+
+  const edits = [
+    { field: "project.authors", value: ["Ada Lovelace"] },
+    { field: "sources", value: [{ title: "A theorem", type: "paper", relationship: "formalizes" }] },
+    { field: "automation.methods", value: [{ method: "manual" }] },
+  ];
+  const response = await request(edits);
+  assert.equal(response.status, 202);
+  const repair = stub.store.get(statePath(record.id, "repair.json"));
+  assert.equal(repair.schema_version, 2);
+  assert.deepEqual(repair.edits.map((edit) => edit.field), [
+    "automation.methods", "project.authors", "sources",
+  ]);
+});
+
+test("a profile-two repair is suppressed when any failure still needs manual work", async () => {
+  const failure = {
+    schema_version: 1,
+    mode: "preflight",
+    profile_version: 2,
+    diagnostics: [
+      {
+        code: "formalization.invalid_field", stage: "formalization", owner: "submitter",
+        summary: "Project name is required", explanation: "project.name is required",
+        next_action: "Complete the guided form.", retryable: false, repairable: true,
+        field: "project.name",
+      },
+      {
+        code: "submission.invalid_yaml", stage: "formalization", owner: "submitter",
+        summary: "YAML aliases need manual correction", explanation: "Aliases are unsafe here.",
+        next_action: "Edit the file manually.", retryable: false, repairable: false,
+        field: null,
+      },
+    ],
+  };
+  const record = {
+    schema_version: 1, id: "a1b2c3d4e5f6", status: "changes-required",
+    repository: "example/project", commit: "1".repeat(40), requested_paths: {},
+    authorization: { relationship: "maintainer" }, failure, events: [],
+  };
+  const stub = stubAgent();
+  stub.store.set(`index/tokens/${await tokenDigest(ENV, TOKEN)}.json`, { id: record.id });
+  stub.store.set(statePath(record.id, "state.json"), record);
+  stub.store.set("index/repairs.json", { schema_version: 1, open: [] });
+  const response = await worker.fetch(
+    new Request("https://submit.palomar-registry.org/api/repair", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json", "sec-fetch-site": "same-origin",
+        cookie: `__Host-palomar_session=${TOKEN}`,
+      },
+      body: JSON.stringify({
+        profile_version: 2,
+        failure_digest: await digest(JSON.stringify(failure)),
+        edits: [{ field: "project.name", value: "A corrected name" }],
+      }),
+    }),
+    ENV,
+  );
+  assert.equal(response.status, 409);
+  assert.match((await response.json()).error, /complete every field/);
+  assert.equal(stub.store.has(statePath(record.id, "repair.json")), false);
 });
 
 test("a technical-team test cannot open a metadata repair pull request", async () => {
