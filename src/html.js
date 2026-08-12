@@ -40,6 +40,7 @@ export function intakeForm(env, values = {}, problems = []) {
   // back, or a submitter corrects one field and unknowingly reverts the rest.
   const layoutOpen = ["project_path", "formalization_metadata_path"]
     .some((name) => String(values[name] ?? "") !== "");
+  const manualRegistrationOpen = String(values.existing_id ?? "") !== "";
   return page(env, "Submit a result", `
     <h1>Submit a Lean-verified result</h1>
     ${trouble}
@@ -163,6 +164,31 @@ Identify every missing, malformed, or inconsistent field. For each problem, name
                value="${escape(values.formalization_metadata_path)}">
       </details>
 
+      <section class="disclosure registration-target" id="registration-target"
+               data-state="unchecked" aria-labelledby="registration-target-heading">
+        <h2 id="registration-target-heading">Registration target</h2>
+        <p id="registration-target-message">
+          The repository and Comparator configuration decide whether this makes
+          a new registration or a new version. If the automatic check is
+          unavailable, you can enter an existing Palomar ID below.
+        </p>
+        <div id="registration-target-choices"></div>
+
+        <details id="registration-target-manual"${manualRegistrationOpen ? " open" : ""}>
+          <summary>Enter an existing Palomar ID manually</summary>
+          <label for="existing_id">Existing Palomar ID <span class="optional">optional</span></label>
+          <input id="existing_id" name="existing_id" autocomplete="off"
+                 pattern="\\s*[Pp][Aa][Ll][Oo][Mm][Aa][Rr]-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{6}\\s*"
+                 aria-describedby="existing_id-hint"
+                 placeholder="PALOMAR-2026-07-29-000123"
+                 value="${escape(values.existing_id)}">
+          <p class="hint" id="existing_id-hint">
+            <span class="field-status" id="existing_id-status" aria-hidden="true"></span>
+            <span id="existing_id-message">Use this only to create a new version of a result already in the registry, if Palomar cannot identify it automatically.</span>
+          </p>
+        </details>
+      </section>
+
       <fieldset>
         <legend>Your relationship to this formalization</legend>
         <label class="choice">
@@ -194,17 +220,6 @@ Identify every missing, malformed, or inconsistent field. For each problem, name
           agreed to be named.
         </p>
       </div>
-
-      <label for="existing_id">Existing Palomar ID <span class="optional">optional</span></label>
-      <input id="existing_id" name="existing_id" autocomplete="off"
-             pattern="\\s*[Pp][Aa][Ll][Oo][Mm][Aa][Rr]-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{6}\\s*"
-             aria-describedby="existing_id-hint"
-             placeholder="PALOMAR-2026-07-29-000123"
-             value="${escape(values.existing_id)}">
-      <p class="hint" id="existing_id-hint">
-        <span class="field-status" id="existing_id-status" aria-hidden="true"></span>
-        <span id="existing_id-message">Only to register a new version of a result already in the registry.</span>
-      </p>
 
       <label for="context">Notes for the reviewer <span class="optional">optional</span></label>
       <textarea id="context" name="context" rows="4" aria-describedby="context-hint">${escape(values.context)}</textarea>

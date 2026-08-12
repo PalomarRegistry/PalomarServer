@@ -10,6 +10,7 @@ import {
   normalizeCommit,
   normalizePalomarId,
   normalizeRepository,
+  normalizeRepositoryPath,
 } from "./submission.js";
 
 const RELATIONSHIPS = new Set(["maintainer", "approved", "technical-test"]);
@@ -34,20 +35,8 @@ export function authorizationRelationshipLabel(relationship) {
 // genuinely called `invalid` is a path and not an error.
 function repositoryPath(fields, name) {
   const raw = String(fields.get(name) ?? "").trim();
-  if (!raw) return { path: null };
-  // Nothing here is rewritten. A trailing slash and a leading slash are both
-  // refused rather than trimmed: quietly turning what somebody typed into a
-  // different path is worse than telling them.
-  const segments = raw.split("/");
-  const bad =
-    raw.startsWith("/") ||
-    raw.length > 400 ||
-    segments.some((part) => !part || part === "." || part === "..") ||
-    /[\\?#]/.test(raw) ||
-    segments[0].includes(":") ||
-    // eslint-disable-next-line no-control-regex
-    /[\x00-\x1f\x7f]/.test(raw);
-  return bad ? { invalid: true } : { path: raw };
+  const path = normalizeRepositoryPath(raw, { empty: true });
+  return path === null ? { invalid: true } : { path: path || null };
 }
 
 /**

@@ -119,3 +119,11 @@ details.disclosure[open] > summary { margin-bottom: .25rem; }
 /* Nothing to do here is the usual case, so it recedes rather than asking to
    be read. Anything else keeps the ordinary weight. */
 #layout[data-layout="ok"] > summary { font-weight: 400; color: var(--dim); }
+.registration-target h2 { margin-top: .75rem; }
+.registration-target[data-state="exact"] { border-left: .35rem solid var(--accent); }
+.registration-target[data-state="ambiguous"],
+.registration-target[data-state="unavailable"] { border-left: .35rem solid var(--caution); }
+.registration-options { margin-top: .75rem; }
+.registration-options .choice { overflow-wrap: anywhere; }
+#registration-target-manual { margin-top: 1rem; }
+#registration-target-manual > summary { cursor: pointer; color: var(--dim); }

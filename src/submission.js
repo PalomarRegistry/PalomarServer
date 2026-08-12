@@ -60,6 +60,7 @@ export {
   normalizeCommit,
   normalizePalomarId,
   normalizeRepository,
+  normalizeRepositoryPath,
 } from "../public/normalize.js";
 
 export function statePath(id, name) {
