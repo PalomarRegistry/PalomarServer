@@ -979,7 +979,8 @@ test("every status gets exactly the review and decision controls the server perm
     script,
     /registerButton\.disabled = decisionInFlight \|\| !presentation\.register \|\| testSubmission/,
   );
-  assert.match(script, /Registration would be allowed here if this were not a technical-team test/);
+  assert.match(script, /Registration would be allowed here if this were not a test submission/);
+  assert.doesNotMatch(script, /technical-team test submission/);
   assert.match(script, /reviewShown &&[\s\S]*!effectiveConsent && !reviewNeedsRerun/);
 
   const { statusPage } = await import("../src/html.js");
@@ -1811,7 +1812,7 @@ test("selecting the test exception does not trust a nonmember", async () => {
   const response = await callback(nonce);
 
   assert.equal(response.status, 403);
-  assert.match(await response.text(), /limited to Technical Maintainers/);
+  assert.match(await response.text(), /This submission is not authorized/);
   assert.equal(stub.written.filter((item) => item.path.endsWith("state.json")).length, 0);
   assert.ok(!stub.store.has(`pending/${await digest(nonce)}.json`));
 });
@@ -2475,7 +2476,10 @@ test("a technical-team test cannot open a metadata repair pull request", async (
   );
 
   assert.equal(response.status, 409);
-  assert.match((await response.json()).error, /does not open repair pull requests/);
+  assert.equal(
+    (await response.json()).error,
+    "a test submission does not open repair pull requests",
+  );
   assert.equal(stub.store.has(statePath(record.id, "repair.json")), false);
 });
 
@@ -2813,7 +2817,7 @@ test("a browser technical test requests team visibility and the agent path refus
     ENV,
   );
   assert.equal(agent.status, 400);
-  assert.match((await agent.json()).problems[0], /require browser GitHub sign-in/);
+  assert.match((await agent.json()).problems[0], /available only through browser sign-in/);
   assert.equal(
     stub.written.filter((item) => item.path.startsWith("pending/")).length,
     1,

@@ -92,7 +92,7 @@ export function validateIntake(fields) {
   }
   if (!RELATIONSHIPS.has(relationship)) {
     problems.push(
-      "Say whether you maintain this formalization, have approval, or are running a technical-team test.",
+      "Say whether you maintain this formalization or have approval from a responsible author or maintainer.",
     );
   }
   if (!configPath.path) {
