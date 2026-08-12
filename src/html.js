@@ -301,9 +301,7 @@ export function submissionsPage(
          to return to work already in progress or continue with the new commit.
        </p>`
     : `<p class="lede">
-         The original link for each submission remains valid; a fresh link here replaces
-         only the previous link issued through recovery. Anyone with one can read that
-         submission's review and make its decisions, so treat it like a password.
+         Here are your submissions in progress. Keep these links private.
        </p>`;
   return page(env, "Your submissions in progress", `
     <h1>Your submissions in progress</h1>
