@@ -520,7 +520,7 @@ function appendRepairControl(wrapper, diagnostic, profile, failure) {
     input.name = field;
     input.dataset.inputType = profile.input;
     input.required = true;
-    input.maxLength = 4000;
+    input.maxLength = profile.input === "text" ? 500 : 4000;
     if (input instanceof HTMLTextAreaElement) input.rows = profile.input === "people" ? 3 : 2;
     input.value = Array.isArray(draft) ? draft.join("\n") : draft ?? "";
     wrapper.append(input);
@@ -596,10 +596,9 @@ function rowValue(row) {
   return value;
 }
 
-function repairEdits() {
-  return [...repairFields.querySelectorAll(".repair-field")].map((wrapper) => {
-    const field = wrapper.dataset.field;
-    const profile = FORMALIZATION_FIELDS[field];
+function repairEdit(wrapper) {
+  const field = wrapper.dataset.field;
+  const profile = FORMALIZATION_FIELDS[field];
     if (profile.input === "people") {
       return { field, value: lines(wrapper.querySelector("[name]").value) };
     }
@@ -621,9 +620,12 @@ function repairEdits() {
     }
     return { field, value: {
       id: wrapper.querySelector('[data-part="id"]').value.trim(),
-      revision: wrapper.querySelector('[data-part="revision"]').value.trim(),
+      revision: wrapper.querySelector('[data-part="revision"]').value.trim().toLowerCase(),
     } };
-  });
+}
+
+function repairEdits() {
+  return [...repairFields.querySelectorAll(".repair-field")].map(repairEdit);
 }
 
 let validationMessageSequence = 0;
@@ -756,6 +758,20 @@ function validateRepairField(wrapper) {
       revisionValid ? "" : "Enter a full 40-character commit.",
     ) && complete;
   }
+  let contractProblem = "";
+  if (complete) {
+    try {
+      normalizedRepairEdits([repairEdit(wrapper)], 2);
+    } catch (error) {
+      contractProblem = error instanceof Error ? error.message : "Check this field.";
+      complete = false;
+    }
+  }
+  if (contractProblem && ["text", "people"].includes(profile.input)) {
+    setControlValidity(wrapper.querySelector("[name]"), contractProblem);
+  } else if (profile.input !== "sources") {
+    setGroupProblem(wrapper, contractProblem);
+  }
   wrapper.dataset.needsAction = String(!complete);
   return complete;
 }
@@ -803,8 +819,10 @@ function showStructuredFailure(data) {
     diagnostics.every((item) =>
       item.owner === "submitter" && item.repairable === true && FORMALIZATION_FIELDS[item.field]);
   const repairedFields = new Set(repairable.keys());
+  const repairInFlight = Boolean(data.repair) &&
+    ["queued", "preparing", "pr-open", "merged"].includes(data.repair.status);
   const shown = diagnostics.filter((diagnostic) =>
-    shouldShowDiagnostic(diagnostic, canRequestRepair, repairedFields));
+    shouldShowDiagnostic(diagnostic, canRequestRepair || repairInFlight, repairedFields));
   for (const diagnostic of shown) {
     const article = document.createElement("article");
     article.className = "diagnostic";
@@ -819,15 +837,23 @@ function showStructuredFailure(data) {
       article.append(el("p", diagnostic.explanation));
     }
     article.append(el("p", `Who can fix this: ${diagnostic.owner === "submitter" ? "you" : "Palomar"}.`));
-    if (diagnostic.next_action) article.append(el("p", `Next: ${diagnostic.next_action}`));
+    if (
+      diagnostic.next_action &&
+      diagnostic.next_action !==
+        "Complete the guided metadata form and let Palomar prepare a pull request."
+    ) article.append(el("p", `Next: ${diagnostic.next_action}`));
     failureDiagnostics.append(article);
   }
-  failureIntro.textContent = shown.length
+  failureIntro.textContent = data.repair && !shown.length
+    ? "Palomar's metadata repair result is shown below."
+    : shown.length
     ? diagnostics.every((item) => item.owner === "submitter")
       ? "Each item below says what needs changing and what to do next. Update the repository and submit the corrected commit."
       : "The owner shown on each item tells you whether to change the repository or wait for Palomar."
     : "Complete the highlighted metadata fields below.";
-  if (!shown.length && failure.mode === "preflight") {
+  if (data.repair) {
+    failureHeading.textContent = shown.length ? "Metadata repair needs attention" : "Metadata repair";
+  } else if (!shown.length && failure.mode === "preflight") {
     failureHeading.textContent = "Complete the metadata form";
   }
 
@@ -872,10 +898,13 @@ function showStructuredFailure(data) {
     repairStatus.textContent = messages[data.repair.status] ?? `Repair status: ${data.repair.status}`;
     if (data.repair.explanation) repairStatus.append(` ${data.repair.explanation}`);
     if (data.repair.pr_url) repairStatus.append(" ", link(data.repair.pr_url, "Open the pull request."));
-    if (data.repair.patch) {
+    if (data.repair.patch && !data.repair.pr_url) {
+      const disclosure = document.createElement("details");
+      const summary = el("summary", "Apply the proposed patch manually");
       const pre = document.createElement("pre");
       pre.textContent = data.repair.patch;
-      repairFields.append(el("p", "You can apply this patch manually:"), pre);
+      disclosure.append(summary, pre);
+      repairFields.append(disclosure);
     }
   } else {
     repairStatus.textContent = "";

@@ -37,6 +37,28 @@ function lineList(value, field, maximum = 100) {
   return value.map((item) => line(item, field));
 }
 
+function classificationList(value, field, maximum, taxonomy) {
+  const items = lineList(value, field, maximum);
+  const canonical = taxonomy instanceof Map
+    ? taxonomy
+    : taxonomy
+    ? new Map(
+      (Array.isArray(taxonomy) ? taxonomy : Object.keys(taxonomy))
+        .map((code) => [String(code).toUpperCase(), code]),
+    )
+    : null;
+  const result = items.map((item) => {
+    if (!canonical) return item;
+    const code = canonical.get(item.toUpperCase());
+    if (!code) throw new TypeError(`${field} contains an unrecognized classification code`);
+    return code;
+  });
+  if (new Set(result).size !== result.length) {
+    throw new TypeError(`${field} must not contain duplicate classifications`);
+  }
+  return result;
+}
+
 function sourceList(value) {
   if (!Array.isArray(value) || value.length < 1 || value.length > 20) {
     throw new TypeError("sources must contain between one and twenty entries");
@@ -46,8 +68,8 @@ function sourceList(value) {
     if (!exact(source, allowed)) throw new TypeError(`sources[${index}] contains unsupported fields`);
     const item = { title: line(source.title, `sources[${index}].title`) };
     if (source.authors !== undefined) item.authors = lineList(source.authors, `sources[${index}].authors`);
-    for (const field of ["id", "location", "license"]) {
-      if (source[field] !== undefined) item[field] = line(source[field], `sources[${index}].${field}`, 2048);
+    for (const [field, maximum] of [["id", 2048], ["location", 1000], ["license", 500]]) {
+      if (source[field] !== undefined) item[field] = line(source[field], `sources[${index}].${field}`, maximum);
     }
     if (source.type) {
       if (!SOURCE_TYPES.includes(source.type)) throw new TypeError(`sources[${index}].type is unsupported`);
@@ -96,7 +118,7 @@ function methodList(value) {
   });
 }
 
-export function normalizedRepairEdits(value, profileVersion = 1) {
+export function normalizedRepairEdits(value, profileVersion = 1, taxonomies = {}) {
   const fields = profileVersion === 2 ? REPAIR_FIELDS_V2 : REPAIR_FIELDS_V1;
   if (!Array.isArray(value) || value.length < 1 || value.length > fields.size) {
     throw new TypeError(`edits must contain between one and ${fields.size} repairable fields`);
@@ -109,17 +131,32 @@ export function normalizedRepairEdits(value, profileVersion = 1) {
     seen.add(field);
     let normalized;
     if (kind === "text") normalized = line(edit.value, field);
-    else if (kind === "list" || kind === "people") normalized = lineList(edit.value, field);
+    else if (kind === "list") {
+      const maximum = field === "classification.arxiv" ? 2 : 8;
+      normalized = classificationList(edit.value, field, maximum, taxonomies[field]);
+    }
+    else if (kind === "people") normalized = lineList(edit.value, field);
     else if (kind === "sources") normalized = sourceList(edit.value);
     else if (kind === "methods") normalized = methodList(edit.value);
     else {
       if (!exact(edit.value, ["id", "revision"]) || !/^[0-9a-f]{40}$/.test(edit.value.revision ?? "")) {
         throw new TypeError(`${field} must name a repository and full lowercase commit`);
       }
-      normalized = { id: line(edit.value.id, `${field}.id`), revision: edit.value.revision };
+      const id = line(edit.value.id, `${field}.id`);
+      if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(id)) {
+        throw new TypeError(`${field}.id must name a repository as owner/name`);
+      }
+      normalized = { id, revision: edit.value.revision };
     }
-    if (field === "classification.arxiv" && normalized.length > 2) throw new TypeError(`${field} accepts at most two classifications`);
-    if (field === "classification.msc2020" && normalized.length > 8) throw new TypeError(`${field} accepts at most eight classifications`);
     return { field, value: normalized };
   }).sort((left, right) => left.field.localeCompare(right.field));
+}
+
+export function normalizedQueuedRepairEdits(value, profileVersion, taxonomies) {
+  for (const field of ["classification.arxiv", "classification.msc2020"]) {
+    if (!(taxonomies?.[field] instanceof Map)) {
+      throw new TypeError(`queued repairs require the ${field} taxonomy`);
+    }
+  }
+  return normalizedRepairEdits(value, profileVersion, taxonomies);
 }
