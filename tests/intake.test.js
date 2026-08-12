@@ -5,6 +5,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { intakeForm } from "../src/html.js";
 import worker from "../src/index.js";
 import { validateIntake } from "../src/intake-contract.js";
@@ -218,11 +219,27 @@ test("the script never sends what the submitter typed anywhere but those origins
   for (const destination of destinations) {
     assert.ok(
       /api\.github\.com/.test(destination) ||
-        /^`\$\{REGISTRY_VERSIONS\}\$\{value\}\.json`$/.test(destination),
+        /^`\$\{REGISTRY_VERSIONS\}\$\{value\}\.json`$/.test(destination) ||
+        destination === "`${REGISTRY_DATA}${path}`",
       `unexpected fetch destination: ${destination}`,
     );
   }
   assert.ok(destinations.length >= 2);
+});
+
+test("the registration target is inferred after the file layout with an honest fallback", async () => {
+  const script = await readFile(new URL("../public/intake.js", import.meta.url), "utf8");
+  assert.ok(form.indexOf('id="layout"') < form.indexOf('id="registration-target"'));
+  assert.match(form, /<h2 id="registration-target-heading">Registration target<\/h2>/);
+  assert.match(form, /Enter an existing Palomar ID manually/);
+  assert.match(script, /We found the previous registrations using different Comparator paths/);
+  assert.match(script, /We found the previous registration \$\{identifier\}, so this submission will create a new version/);
+  assert.match(script, /path to an alternative Comparator configuration file/);
+  assert.match(script, /repositoryDocument\.truncated/);
+  assert.match(script, /registrationManual\.open = true/);
+  assert.match(script, /mine === registrationToken/);
+  assert.match(script, /dataset\.registrationSelected !== undefined/);
+  assert.doesNotMatch(script, /preventDefault|setCustomValidity/);
 });
 
 test("nothing in the browser can block a submission", async () => {
@@ -272,10 +289,99 @@ test("the browser and the server agree on what a submitted value means", async (
     "PALOMAR-2026-07-29-000123", " palomar-2026-07-29-000123 ", "PALOMAR-2026-7-29-123",
   ];
   for (const value of inputs) {
-    for (const name of ["normalizeCommit", "normalizeRepository", "normalizePalomarId"]) {
+    for (const name of [
+      "normalizeCommit", "normalizeRepository", "normalizePalomarId", "normalizeRepositoryPath",
+    ]) {
       assert.equal(server[name](value), shared[name](value), `${name}(${JSON.stringify(value)})`);
     }
   }
+});
+
+test("registration lookup helpers bind public data to the requested repository and paths", async () => {
+  const {
+    exactRegistration,
+    registrationIdentity,
+    registrationIdentityDigest,
+    repositoryRegistrations,
+    selectedRegistrationId,
+  } = await import("../public/normalize.js");
+  const identity = registrationIdentity(
+    "https://github.com/Owner/Repository.git",
+    " proof ",
+    "proof/Comparator/comparator.json",
+  );
+  assert.deepEqual(identity, {
+    source_repository: "owner/repository",
+    project_path: "proof",
+    comparator_config_path: "proof/Comparator/comparator.json",
+  });
+  const expectedDigest = createHash("sha256")
+    .update("owner/repository\0proof\0proof/Comparator/comparator.json")
+    .digest("hex");
+  assert.equal(await registrationIdentityDigest(identity), expectedDigest);
+  assert.equal(registrationIdentity("owner/repository", "../proof", "comparator.json"), null);
+  const rootIdentity = registrationIdentity("owner/repository", "", "comparator.json");
+  assert.equal(rootIdentity.project_path, null);
+  assert.equal(
+    await registrationIdentityDigest(rootIdentity),
+    createHash("sha256").update("owner/repository\0\0comparator.json").digest("hex"),
+  );
+
+  const repository = {
+    schema_version: 1,
+    repository: "owner/repository",
+    registrations_total: 2,
+    truncated: false,
+    registrations: [
+      {
+        id: "PALOMAR-2026-08-12-000002",
+        project_path: "proof",
+        comparator_config_path: "proof/Other/comparator.json",
+      },
+      {
+        id: "PALOMAR-2026-08-12-000001",
+        project_path: null,
+        comparator_config_path: "comparator.json",
+      },
+    ],
+  };
+  assert.deepEqual(repositoryRegistrations(repository, "Owner/Repository"), repository);
+  assert.equal(repositoryRegistrations({ ...repository, repository: "owner/other" }, "owner/repository"), null);
+  assert.equal(repositoryRegistrations({ ...repository, registrations_total: 3 }, "owner/repository"), null);
+
+  const exact = {
+    schema_version: 1,
+    identity,
+    registration_id: "PALOMAR-2026-08-12-000002",
+    ambiguous: false,
+  };
+  assert.deepEqual(exactRegistration(exact, identity), exact);
+  assert.equal(exactRegistration({ ...exact, ambiguous: true }, identity), null);
+  assert.equal(exactRegistration(exact, { ...identity, project_path: null }), null);
+  assert.deepEqual(exactRegistration({
+    ...exact,
+    registration_id: null,
+    ambiguous: true,
+  }, identity), {
+    ...exact,
+    registration_id: null,
+    ambiguous: true,
+  });
+  assert.equal(selectedRegistrationId(repository.registrations[0], identity), null);
+  assert.equal(selectedRegistrationId({
+    id: exact.registration_id,
+    project_path: identity.project_path,
+    comparator_config_path: identity.comparator_config_path,
+  }, identity), exact.registration_id);
+  assert.equal(selectedRegistrationId(null, identity), null);
+});
+
+test("repository normalization refuses path-navigation spellings", async () => {
+  const { normalizeRepository } = await import("../public/normalize.js");
+  for (const value of ["../recent", "owner/..", "./repository", "owner/."]) {
+    assert.equal(normalizeRepository(value), null, value);
+  }
+  assert.equal(normalizeRepository("owner/.github"), "owner/.github");
 });
 
 test("the existing-ID check asks about one result, not the whole registry", async () => {

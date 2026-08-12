@@ -22,9 +22,13 @@ export const PALOMAR_ID_RE = /^PALOMAR-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{6}$/;
  */
 export function normalizeRepository(raw) {
   const value = String(raw ?? "").trim().replace(/\.git$/, "").replace(/\/+$/, "");
-  if (REPOSITORY_RE.test(value)) return value;
+  if (REPOSITORY_RE.test(value) && !value.split("/").some((part) => part === "." || part === "..")) {
+    return value;
+  }
   const match = /^https?:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)$/.exec(value);
-  return match ? match[1] : null;
+  return match && !match[1].split("/").some((part) => part === "." || part === "..")
+    ? match[1]
+    : null;
 }
 
 /** A full commit, lowercased, or null. Abbreviations are not commits. */
@@ -57,6 +61,125 @@ export function defaultCommitSuggestion({
 export function normalizePalomarId(raw) {
   const value = String(raw ?? "").trim().toUpperCase();
   return PALOMAR_ID_RE.test(value) ? value : null;
+}
+
+export function normalizeRepositoryPath(raw, { empty = false } = {}) {
+  const value = String(raw ?? "").trim();
+  if (!value) return empty ? "" : null;
+  const segments = value.split("/");
+  const invalid =
+    value.startsWith("/") ||
+    value.length > 400 ||
+    segments.some((part) => !part || part === "." || part === "..") ||
+    /[\\?#]/.test(value) ||
+    segments[0].includes(":") ||
+    // eslint-disable-next-line no-control-regex
+    /[\x00-\x1f\x7f]/.test(value);
+  return invalid ? null : value;
+}
+
+/** The canonical identity used by the public registration lookup. */
+export function registrationIdentity(repository, projectPath, comparatorConfigPath) {
+  const normalizedRepository = normalizeRepository(repository)?.toLowerCase();
+  const normalizedProject = normalizeRepositoryPath(projectPath, { empty: true });
+  const normalizedComparator = normalizeRepositoryPath(comparatorConfigPath);
+  if (!normalizedRepository || normalizedProject === null || !normalizedComparator) return null;
+  return {
+    source_repository: normalizedRepository,
+    project_path: normalizedProject || null,
+    comparator_config_path: normalizedComparator,
+  };
+}
+
+function sameIdentity(left, right) {
+  return left?.source_repository === right?.source_repository &&
+    left?.project_path === right?.project_path &&
+    left?.comparator_config_path === right?.comparator_config_path;
+}
+
+/** SHA-256 of `repository + NUL + project-or-empty + NUL + comparator-path`. */
+export async function registrationIdentityDigest(identity) {
+  if (!identity || Object.keys(identity).sort().join(",") !==
+      "comparator_config_path,project_path,source_repository") return null;
+  const normalized = registrationIdentity(
+    identity.source_repository,
+    identity.project_path,
+    identity.comparator_config_path,
+  );
+  if (!normalized || !sameIdentity(normalized, identity)) return null;
+  const bytes = new globalThis.TextEncoder().encode([
+    normalized.source_repository,
+    normalized.project_path ?? "",
+    normalized.comparator_config_path,
+  ].join("\0"));
+  const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes);
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function exactKeys(value, keys) {
+  return value && typeof value === "object" && !Array.isArray(value) &&
+    Object.keys(value).sort().join(",") === [...keys].sort().join(",");
+}
+
+function registrationRow(value) {
+  if (!exactKeys(value, ["id", "project_path", "comparator_config_path"])) return null;
+  const id = normalizePalomarId(value.id);
+  const project = value.project_path === null
+    ? ""
+    : normalizeRepositoryPath(value.project_path, { empty: true });
+  const comparator = normalizeRepositoryPath(value.comparator_config_path);
+  if (id !== value.id || project === null || !comparator || comparator !== value.comparator_config_path) {
+    return null;
+  }
+  return { id, project_path: project || null, comparator_config_path: comparator };
+}
+
+/** Validate and normalize one bounded repository lookup response. */
+export function repositoryRegistrations(value, expectedRepository) {
+  const repository = normalizeRepository(expectedRepository)?.toLowerCase();
+  if (!repository || !exactKeys(value, [
+    "schema_version", "repository", "registrations_total", "truncated", "registrations",
+  ])) return null;
+  if (value.schema_version !== 1 || value.repository !== repository ||
+      !Number.isInteger(value.registrations_total) || value.registrations_total < 0 ||
+      typeof value.truncated !== "boolean" || !Array.isArray(value.registrations) ||
+      value.registrations.length > 500) return null;
+  const registrations = value.registrations.map(registrationRow);
+  if (registrations.some((row) => row === null)) return null;
+  const ids = registrations.map((row) => row.id);
+  if (new Set(ids).size !== ids.length ||
+      ids.some((id, index) => index && id >= ids[index - 1]) ||
+      value.registrations_total < registrations.length ||
+      (value.truncated &&
+        (registrations.length !== 500 || value.registrations_total <= 500)) ||
+      (!value.truncated && value.registrations_total !== registrations.length)) return null;
+  return { ...value, registrations };
+}
+
+/** Validate an exact-identity lookup and bind it to the requested identity. */
+export function exactRegistration(value, expectedIdentity) {
+  if (!exactKeys(value, ["schema_version", "identity", "registration_id", "ambiguous"]) ||
+      value.schema_version !== 1 || typeof value.ambiguous !== "boolean" ||
+      !exactKeys(value.identity, [
+        "source_repository", "project_path", "comparator_config_path",
+      ]) || !sameIdentity(value.identity, expectedIdentity)) return null;
+  const registrationId = value.registration_id === null
+    ? null
+    : normalizePalomarId(value.registration_id);
+  if (registrationId !== value.registration_id ||
+      (value.ambiguous && registrationId !== null) ||
+      (!value.ambiguous && registrationId === null)) return null;
+  return { ...value, registration_id: registrationId };
+}
+
+/** An explicit repository-list choice that still describes the current identity. */
+export function selectedRegistrationId(selected, identity) {
+  const row = registrationRow(selected);
+  if (!row || !identity) return null;
+  return row.project_path === identity.project_path &&
+    row.comparator_config_path === identity.comparator_config_path
+    ? row.id
+    : null;
 }
 
 /**

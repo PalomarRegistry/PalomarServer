@@ -37,7 +37,8 @@ a claim about *them*, not about the code, and it is recorded permanently.
 
     1. POST /api/submit
        {"repository": "...", "commit": "<40 hex>",
-        "comparator_config_path": "...", "authorization_relationship": "maintainer"}
+        "comparator_config_path": "...", "authorization_relationship": "maintainer",
+        "existing_id": "PALOMAR-YYYY-MM-DD-NNNNNN (only for a new version)"}
        -> {"pending_secret": "...", "challenge": "...", "instructions": "..."}
 
     2. gh api -X POST repos/OWNER/REPO/git/refs \
@@ -198,5 +199,10 @@ press it, that is fine; deciding for them is not.
 - The registry's own data is at `https://data.palomar-registry.org`, read-only
   and separate from this host. There is no whole-registry document: ask for what
   is new at `/recent.json`, for one result's versions at `/versions/<id>.json`,
-  and for one record at `/entries/<id>-v<n>.json`. A query string is refused
-  with 404 there, so do not add cache-busting parameters.
+  for one record at `/entries/<id>-v<n>.json`, and for a repository's active
+  registrations at `/repositories/<lowercase-owner>/<lowercase-repository>.json`.
+  An exact registration identity is at `/registration-identities/<sha256>.json`,
+  where the digest covers the UTF-8 bytes `lowercase_repository + NUL +
+  project_path_or_empty + NUL + comparator_config_path`. If it names one
+  `registration_id`, pass that as `existing_id` to create a new version. A query
+  string is refused with 404 there, so do not add cache-busting parameters.
