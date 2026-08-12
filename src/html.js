@@ -229,8 +229,7 @@ Identify every missing, malformed, or inconsistent field. For each problem, name
       <button type="submit">Authenticate via GitHub</button>
       <p class="hint">
         You may be asked to sign in, so Palomar can confirm you have write
-        access to the repository you are submitting, or active Technical
-        Maintainer membership for a marked test. Even if you are already signed
+        access to the repository you are submitting. Even if you are already signed
         in, GitHub may ask you to authorize Palomar on your first submission.
         The authorization is used once and not stored.
       </p>
