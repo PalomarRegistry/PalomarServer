@@ -107,10 +107,11 @@ ordinary per-principal start interval and the owner and submitter in-flight caps
 for every submission, independently of the authorization relationship selected
 on the form. The durable OAuth proof records that membership.
 
-An active member may also choose the explicit technical-test relationship. That
-path permits a public repository and pinned commit without write access. Its
-durable record says `test_submission`, does not claim `push_verified`, and
-carries a distinct team-membership proof. The agent intake cannot use either
+When an active member submits a public repository and pinned commit without
+write access, the browser path automatically records it as a technical test.
+The explicit technical-test relationship reaches the same path. Its durable
+record says `test_submission`, does not claim `push_verified`, and carries a
+distinct team-membership proof. The agent intake cannot use either
 membership-based exception because its tag-and-gist proof does not establish
 team membership. The pre-authentication address throttle still applies because
 the account is not known until OAuth completes.
