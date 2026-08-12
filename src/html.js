@@ -95,18 +95,11 @@ Identify every missing, malformed, obsolete, or inconsistent field. For each pro
     </section>
 
     <section class="disclosure">
-      <h2>What is public, and what is not</h2>
+      <h2>What becomes public</h2>
       <p>
-        The fact that this repository, commit, and Comparator configuration path
-        have been submitted is permanently and publicly recorded. Your identity
-        is not made public at all: a registered record has no field for the
-        person who sent it. Nor are the automated review and the decision, which
-        will not be public until you have seen them and decided to go ahead with
-        registration.
-      </p>
-      <p>
-        The reviews are not completely secret prior to registration: they may be
-        audited and acted on by the Palomar moderation team.
+        The submitted repository, commit, and Comparator configuration path are
+        permanently recorded in public. The automated review and decision become
+        public only if you choose to register after seeing them.
       </p>
     </section>
 
