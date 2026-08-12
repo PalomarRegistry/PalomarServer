@@ -28,7 +28,12 @@ export function page(env, title, body) {
 </html>`;
 }
 
-export function intakeForm(env, values = {}, problems = []) {
+export function intakeForm(
+  env,
+  values = {},
+  problems = [],
+  { automaticRecovery = false } = {},
+) {
   const trouble = problems.length
     ? `<section class="disclosure problems-block" role="alert">
          <h2>That submission did not go through</h2>
@@ -42,6 +47,17 @@ export function intakeForm(env, values = {}, problems = []) {
     .some((name) => String(values[name] ?? "") !== "");
   const manualRegistrationOpen = String(values.existing_id ?? "") !== "";
   const approvalApplies = values.authorization_relationship === "approved";
+  const recoveryAction = `<form method="get" action="/submissions">
+        <button type="submit" class="secondary" id="find-submissions">Authenticate and find my submissions</button>
+      </form>`;
+  const recoveryContent = automaticRecovery
+    ? `<div id="recovery-content">
+         <p class="recovery-status" id="recovery-status" role="status">
+           Checking submissions… <span class="spinner" aria-hidden="true"></span>
+         </p>
+       </div>
+       <noscript>${recoveryAction}</noscript>`
+    : `<div id="recovery-content">${recoveryAction}</div>`;
   return page(env, "Submit a result", `
     <h1>Submit a Lean-verified result</h1>
     ${trouble}
@@ -60,11 +76,10 @@ export function intakeForm(env, values = {}, problems = []) {
       <a href="https://github.com/PalomarRegistry/PalomarPolicy/blob/main/CONTRIBUTING.md">full submission requirements</a>.
     </p>
 
-    <section class="disclosure recovery-prompt">
-      <h2>Already have a submission in progress?</h2>
-      <form method="get" action="/submissions">
-        <button type="submit" class="secondary" id="find-submissions">Find my submissions</button>
-      </form>
+    <section class="disclosure recovery-prompt" id="recovery-prompt"
+             data-automatic="${automaticRecovery}" aria-labelledby="recovery-heading">
+      <h2 id="recovery-heading">Already have a submission in progress?</h2>
+      ${recoveryContent}
     </section>
 
     <section class="disclosure metadata-warning">
@@ -240,7 +255,9 @@ Identify every missing, malformed, or inconsistent field. For each problem, name
         You may be asked to sign in, so Palomar can confirm you have write
         access to the repository you are submitting. Even if you are already signed
         in, GitHub may ask you to authorize Palomar on your first submission.
-        The authorization is used once and not stored.
+        The GitHub access token is used once and not stored. Palomar remembers
+        the verified account in this browser for twelve hours so it can find
+        submissions in progress automatically.
       </p>
       </fieldset>
       <p class="visually-hidden" role="status" id="live-status"></p>

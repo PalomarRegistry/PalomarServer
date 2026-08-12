@@ -9,9 +9,13 @@
 import { digest } from "./submission.js";
 
 const SESSION_COOKIE_NAME = "__Host-palomar_session";
+const GITHUB_IDENTITY_COOKIE_NAME = "__Host-palomar_github_identity";
+const GITHUB_IDENTITY_SECONDS = 12 * 60 * 60;
+const GITHUB_LOGIN_RE = /^[A-Za-z0-9_-]{1,39}$/;
+const encoder = new TextEncoder();
 
 /** Parse one exact host-prefixed credential without assigning authority by order. */
-function protectedCookie(request, expectedName) {
+function protectedCookie(request, expectedName, valuePattern = /^[0-9a-f]{64}$/) {
   const cookie = request.headers.get("cookie") ?? "";
   const expectedFolded = expectedName.toLowerCase();
   let found = false;
@@ -28,9 +32,112 @@ function protectedCookie(request, expectedName) {
     value = separator === -1 ? null : part.slice(separator + 1);
   }
   if (!found) return { kind: "absent" };
-  return typeof value === "string" && /^[0-9a-f]{64}$/.test(value)
+  return typeof value === "string" && valuePattern.test(value)
     ? { kind: "valid", value }
     : { kind: "invalid" };
+}
+
+function base64Url(bytes) {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+}
+
+function fromBase64Url(value) {
+  if (!/^[A-Za-z0-9_-]+$/.test(value)) return null;
+  const padded = value.replaceAll("-", "+").replaceAll("_", "/") +
+    "=".repeat((4 - value.length % 4) % 4);
+  try {
+    return Uint8Array.from(atob(padded), (character) => character.charCodeAt(0));
+  } catch {
+    return null;
+  }
+}
+
+function fromHex(value) {
+  if (!/^[0-9a-f]{64}$/.test(value)) return null;
+  return Uint8Array.from(value.match(/../g), (pair) => Number.parseInt(pair, 16));
+}
+
+async function githubIdentityKey(env) {
+  if (!env.TOKEN_PEPPER) throw new Error("TOKEN_PEPPER is unset");
+  return crypto.subtle.importKey(
+    "raw",
+    encoder.encode(`palomar-github-identity-v1:${env.TOKEN_PEPPER}`),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign", "verify"],
+  );
+}
+
+function validPrincipal(principal) {
+  return Number.isSafeInteger(principal?.id) && principal.id > 0 &&
+    typeof principal?.login === "string" && GITHUB_LOGIN_RE.test(principal.login);
+}
+
+/**
+ * Remember that GitHub identified this browser, without retaining its OAuth token.
+ *
+ * The payload is authenticated rather than secret: it contains only the
+ * account's own numeric id and login. The numeric id is the authority because
+ * a login can be renamed and later reused. Domain separation keeps this use of
+ * TOKEN_PEPPER independent from submission-capability digests.
+ */
+export async function githubIdentityCookie(env, principal, { clear = false } = {}) {
+  const attributes = "Path=/; HttpOnly; Secure; SameSite=Strict";
+  if (clear) {
+    return `${GITHUB_IDENTITY_COOKIE_NAME}=; ${attributes}; Max-Age=0`;
+  }
+  if (!validPrincipal(principal)) throw new TypeError("invalid GitHub principal");
+  const payload = base64Url(encoder.encode(JSON.stringify({
+    schema_version: 1,
+    id: principal.id,
+    login: principal.login,
+    expires: Date.now() + GITHUB_IDENTITY_SECONDS * 1000,
+  })));
+  const signature = await crypto.subtle.sign(
+    "HMAC",
+    await githubIdentityKey(env),
+    encoder.encode(payload),
+  );
+  const value = `${payload}.${[...new Uint8Array(signature)]
+    .map((byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+  return `${GITHUB_IDENTITY_COOKIE_NAME}=${value}; ${attributes}; ` +
+    `Max-Age=${GITHUB_IDENTITY_SECONDS}`;
+}
+
+/** Read a valid, unexpired GitHub identity established by this Worker. */
+export async function githubIdentityPrincipal(request, env) {
+  const credential = protectedCookie(
+    request,
+    GITHUB_IDENTITY_COOKIE_NAME,
+    /^[A-Za-z0-9_-]+\.[0-9a-f]{64}$/,
+  );
+  if (credential.kind !== "valid") return null;
+  const [payload, signatureHex] = credential.value.split(".");
+  const signature = fromHex(signatureHex);
+  if (!signature || !await crypto.subtle.verify(
+    "HMAC",
+    await githubIdentityKey(env),
+    signature,
+    encoder.encode(payload),
+  )) return null;
+  const bytes = fromBase64Url(payload);
+  if (!bytes) return null;
+  let identity;
+  try {
+    identity = JSON.parse(new TextDecoder().decode(bytes));
+  } catch {
+    return null;
+  }
+  if (
+    identity?.schema_version !== 1 ||
+    !validPrincipal(identity) ||
+    typeof identity.expires !== "number" ||
+    !Number.isSafeInteger(identity.expires) ||
+    identity.expires <= Date.now()
+  ) return null;
+  return { id: identity.id, login: identity.login };
 }
 
 /** The one-time exchange: fragment in, short-lived host-only cookie out. */

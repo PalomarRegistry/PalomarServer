@@ -65,6 +65,16 @@ every matching open submission and rotates one recovery token for each. The
 original token remains valid. Numeric identity, not a reusable login, is the
 authority: GitHub logins can be renamed and later reused.
 
+After a successful browser OAuth callback, Palomar also sets a signed,
+host-only identity cookie for twelve hours. It contains the account's numeric
+id, login, and expiry, but no GitHub access token; the OAuth token is still used
+only during the callback and discarded. The submission form uses that local
+identity to list matching open-work metadata automatically. Listing is
+read-only. Choosing **Open this submission** rotates the recovery capability
+for only that submission, so merely loading the form neither writes State nor
+invalidates a previously recovered link. An absent or expired identity cookie
+falls back to the ordinary `/submissions` OAuth flow.
+
 For a completed verification failure, the browser reads the public run's job
 and check annotations directly from `api.github.com` so it can show the actual
 error beside the run link. Those bounded requests carry neither a GitHub
@@ -150,7 +160,7 @@ and never appear in the repository:
 | `OAUTH_CLIENT_SECRET` | its client secret | — |
 | `GITHUB_TOKEN` | reads and atomically advances submission State, asks the reviewer to run, and reads public repository metadata for the repository being submitted | `PalomarSubmissionState`, contents and actions, plus public reads |
 | `SUBMISSION_TOKEN` | starts and reads verification runs, and reads the submitter's public ref and gist while checking a proof | `PalomarSubmission`, actions, plus public reads |
-| `TOKEN_PEPPER` | so a leaked state repository does not yield live links | — |
+| `TOKEN_PEPPER` | so a leaked state repository does not yield live links, and to authenticate short-lived GitHub identity cookies under a domain-separated HMAC key | — |
 
 The State token's existing repository `Contents: write` grant covers the Git
 tree, commit, and non-forced reference update used for atomic admission; it
