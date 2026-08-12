@@ -23,6 +23,7 @@ test("the real Worker serves its network-free health contract", async () => {
   expect(await response.json()).toEqual({ ok: true });
   expect(response.headers.get("content-type")).toBe("application/json; charset=utf-8");
   expect(response.headers.get("cache-control")).toBe("no-store");
+  expect(response.headers.get("vary")).toBe("authorization");
   expect(response.headers.get("content-security-policy")).toContain("default-src 'none'");
   expect(response.headers.get("referrer-policy")).toBe("no-referrer");
   expect(response.headers.get("x-content-type-options")).toBe("nosniff");
@@ -53,6 +54,7 @@ test("the real Worker reaches GitHub only through the mocked runtime boundary", 
   expect(response.status).toBe(404);
   expect(await response.json()).toEqual({ error: "not found" });
   expect(response.headers.get("cache-control")).toBe("no-store");
+  expect(response.headers.get("vary")).toBe("authorization");
   expect(outbound).toHaveBeenCalledTimes(2);
 
   const [pointer, state] = requests;

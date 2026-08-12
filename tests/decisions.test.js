@@ -122,6 +122,8 @@ test("the review is delivered only to whoever holds the access token", async () 
   stubState(await fixture());
   const held = await worker.fetch(request("/api/review"), ENV);
   assert.equal(held.status, 200);
+  assert.equal(held.headers.get("cache-control"), "no-store");
+  assert.equal(held.headers.get("vary"), "authorization");
   assert.equal((await held.json()).passed, true);
 
   const anonymous = await worker.fetch(request("/api/review", "GET", ""), ENV);
@@ -1143,7 +1145,7 @@ test("a temporary status failure retries instead of pretending the record is mis
   const script = await readFile(new URL("../public/status.js", import.meta.url), "utf8");
   assert.match(script, /const failure = pollFailureAction\(response\.status\)/);
   assert.match(script, /failure === "missing"/);
-  assert.match(script, /failure === "unauthorized"[\s\S]*session has expired or is not authorized/);
+  assert.match(script, /failure === "unauthorized"[\s\S]*submission link is not authorized/);
   assert.match(script, /Could not refresh this submission\. Retrying\.[\s\S]*askAgain\(lastStatus\)/);
 });
 
@@ -3641,6 +3643,73 @@ test("an agent presenting the token as a header needs no cookie and no origin", 
     ENV,
   );
   assert.equal(wrong.status, 404);
+});
+
+test("two status tabs read their own records despite one shared stale cookie", async () => {
+  const secondToken = "b".repeat(64);
+  const secondId = "f6e5d4c3b2a1";
+  const files = await fixture({ repository: "example/first" });
+  const firstRecord = files[statePath("a1b2c3d4e5f6", "state.json")];
+  files[`index/tokens/${await tokenDigest(ENV, secondToken)}.json`] = { id: secondId };
+  files[statePath(secondId, "state.json")] = {
+    ...firstRecord,
+    id: secondId,
+    repository: "example/second",
+  };
+  const { written } = stubState(files);
+
+  for (const [presented, staleCookie, repository] of [
+    [TOKEN, secondToken, "example/first"],
+    [secondToken, TOKEN, "example/second"],
+  ]) {
+    const response = await worker.fetch(
+      new Request("https://submit.palomar-registry.org/api/submission", {
+        headers: {
+          authorization: `Bearer ${presented}`,
+          cookie: `__Host-palomar_session=${staleCookie}`,
+        },
+      }),
+      ENV,
+    );
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("cache-control"), "no-store");
+    assert.equal(response.headers.get("vary"), "authorization");
+    assert.equal((await response.json()).repository, repository);
+  }
+
+  const registered = await worker.fetch(
+    new Request("https://submit.palomar-registry.org/register", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${TOKEN}`,
+        cookie: `__Host-palomar_session=${secondToken}`,
+      },
+      body: JSON.stringify({ review_sha256: "f".repeat(64) }),
+    }),
+    ENV,
+  );
+  assert.equal(registered.status, 200);
+
+  const withdrawn = await worker.fetch(
+    new Request("https://submit.palomar-registry.org/withdraw", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${secondToken}`,
+        cookie: `__Host-palomar_session=${TOKEN}`,
+      },
+    }),
+    ENV,
+  );
+  assert.equal(withdrawn.status, 200);
+
+  const firstDecision = written.find(
+    (item) => item.path === statePath("a1b2c3d4e5f6", "state.json"),
+  );
+  const secondDecision = written.find(
+    (item) => item.path === statePath(secondId, "state.json"),
+  );
+  assert.equal(firstDecision.value.registration_consent, true);
+  assert.equal(secondDecision.value.status, "withdrawn");
 });
 
 test("the session exchange refuses a cross-site caller", async () => {

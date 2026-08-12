@@ -10,4 +10,7 @@ export const SECURITY_HEADERS = {
   "referrer-policy": "no-referrer",
   "x-content-type-options": "nosniff",
   "cache-control": "no-store",
+  // Private API responses are already uncacheable. Keep the credential in the
+  // cache key too so weakening that policy cannot mix two submissions.
+  "vary": "authorization",
 };

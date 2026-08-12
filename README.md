@@ -52,9 +52,11 @@ there is no link to put it in, so `/api/verify` returns it in the response body.
 On the browser path it is carried after the `#`, because a browser leaves that
 part out of the requests it makes, so it does not reach an access log or a
 `Referer` header.
-The status page does send it to Palomar once, in the body of a `POST`, to
-exchange it for a short-lived cookie. Saying it is "never sent to a server"
-would be wrong, and the page does not say so: it says to treat the link like a
+The status page presents its fragment as an `Authorization: Bearer` header on
+each private request and explicitly omits cookies. The fragment belongs to the
+page rather than the browser profile, so two submissions open at once cannot
+replace one another's credential. Saying it is "never sent to a server" would
+still be wrong, and the page does not say so: it says to treat the link like a
 password, which is the part a submitter can act on.
 
 Losing the link is not permanent while a submission remains in the open-work
@@ -81,10 +83,12 @@ error beside the run link. Those bounded requests carry neither a GitHub
 credential nor the Palomar cookie or fragment, and the site's `no-referrer`
 policy keeps the private status URL out of them.
 
-Browser status sessions use a `__Host-` cookie: it is secure, scoped to `/`,
-and has no `Domain` attribute. Browsers therefore do not let a sibling host set
-or shadow that credential, and the server refuses an ambiguous request carrying
-the session-cookie name more than once.
+The browser status page previously used a single `__Host-` cookie. Although it
+was protected from sibling hosts, every tab on this host shared it; opening a
+second submission therefore changed what the first tab read. Current status
+pages use only their own fragment capability for private reads and actions. The
+server still honours `/session` cookies for legacy clients, but current pages
+neither create nor send them.
 
 The short-lived cookie that binds a browser OAuth callback to the tab that
 started it has the same host-only properties and a different name for every
