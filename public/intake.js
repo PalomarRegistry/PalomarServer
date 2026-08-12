@@ -6,7 +6,9 @@
  * submitter's push access, and the Palomar ID again, and its answers are the
  * ones that count. A check that fails here never prevents submission, because a
  * rate limit or an outage on someone else's API is not a reason to refuse
- * somebody's work.
+ * somebody's work. The exception is a validated exact-commit match: it cannot
+ * become another registration, so the later controls are disabled until the
+ * submitter changes the registration identity or commit.
  *
  * The lookups go straight from the browser to GitHub and to the registry data.
  * That keeps the server out of it, and it tells GitHub the repository name a
@@ -20,6 +22,7 @@ import {
   normalizeCommit,
   normalizePalomarId,
   normalizeRepository,
+  normalizeRepositoryPath,
   registrationIdentity,
   registrationIdentityDigest,
 } from "./normalize.js";
@@ -131,15 +134,18 @@ async function githubJson(path) {
 
 const repository = field("repository");
 const commit = field("commit");
+const comparatorConfig = field("comparator_config_path");
 const existingId = field("existing_id");
 const DEFAULT = {
   repository: repository.message?.textContent,
   commit: commit.message?.textContent,
+  comparator_config_path: comparatorConfig.message?.textContent,
   existing_id: existingId.message?.textContent,
 };
 
 let checkedRepository = null;
 let checkedDefaultHead = null;
+let checkedCommit = null;
 
 function offerDefaultCommit(parts, name) {
   const known = checkedDefaultHead?.name === name ? checkedDefaultHead : null;
@@ -197,6 +203,13 @@ const checkRepository = latest(async (settle, parts) => {
 const checkCommit = latest(async (settle, parts, known = null) => {
   const sha = normalizeCommit(parts.input.value);
   const name = normalizeRepository(repository.input.value);
+  const prior = checkedCommit?.name === name && checkedCommit.sha === sha
+    ? checkedCommit
+    : null;
+  if (!prior) {
+    checkedCommit = null;
+    scheduleComparatorPathLookup();
+  }
   if (!sha) {
     const typed = parts.input.value.trim();
     describeLayout();
@@ -209,7 +222,9 @@ const checkCommit = latest(async (settle, parts, known = null) => {
   settle("checking", "Looking for that commit…");
   const data = known?.name === name && known.sha === sha
     ? known.data
-    : await githubJson(`repos/${name}/commits/${sha}`);
+    : prior?.data ?? await githubJson(`repos/${name}/commits/${sha}`);
+  if (normalizeRepository(repository.input.value) !== name ||
+      normalizeCommit(parts.input.value) !== sha) return;
   if (data === "rate-limited") return settle("", DEFAULT.commit);
   if (!data?.sha) {
     describeLayout();
@@ -223,14 +238,88 @@ const checkCommit = latest(async (settle, parts, known = null) => {
       : when ? `Found that commit, from ${when}` : "Found that commit",
     `https://github.com/${name}/commit/${sha}`,
   );
+  checkedCommit = { name, sha, data };
+  if (!prior) scheduleComparatorPathLookup();
   describeLayout(name, sha);
 });
 
 const layout = document.getElementById("layout");
 const layoutMessage = document.getElementById("layout-message");
 const projectPath = document.getElementById("project_path");
-const configPath = document.getElementById("comparator_config_path");
+const configPath = comparatorConfig.input;
 const metadataPath = document.getElementById("formalization_metadata_path");
+
+let comparatorPathToken = 0;
+let comparatorPathTimer;
+
+/** Check the exact file, without turning a GitHub outage into a verdict. */
+async function inspectComparatorPath() {
+  const mine = ++comparatorPathToken;
+  const current = () => mine === comparatorPathToken;
+  const path = normalizeRepositoryPath(configPath?.value);
+  const name = normalizeRepository(repository.input?.value);
+  const sha = normalizeCommit(commit.input?.value);
+  if (!path) {
+    const typed = configPath?.value.trim();
+    return show(
+      comparatorConfig,
+      typed ? "missing" : "",
+      typed
+        ? "Use a repository-relative file path without . or .. segments."
+        : DEFAULT.comparator_config_path,
+    );
+  }
+  if (!name || !sha || checkedCommit?.name !== name || checkedCommit.sha !== sha) {
+    return show(comparatorConfig, "", DEFAULT.comparator_config_path);
+  }
+
+  show(comparatorConfig, "checking", `Looking for ${path} at that commit…`);
+  const encodedPath = path.split("/").map(encodeURIComponent).join("/");
+  let response;
+  try {
+    response = await fetch(
+      `https://api.github.com/repos/${name}/contents/${encodedPath}?ref=${encodeURIComponent(sha)}`,
+      { headers: { accept: "application/vnd.github+json" } },
+    );
+  } catch {
+    if (current()) show(comparatorConfig, "", DEFAULT.comparator_config_path);
+    return;
+  }
+  if (!current()) return;
+  if (response.status === 404) {
+    return show(comparatorConfig, "missing", `We can’t find ${path} at that commit.`);
+  }
+  if (response.status === 403 || response.status === 429 || !response.ok) {
+    return show(comparatorConfig, "", DEFAULT.comparator_config_path);
+  }
+
+  let data;
+  try {
+    data = await response.json();
+  } catch {
+    if (current()) show(comparatorConfig, "", DEFAULT.comparator_config_path);
+    return;
+  }
+  if (!current()) return;
+  if (data?.type !== "file") {
+    return show(comparatorConfig, "missing", `${path} exists at that commit, but it is not a file.`);
+  }
+  show(
+    comparatorConfig,
+    "found",
+    `Found ${path} at that commit`,
+    `https://github.com/${name}/blob/${sha}/${encodedPath}`,
+  );
+}
+
+function scheduleComparatorPathLookup() {
+  // Invalidate a response for the old repository, commit, or path before the
+  // replacement request's debounce has elapsed.
+  comparatorPathToken += 1;
+  clearTimeout(comparatorPathTimer);
+  show(comparatorConfig, "", DEFAULT.comparator_config_path);
+  comparatorPathTimer = setTimeout(inspectComparatorPath, 400);
+}
 
 function say(text, found) {
   if (!layoutMessage) return;
@@ -255,7 +344,12 @@ function autofill(input, value) {
   if (value) input.dataset.suggested = value;
   else delete input.dataset.suggested;
   if (input === projectPath || input === configPath) scheduleRegistrationLookup();
-  if (input === commit.input) scheduleRegistrationLookup();
+  if (input === configPath) scheduleComparatorPathLookup();
+  if (input === commit.input) {
+    checkedCommit = null;
+    scheduleRegistrationLookup();
+    scheduleComparatorPathLookup();
+  }
 }
 
 const DEFAULT_LAYOUT = layoutMessage?.textContent;
@@ -295,12 +389,22 @@ function clearSuggestions() {
 const registrationTarget = document.getElementById("registration-target");
 const registrationMessage = document.getElementById("registration-target-message");
 const registrationManual = document.getElementById("registration-target-manual");
+const submissionDetails = document.getElementById("submission-details");
 let registrationToken = 0;
 let registrationTimer;
 
 function registrationState(state, ...content) {
   if (registrationTarget) registrationTarget.dataset.state = state;
   if (registrationMessage) registrationMessage.replaceChildren(...content);
+  const blocked = state === "duplicate";
+  if (submissionDetails) {
+    if (blocked && !submissionDetails.disabled &&
+        submissionDetails.contains(document.activeElement) && registrationMessage) {
+      registrationMessage.tabIndex = -1;
+      registrationMessage.focus();
+    }
+    submissionDetails.disabled = blocked;
+  }
   const message = content.map((part) =>
     typeof part === "string" ? part : part.textContent ?? "").join("");
   if (["duplicate", "version", "ambiguous", "unavailable"].includes(state)) {
@@ -396,15 +500,9 @@ async function inspectRegistrationTarget() {
     : null;
   const invalid = identityAnswer.kind === "found" && !identityDocument;
 
-  if (identityDocument && identityDocument.commits.includes(commitSha)) {
+  if (identityDocument && !identityDocument.ambiguous &&
+      identityDocument.commits.includes(commitSha)) {
     const identifier = identityDocument.registration_id;
-    if (identifier && !automaticExistingId(identifier)) {
-      manualRegistration({ hidden: false, open: true });
-      return registrationState(
-        "unavailable",
-        `We found the previous registration ${identifier}, but the manually entered Palomar ID is different. Check the intended registration below.`,
-      );
-    }
     manualRegistration({ hidden: true });
     return registrationState(
       "duplicate",
@@ -439,7 +537,11 @@ async function inspectRegistrationTarget() {
     manualRegistration({ hidden: false, open: true });
     return registrationState(
       "ambiguous",
-      "Palomar found more than one active registration for these exact paths. Enter the intended Palomar ID below.",
+      "Palomar found more than one active registration for these exact paths. " +
+        (identityDocument.commits.includes(commitSha)
+          ? "This commit appears in their registration history. "
+          : "") +
+        "Enter the intended Palomar ID below.",
     );
   }
   if (invalid || identityAnswer.kind === "unavailable") {
@@ -461,6 +563,7 @@ function scheduleRegistrationLookup() {
   // Invalidate an in-flight answer immediately; the replacement request is
   // debounced, but the old repository/path tuple stopped being current now.
   registrationToken += 1;
+  if (submissionDetails) submissionDetails.disabled = false;
   clearTimeout(registrationTimer);
   registrationTimer = setTimeout(inspectRegistrationTarget, 250);
 }
@@ -471,9 +574,11 @@ function scheduleRegistrationLookup() {
 repository.input?.addEventListener("input", () => {
   checkedRepository = null;
   checkedDefaultHead = null;
+  checkedCommit = null;
   registrationToken += 1;
   clearAutomaticExistingId();
   scheduleRegistrationLookup();
+  scheduleComparatorPathLookup();
   if (commit.input) delete commit.input.dataset.defaultDeclined;
   const suggestion = commit.input?.dataset.suggested;
   if (suggestion !== undefined && commit.input.value === suggestion) {
@@ -486,12 +591,14 @@ repository.input?.addEventListener("input", () => {
 // they edit or remove a suggestion, do not silently offer it again for the same
 // repository. A changed repository clears this flag above.
 commit.input?.addEventListener("input", () => {
+  checkedCommit = null;
   commit.input.dataset.defaultDeclined = "true";
   if (commit.input.dataset.suggested !== commit.input.value) {
     delete commit.input.dataset.suggested;
   }
   clearAutomaticExistingId();
   scheduleRegistrationLookup();
+  scheduleComparatorPathLookup();
 });
 
 /**
@@ -574,6 +681,7 @@ for (const input of [projectPath, configPath]) {
     registrationToken += 1;
     clearAutomaticExistingId();
     scheduleRegistrationLookup();
+    if (input === configPath) scheduleComparatorPathLookup();
   });
 }
 
@@ -662,6 +770,7 @@ syncApproval();
 // deserve the same checks as ones typed now.
 if (repository.input?.value) checkRepository(repository);
 if (commit.input?.value) checkCommit(commit);
+if (configPath?.value) scheduleComparatorPathLookup();
 if (existingId.input?.value) checkExistingId(existingId);
 scheduleRegistrationLookup();
 

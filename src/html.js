@@ -133,12 +133,13 @@ Identify every missing, malformed, or inconsistent field. For each problem, name
 
       <label for="comparator_config_path">Comparator configuration</label>
       <input id="comparator_config_path" name="comparator_config_path" required
-             autocomplete="off" aria-describedby="comparator-config-hint"
+             autocomplete="off" aria-describedby="comparator_config_path-hint"
              placeholder="comparator.json" value="${escape(values.comparator_config_path)}">
-      <p class="hint" id="comparator-config-hint">
-        A repository-relative path to exactly one Comparator JSON file. One
+      <p class="hint" id="comparator_config_path-hint">
+        <span class="field-status" id="comparator_config_path-status" aria-hidden="true"></span>
+        <span id="comparator_config_path-message">A repository-relative path to exactly one Comparator JSON file. One
         Palomar entry records this configuration and every declaration it
-        selects. Submit another configuration separately.
+        selects. Submit another configuration separately.</span>
       </p>
 
       <details id="layout" class="disclosure"${layoutOpen ? " open" : ""}
@@ -185,6 +186,8 @@ Identify every missing, malformed, or inconsistent field. For each problem, name
         </details>
       </section>
 
+      <fieldset class="submission-details" id="submission-details"
+                aria-describedby="registration-target-message">
       <fieldset>
         <legend>Your relationship to this formalization</legend>
         <label class="choice">
@@ -233,6 +236,7 @@ Identify every missing, malformed, or inconsistent field. For each problem, name
         in, GitHub may ask you to authorize Palomar on your first submission.
         The authorization is used once and not stored.
       </p>
+      </fieldset>
       <p class="visually-hidden" role="status" id="live-status"></p>
     </form>
     <script type="module" src="/intake.js"></script>
