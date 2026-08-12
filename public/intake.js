@@ -895,6 +895,40 @@ function invalidateLayout() {
   clearSuggestions();
 }
 
+function describeTreeLayout(entries) {
+  const where = locateProject(entries, configPath?.value);
+  if (where.found) autofill(configPath, where.config);
+
+  if (where.found && !where.project && !where.metadata) {
+    summarize("ok");
+    return say("The project is at the repository root, which is what Palomar expects.", true);
+  }
+  if (where.found && !where.project) {
+    autofill(metadataPath, where.metadata);
+    summarize("custom");
+    return say(`The project is at the repository root, but its formalization.yaml is in ${where.metadata}, so that has been filled in.`, true);
+  }
+  if (where.found) {
+    autofill(projectPath, where.project);
+    if (where.metadata) autofill(metadataPath, where.metadata);
+    layout.open = true;
+    summarize("custom");
+    return say(`The project looks like it is in ${where.project}, so that has been filled in. Change it if that is wrong.`, true);
+  }
+  layout.open = true;
+  summarize("custom");
+  if (where.ambiguous) {
+    return say(`This repository has more than one project: ${where.candidates.join(", ")}. Say which one is being submitted.`);
+  }
+  if (where.selected && !where.configFound) {
+    return say(`The selected Comparator configuration ${where.selected} was not found at that commit. Check its repository-relative path.`);
+  }
+  if (where.selected) {
+    return say(`The selected Comparator configuration ${where.selected} was found, but no Lakefile was found in or above its directory. Say where the project is.`);
+  }
+  say("No comparator.json was found beside a Lakefile at that commit. If the project's configuration is named something else, say where it is.");
+}
+
 async function describeLayout(name, sha) {
   if (!layout) return;
   if (describedLayout?.name === name && describedLayout.sha === sha) return;
@@ -922,33 +956,9 @@ async function describeLayout(name, sha) {
     layout.open = true;
     return say("This repository is too large for GitHub to list in one request, so the layout was not checked. Fill these in if the project is not at the root.");
   }
-  describedLayout = { name, sha };
+  describedLayout = { name, sha, entries: tree.tree };
   setComparatorSuggestions(tree.tree);
-  const where = locateProject(tree.tree);
-  if (where.found) autofill(configPath, where.config);
-
-  if (where.found && !where.project && !where.metadata) {
-    summarize("ok");
-    return say("The project is at the repository root, which is what Palomar expects.", true);
-  }
-  if (where.found && !where.project) {
-    autofill(metadataPath, where.metadata);
-    summarize("custom");
-    return say(`The project is at the repository root, but its formalization.yaml is in ${where.metadata}, so that has been filled in.`, true);
-  }
-  if (where.found) {
-    autofill(projectPath, where.project);
-    if (where.metadata) autofill(metadataPath, where.metadata);
-    layout.open = true;
-    summarize("custom");
-    return say(`The project looks like it is in ${where.project}, so that has been filled in. Change it if that is wrong.`, true);
-  }
-  layout.open = true;
-  summarize("custom");
-  if (where.ambiguous) {
-    return say(`This repository has more than one project: ${where.candidates.join(", ")}. Say which one is being submitted.`);
-  }
-  say("No comparator.json was found beside a Lakefile at that commit. If the project's configuration is named something else, say where it is.");
+  describeTreeLayout(tree.tree);
 }
 
 // Filling one of these in by hand makes the layout non-standard whatever the
@@ -968,6 +978,10 @@ for (const input of [projectPath, configPath]) {
     if (input === configPath) {
       renderComparatorSuggestions();
       scheduleComparatorPathLookup();
+      if (describedLayout?.entries) {
+        clearSuggestions();
+        describeTreeLayout(describedLayout.entries);
+      }
     }
   });
 }

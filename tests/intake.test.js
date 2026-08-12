@@ -282,7 +282,7 @@ test("the Comparator path field filters every JSON file without taking over the 
   assert.match(script, /if \(input === configPath\) input\.dataset\.userOwned = "true"/);
   assert.match(script, /describedLayout\?\.name === name && describedLayout\.sha === sha/);
   assert.match(script, /function invalidateLayout\(\)/);
-  assert.match(script, /setComparatorSuggestions\(tree\.tree\);\s+const where = locateProject/);
+  assert.match(script, /setComparatorSuggestions\(tree\.tree\);\s+describeTreeLayout\(tree\.tree\)/);
   assert.match(script, /scheduleComparatorPathLookup\(\)/);
 });
 
@@ -808,6 +808,40 @@ test("the layout is worked out from the repository rather than asked for", async
     "a/comparator.json", "a/lakefile.toml", "b/comparator.json", "b/lakefile.toml",
   ]).ambiguous, true);
   assert.equal(locateProject(["README.md"]).found, false);
+
+  // A chosen configuration need not have the conventional name or sit beside
+  // the Lakefile. Resolve it to the nearest containing Lean project.
+  const chosen = locateProject([
+    "lakefile.toml",
+    "formalization.yaml",
+    "ComparatorChallenges/E_ConnesRigidity.json",
+  ], "ComparatorChallenges/E_ConnesRigidity.json");
+  assert.equal(chosen.found, true);
+  assert.equal(chosen.project, "");
+  assert.equal(chosen.config, "ComparatorChallenges/E_ConnesRigidity.json");
+  assert.equal(chosen.configFound, true);
+
+  const nearest = locateProject([
+    "lakefile.toml",
+    "proof/lakefile.lean",
+    "proof/ComparatorChallenges/config.json",
+  ], "proof/ComparatorChallenges/config.json");
+  assert.equal(nearest.project, "proof");
+
+  const missing = locateProject([
+    "lakefile.toml",
+  ], "ComparatorChallenges/missing.json");
+  assert.equal(missing.found, false);
+  assert.equal(missing.configFound, false);
+});
+
+test("the layout check follows the explicitly selected Comparator configuration", async () => {
+  const script = await readFile(new URL("../public/intake.js", import.meta.url), "utf8");
+
+  assert.match(script, /locateProject\(entries, configPath\?\.value\)/);
+  assert.match(script, /The selected Comparator configuration \$\{where\.selected\} was not found/);
+  assert.match(script, /describedLayout = \{ name, sha, entries: tree\.tree \}/);
+  assert.match(script, /if \(describedLayout\?\.entries\) \{\s+clearSuggestions\(\);\s+describeTreeLayout\(describedLayout\.entries\)/);
 });
 
 test("nothing that only looks like a project is suggested as one", async () => {
