@@ -210,10 +210,21 @@ test("the browser's own validation accepts whatever the normaliser accepts", asy
 });
 
 test("every live-checked field names the element that describes it", () => {
-  for (const id of ["repository", "commit", "existing_id"]) {
+  for (const id of ["repository", "commit", "comparator_config_path", "existing_id"]) {
     assert.match(form, new RegExp(`aria-describedby="${id}-hint"`), `${id} is undescribed`);
     assert.match(form, new RegExp(`id="${id}-status"`), `${id} has no status slot`);
   }
+});
+
+test("the Comparator path check reports a missing file without blocking submission", async () => {
+  const script = await readFile(new URL("../public/intake.js", import.meta.url), "utf8");
+  assert.match(script, /contents\/\$\{encodedPath\}\?ref=/);
+  assert.match(script, /response\.status === 404/);
+  assert.match(script, /We can’t find \$\{path\} at that commit/);
+  assert.match(script, /exists at that commit, but it is not a file/);
+  assert.match(script, /data\?\.type !== "file"/);
+  assert.match(script, /response\.status === 403 \|\| response\.status === 429 \|\| !response\.ok/);
+  assert.doesNotMatch(script, /setCustomValidity/);
 });
 
 test("the form still works without the script", () => {
@@ -261,11 +272,18 @@ test("the registration target appears only for a complete source and states its 
   const style = await readFile(new URL("../public/style.css", import.meta.url), "utf8");
   assert.ok(form.indexOf('id="layout"') < form.indexOf('id="registration-target"'));
   assert.match(form, /<h2 id="registration-target-heading">Registration target<\/h2>/);
+  assert.match(form, /<fieldset class="submission-details" id="submission-details"\s+aria-describedby="registration-target-message">/);
   assert.match(form, /Enter an existing Palomar ID manually/);
   assert.doesNotMatch(form, /Enter the repository and Comparator configuration/);
   assert.match(style, /:has\(#repository:valid\):has\(#commit:valid\):has\(#comparator_config_path:valid\)/);
   assert.match(script, /identityDocument\.commits\.includes\(commitSha\)/);
+  assert.match(script, /identityDocument && !identityDocument\.ambiguous/);
   assert.match(script, /has already been registered at this commit and cannot be registered again/);
+  assert.match(script, /const blocked = state === "duplicate"/);
+  assert.match(script, /submissionDetails\.disabled = blocked/);
+  assert.match(script, /submissionDetails\.disabled = false/);
+  assert.match(script, /submissionDetails\.contains\(document\.activeElement\)/);
+  assert.match(script, /registrationMessage\.focus\(\)/);
   assert.match(script, /different commit to create a new version with the same Palomar identifier/);
   assert.match(script, /different Comparator configuration path to register a different theorem/);
   assert.match(script, /This submission will create a new version with the same Palomar identifier/);
@@ -275,16 +293,17 @@ test("the registration target appears only for a complete source and states its 
   assert.doesNotMatch(script, /preventDefault|setCustomValidity/);
 });
 
-test("nothing in the browser can block a submission", async () => {
+test("only an exact duplicate can block the later submission controls", async () => {
   const script = await readFile(new URL("../public/intake.js", import.meta.url), "utf8");
   // A rate limit or an outage on somebody else's API is not a reason to refuse
-  // someone's work. Neither is a second press of a button that looked dead:
-  // a guard against double submission is also a way to lose a submission.
+  // someone's work. An exact registered commit is different: it cannot become
+  // a submission, and changing any part of its identity enables the controls
+  // immediately while the replacement lookup is debounced.
   assert.doesNotMatch(script, /preventDefault|setCustomValidity/);
-  // The one thing disabled anywhere is the approval note, which applies to
-  // only one of the two answers. The submit control is never touched.
+  // The approval note applies to only one answer. The only other disabled
+  // region is the fieldset after the exact-duplicate message.
   const disabled = [...script.matchAll(/(\w+)\.disabled\s*=/g)].map((m) => m[1]);
-  assert.deepEqual(disabled, ["evidence"]);
+  assert.deepEqual([...new Set(disabled)].sort(), ["evidence", "submissionDetails"]);
 });
 
 test("one word for one thing, in the code as well as the copy", async () => {
