@@ -128,13 +128,63 @@ function debounce(run, ms) {
   };
 }
 
+const githubJsonCache = new Map();
+let githubRetryAt = 0;
+
+function recordGithubRateLimit(response) {
+  const retryAfter = Number(response.headers.get("retry-after"));
+  const reset = Number(response.headers.get("x-ratelimit-reset"));
+  const now = Date.now();
+  const retryAt = [
+    Number.isFinite(retryAfter) && retryAfter >= 0 ? now + retryAfter * 1000 : 0,
+    Number.isFinite(reset) && reset > 0 ? reset * 1000 : 0,
+    now + 60_000,
+  ];
+  githubRetryAt = Math.max(githubRetryAt, ...retryAt);
+}
+
+function githubRateLimitMessage(subject) {
+  const retry = githubRetryAt > Date.now()
+    ? ` Try again after ${new Date(githubRetryAt).toLocaleTimeString([], {
+        hour: "numeric", minute: "2-digit",
+      })}.`
+    : " Try again shortly.";
+  return `GitHub is rate-limiting this browser, so ${subject} could not be checked.${retry}`;
+}
+
+/**
+ * One page-lifetime request per public GitHub resource. In-flight promises are
+ * cached too, so concurrent checks share their request. Once GitHub reports a
+ * limit, no further request is sent until its Retry-After or reset time.
+ */
 async function githubJson(path, { signal } = {}) {
-  const response = await fetch(`https://api.github.com/${path}`, {
-    headers: { accept: "application/vnd.github+json" },
-    signal,
-  });
-  if (response.status === 403 || response.status === 429) return "rate-limited";
-  return response.ok ? response.json() : null;
+  if (githubRetryAt > Date.now()) return "rate-limited";
+  if (!signal && githubJsonCache.has(path)) return githubJsonCache.get(path);
+
+  const request = (async () => {
+    const response = await fetch(`https://api.github.com/${path}`, {
+      headers: { accept: "application/vnd.github+json" },
+      signal,
+    });
+    if (response.status === 403 || response.status === 429) {
+      recordGithubRateLimit(response);
+      return "rate-limited";
+    }
+    return response.ok ? response.json() : null;
+  })();
+
+  if (!signal) githubJsonCache.set(path, request);
+  try {
+    const result = await request;
+    if (!signal) {
+      if (result === "rate-limited") githubJsonCache.delete(path);
+      else githubJsonCache.set(path, result);
+    }
+    return result;
+  } catch (error) {
+    if (!signal) githubJsonCache.delete(path);
+    throw error;
+  }
 }
 
 const repository = field("repository");
@@ -154,13 +204,16 @@ let checkedCommit = null;
 const repositorySuggestionList = document.getElementById("repository-suggestions");
 const repositorySuggestionCache = new Map();
 let repositorySuggestionRequest = null;
+let repositorySuggestionTimer;
+const REPOSITORY_SUGGESTION_DELAY = 400;
 
 function renderRepositorySuggestions() {
   if (!repositorySuggestionList || !repository.input) return;
   const query = repositoryQuery(repository.input.value);
-  const rows = query
-    ? repositorySuggestionCache.get(query.owner.toLowerCase()) ?? []
-    : [];
+  const cached = query
+    ? repositorySuggestionCache.get(query.owner.toLowerCase())
+    : null;
+  const rows = Array.isArray(cached) ? cached : [];
   const fragment = document.createDocumentFragment();
   for (const value of publicRepositorySuggestions(rows, repository.input.value)) {
     const option = document.createElement("option");
@@ -172,8 +225,7 @@ function renderRepositorySuggestions() {
 
 /**
  * Fetch once after the owner is complete, then do all further filtering in
- * memory. A changed owner aborts obsolete I/O; typing a repository suffix does
- * neither network work nor a large DOM update (GitHub returns at most 100).
+ * memory. No repository suffix is ever put into this request.
  */
 async function loadRepositorySuggestions(owner) {
   const key = owner.toLowerCase();
@@ -185,16 +237,16 @@ async function loadRepositorySuggestions(owner) {
       { signal: controller.signal },
     );
     if (repositorySuggestionRequest?.controller !== controller) return;
-    // A failed convenience lookup stays failed for this page. Retrying it on
-    // every suffix keystroke would turn a GitHub outage or rate limit into a
-    // burst of requests while making the field feel worse, not better.
-    repositorySuggestionCache.set(key, Array.isArray(rows) ? rows : []);
+    repositorySuggestionCache.set(key, Array.isArray(rows) ? rows : rows ?? "unavailable");
     const current = repositoryQuery(repository.input?.value);
-    if (current?.owner.toLowerCase() === key) renderRepositorySuggestions();
+    if (current?.owner.toLowerCase() === key) {
+      renderRepositorySuggestions();
+      checkRepository(repository);
+    }
   } catch (error) {
     if (error?.name !== "AbortError" &&
         repositorySuggestionRequest?.controller === controller) {
-      repositorySuggestionCache.set(key, []);
+      repositorySuggestionCache.set(key, "unavailable");
     }
   } finally {
     if (repositorySuggestionRequest?.controller === controller) {
@@ -205,6 +257,7 @@ async function loadRepositorySuggestions(owner) {
 
 function updateRepositorySuggestions() {
   const query = repositoryQuery(repository.input?.value);
+  clearTimeout(repositorySuggestionTimer);
   if (!query) {
     repositorySuggestionRequest?.controller.abort();
     repositorySuggestionRequest = null;
@@ -212,25 +265,48 @@ function updateRepositorySuggestions() {
   }
   const key = query.owner.toLowerCase();
   if (repositorySuggestionCache.has(key)) {
-    if (repositorySuggestionRequest?.key !== key) {
-      repositorySuggestionRequest?.controller.abort();
-      repositorySuggestionRequest = null;
+    if (repositorySuggestionCache.get(key) === "rate-limited" &&
+        githubRetryAt <= Date.now()) {
+      repositorySuggestionCache.delete(key);
+    } else {
+      if (repositorySuggestionRequest?.key !== key) {
+        repositorySuggestionRequest?.controller.abort();
+        repositorySuggestionRequest = null;
+      }
+      renderRepositorySuggestions();
+      return;
     }
-    return renderRepositorySuggestions();
   }
   if (repositorySuggestionRequest?.key === key) return;
-  repositorySuggestionRequest?.controller.abort();
+  if (repositorySuggestionRequest?.key !== key) {
+    repositorySuggestionRequest?.controller.abort();
+    repositorySuggestionRequest = null;
+  }
   repositorySuggestionList?.replaceChildren();
-  void loadRepositorySuggestions(query.owner);
+  // The owner is known at the slash, but wait until typing has been idle. Every
+  // suffix keystroke resets this one timer; it never creates a suffix request.
+  repositorySuggestionTimer = setTimeout(() => {
+    repositorySuggestionTimer = null;
+    const current = repositoryQuery(repository.input?.value);
+    if (current?.owner.toLowerCase() === key &&
+        !repositorySuggestionCache.has(key) &&
+        repositorySuggestionRequest?.key !== key) {
+      void loadRepositorySuggestions(current.owner);
+    }
+  }, REPOSITORY_SUGGESTION_DELAY);
 }
 
 function cachedSuggestedRepository(name) {
   const [owner] = name.split("/");
-  const rows = repositorySuggestionCache.get(owner.toLowerCase());
-  return Array.isArray(rows)
-    ? rows.find((row) => row?.private === false &&
-        normalizeRepository(row.full_name)?.toLowerCase() === name.toLowerCase())
-    : null;
+  const key = owner.toLowerCase();
+  if (!repositorySuggestionCache.has(key)) return undefined;
+  const rows = repositorySuggestionCache.get(key);
+  if (!Array.isArray(rows)) return rows;
+  const found = rows.find((row) => row?.private === false &&
+    normalizeRepository(row.full_name)?.toLowerCase() === name.toLowerCase());
+  // GitHub caps this response at 100. Absence from a full page is not evidence
+  // that the repository does not exist, and must not trigger a suffix lookup.
+  return found ?? (rows.length === 100 ? "not-listed" : null);
 }
 
 function offerDefaultCommit(parts, name) {
@@ -253,11 +329,19 @@ function offerDefaultCommit(parts, name) {
 const checkRepository = latest(async (settle, parts) => {
   const name = normalizeRepository(parts.input.value);
   if (!name) return settle("", DEFAULT.repository);
-  settle("checking", `Looking for ${name}…`);
   const data = checkedRepository?.name === name
     ? checkedRepository.data
-    : cachedSuggestedRepository(name) ?? await githubJson(`repos/${name}`);
-  if (data === "rate-limited") return settle("", DEFAULT.repository);
+    : cachedSuggestedRepository(name);
+  if (data === undefined) return settle("checking", `Loading ${name.split("/")[0]}'s repositories…`);
+  if (data === "rate-limited") {
+    return settle("", githubRateLimitMessage("its repositories"));
+  }
+  if (data === "unavailable") {
+    return settle("", "GitHub's repository list is unavailable just now. You can still enter the repository and submit it.");
+  }
+  if (data === "not-listed") {
+    return settle("", "That repository is not in GitHub's first 100 results for this owner. You can still enter it and submit it.");
+  }
   if (!data) return settle("missing", `No public repository called ${name}.`);
   if (data.private) return settle("missing", `${name} is private; Palomar indexes public repositories.`);
   if (normalizeRepository(parts.input.value) !== name) return;
@@ -277,6 +361,10 @@ const checkRepository = latest(async (settle, parts) => {
     // A response for an earlier repository must not do any further work for
     // the current form, and a commit typed or focused in flight always wins.
     if (normalizeRepository(parts.input.value) !== name) return;
+    if (head === "rate-limited") {
+      show(commit, "", githubRateLimitMessage("the default-branch commit"));
+      return;
+    }
     const sha = normalizeCommit(head?.sha);
     if (sha) {
       checkedDefaultHead = { name, sha, data: head, defaultBranch };
@@ -311,7 +399,9 @@ const checkCommit = latest(async (settle, parts, known = null) => {
     : prior?.data ?? await githubJson(`repos/${name}/commits/${sha}`);
   if (normalizeRepository(repository.input.value) !== name ||
       normalizeCommit(parts.input.value) !== sha) return;
-  if (data === "rate-limited") return settle("", DEFAULT.commit);
+  if (data === "rate-limited") {
+    return settle("", githubRateLimitMessage("that commit"));
+  }
   if (!data?.sha) {
     describeLayout();
     return settle("missing", `That commit is not in ${name}.`);
@@ -762,20 +852,15 @@ async function describeLayout(name, sha) {
 
   let tree;
   try {
-    const response = await fetch(
-      `https://api.github.com/repos/${name}/git/trees/${sha}?recursive=1`,
-      { headers: { accept: "application/vnd.github+json" } },
-    );
+    tree = await githubJson(`repos/${name}/git/trees/${sha}?recursive=1`);
     if (!current()) return;
-    if (response.status === 403 || response.status === 429) {
-      return say("GitHub is rate-limiting this browser, so the layout was not checked. Fill these in if the project is not at the root.");
+    if (tree === "rate-limited") {
+      return say(`${githubRateLimitMessage("the file layout")} Fill these in if the project is not at the root.`);
     }
-    if (!response.ok) return;
-    tree = await response.json();
   } catch {
     return;
   }
-  if (!current() || !Array.isArray(tree.tree)) return;
+  if (!current() || !Array.isArray(tree?.tree)) return;
   if (tree.truncated) {
     layout.open = true;
     return say("This repository is too large for GitHub to list in one request, so the layout was not checked. Fill these in if the project is not at the root.");
