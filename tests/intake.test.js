@@ -29,7 +29,7 @@ const form = intakeForm(ENV);
 
 test("the introduction summarizes the submission requirements", () => {
   assert.match(form, /credible research interest/);
-  assert.match(form, /auditable Challenge, matching Solution/);
+  assert.match(form, /auditable <code>Challenge\.lean<\/code>,\s+matching <code>Solution\.lean<\/code>/);
   assert.match(form, /formalization\.yaml/);
   assert.match(form, /href="https:\/\/github\.com\/leanprover\/comparator"/);
   assert.match(form, /href="https:\/\/github\.com\/mathlib-initiative\/formalization\.yaml"/);
