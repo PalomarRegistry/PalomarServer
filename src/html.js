@@ -63,7 +63,7 @@ export function intakeForm(env, values = {}, problems = []) {
     <section class="disclosure recovery-prompt">
       <h2>Already have a submission in progress?</h2>
       <form method="get" action="/submissions">
-        <button type="submit" class="secondary">Find my submissions</button>
+        <button type="submit" class="secondary" id="find-submissions">Find my submissions</button>
       </form>
     </section>
 

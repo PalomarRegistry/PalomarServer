@@ -171,6 +171,20 @@ test("the button says what it does", () => {
   assert.doesNotMatch(form, /Continue with GitHub/);
 });
 
+test("finding submissions shows progress while GitHub authentication starts", async () => {
+  const script = await readFile(new URL("../public/intake.js", import.meta.url), "utf8");
+  const css = await readFile(new URL("../public/style.css", import.meta.url), "utf8");
+
+  assert.match(form, /<form method="get" action="\/submissions">/);
+  assert.match(form, /id="find-submissions">Find my submissions<\/button>/);
+  assert.match(script, /recoveryForm\?\.addEventListener\("submit"/);
+  assert.match(script, /recoverySubmit\.dataset\.busy = "true"/);
+  assert.match(script, /recoverySubmit\.setAttribute\("aria-busy", "true"\)/);
+  assert.match(script, /Finding your submissions…/);
+  assert.match(script, /window\.addEventListener\("pageshow", \(\) => setRecoveryBusy\(false\)\)/);
+  assert.match(css, /button\[data-busy="true"\]::after/);
+});
+
 test("the browser's own validation accepts whatever the normaliser accepts", async () => {
   // The `pattern` attribute runs before any script and cannot be made to
   // normalise. If it is stricter than the shared normaliser, a value is
