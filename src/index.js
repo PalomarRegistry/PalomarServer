@@ -362,7 +362,7 @@ async function beginSubmission(request, env, { machine = false } = {}) {
 
   if (machine && technicalTest) {
     return rejected(
-      "Technical-team tests require browser GitHub sign-in so Palomar can verify active team membership.",
+      "That authorization relationship is available only through browser sign-in.",
     );
   }
 
@@ -1014,7 +1014,7 @@ async function verifySubmission(request, env) {
     return json({ error: "that intake is a browser sign-in, not an agent submission" }, 409);
   }
   if (pending.value.authorization_relationship === "technical-test") {
-    return json({ error: "technical-team tests require browser GitHub sign-in" }, 409);
+    return json({ error: "that authorization requires browser sign-in" }, 409);
   }
 
   // The attempt is spent before anything is spent on it, and claimed under the
@@ -1330,8 +1330,8 @@ async function completeSubmission(request, env) {
         console.error("pending", `could not discard ${pendingPath}`);
       }
       return html(
-        errorPage(env, "Technical-team authorization is temporarily unavailable", spentSignInProblems([
-          "Palomar could not confirm the GitHub team membership just now.",
+        errorPage(env, "Submission authorization is temporarily unavailable", spentSignInProblems([
+          "Palomar could not confirm that authorization just now.",
         ])),
         503,
         { "set-cookie": await intakeCookie(nonce, null, { clear: true }) },
@@ -1343,8 +1343,8 @@ async function completeSubmission(request, env) {
         console.error("pending", `could not discard ${pendingPath}`);
       }
       return html(
-        errorPage(env, "This test exception is limited to Technical Maintainers", spentSignInProblems([
-          "Choose an ordinary authorization relationship, or ask an active Technical Maintainer to run the test.",
+        errorPage(env, "This submission is not authorized", spentSignInProblems([
+          "Choose one of the authorization relationships offered on the submission form.",
         ])),
         403,
         { "set-cookie": await intakeCookie(nonce, null, { clear: true }) },
@@ -1984,7 +1984,7 @@ export default {
         }
         if (isTechnicalTest(entry.record)) {
           return json({
-            error: "registration would be allowed if this were not a technical-team test submission",
+            error: "registration would be allowed if this were not a test submission",
           }, 409);
         }
         // Consent is only meaningful once the submitter can see what they
@@ -2049,7 +2049,7 @@ export default {
         const entry = await caller(env, request, { mutating: true });
         if (entry instanceof Response) return entry;
         if (isTechnicalTest(entry.record)) {
-          return json({ error: "a technical-team test does not open repair pull requests" }, 409);
+          return json({ error: "a test submission does not open repair pull requests" }, 409);
         }
         const body = await request.json().catch(() => null);
         let edits;

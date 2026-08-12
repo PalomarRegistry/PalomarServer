@@ -167,6 +167,7 @@ test("the form still works without the script", () => {
   assert.doesNotMatch(form, /name="authorization_relationship" value="technical-test"/);
   assert.doesNotMatch(form, /I am a Palomar Technical Maintainer testing the workflow/);
   assert.doesNotMatch(form, /technical-team test may exercise the full workflow/);
+  assert.doesNotMatch(form, /Technical Maintainer membership for a marked test/);
 });
 
 test("the policy reaches exactly the two origins the form looks things up on", async () => {
@@ -450,7 +451,7 @@ test("agent intake returns all contract problems before spending a GitHub call",
         "Repository must be a GitHub owner/name or URL.",
         "Commit must be a full 40-character SHA. Branches and tags move.",
         "Existing Palomar ID is malformed.",
-        "Say whether you maintain this formalization, have approval, or are running a technical-team test.",
+        "Say whether you maintain this formalization or have approval from a responsible author or maintainer.",
         "Comparator configuration is required. Give the repository-relative path to the one configuration this entry records.",
         "Project directory must be a path inside the repository, written with forward slashes.",
         "Comparator configuration must be a path inside the repository, written with forward slashes.",

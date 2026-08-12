@@ -687,7 +687,7 @@ async function poll() {
     decisionIntro.textContent =
       "This test has reached the point where an ordinary accepted submission could be registered.";
     registerWarning.textContent =
-      "Registration would be allowed here if this were not a technical-team test submission. " +
+      "Registration would be allowed here if this were not a test submission. " +
       "Tests can exercise review, but they cannot enter the public registry.";
   }
   if (!effectiveConsent) {

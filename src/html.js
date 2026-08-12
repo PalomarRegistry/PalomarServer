@@ -216,10 +216,9 @@ Identify every missing, malformed, obsolete, or inconsistent field. For each pro
       <button type="submit">Authenticate via GitHub</button>
       <p class="hint">
         You may be asked to sign in, so Palomar can confirm you have write
-        access to the repository you are submitting, or active Technical
-        Maintainer membership for a marked test. If you are
-        already signed in to GitHub you will not see anything. The sign-in is
-        used once and not stored.
+        access to the repository you are submitting. If you are already signed
+        in to GitHub you will not see anything. The sign-in is used once and
+        not stored.
       </p>
       <p class="visually-hidden" role="status" id="live-status"></p>
     </form>
