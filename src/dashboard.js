@@ -8,7 +8,8 @@ const RESTORATION_ISSUE_FORM =
   "https://github.com/PalomarRegistry/PalomarDatabase/issues/new?template=restoration.yml";
 const PRICE_SCHEDULE = "gpt-5.6-sol-2026-08-10";
 const DEFINITIONS = {
-  submission: "one durable submissions/<id>/state.json record",
+  submission: "one non-test durable submissions/<id>/state.json record",
+  technical_test: "a marked workflow exercise excluded from outcome, latency, and spend denominators",
   round: "one completed spend item; started rounds are reported separately",
   target: "case-folded repository plus normalized comparator configuration path; aggregate target metrics exclude historical rows without complete target identity",
   landed: "a submission with a registered event",
@@ -257,11 +258,14 @@ export function validateDashboardReport(report) {
   timestamp(report.source.latest_event_at, true);
   exactText(report.source.pricing_schedule, PRICE_SCHEDULE);
 
-  exactKeys(report.definitions, ["submission", "round", "target", "landed", "pricing"]);
+  exactKeys(report.definitions, [
+    "submission", "technical_test", "round", "target", "landed", "pricing",
+  ]);
   for (const [key, value] of Object.entries(DEFINITIONS)) exactText(report.definitions[key], value);
 
   exactKeys(report.totals, [
     "submissions",
+    "technical_test_submissions_excluded",
     "submissions_landed",
     "submissions_not_landed",
     "submissions_active",

@@ -1323,6 +1323,8 @@ function stubOAuth({
   files = {},
   login = "someone",
   membership = "active",
+  membershipStatus = null,
+  repository = undefined,
   inflight = { open: [] },
   reviewer = { schema_version: 1, open: [] },
 }) {
@@ -1344,17 +1346,22 @@ function stubOAuth({
       return Response.json({ login, id: 4242 });
     }
     if (target.pathname.includes("/teams/technical-maintainers/memberships/")) {
+      if (membershipStatus !== null) {
+        return new Response("", { status: membershipStatus });
+      }
       return membership === null
         ? new Response("", { status: 404 })
         : Response.json({ state: membership, role: "member" });
     }
     if (target.pathname === "/repos/example/project") {
-      return Response.json({
+      const value = repository === undefined ? {
+        id: 987654321,
         full_name: "example/project",
         private: false,
         owner: { login: "example" },
         permissions: { push },
-      });
+      } : repository;
+      return value === null ? new Response("", { status: 404 }) : Response.json(value);
     }
     if (target.pathname.includes("/actions/workflows/")) {
       dispatched.push({ path: target.pathname, body: JSON.parse(init.body) });
@@ -1390,6 +1397,7 @@ const BINDING = "9".repeat(64);
 const PENDING = {
   schema_version: 2,
   binding_sha256: await digest(BINDING),
+  repository_id: 987654321,
   repository: "example/project",
   commit: "1".repeat(40),
   existing_id: null,
@@ -1468,6 +1476,11 @@ test("an active Technical Maintainer can run a marked test without push access",
   assert.equal(record.value.push_proof.method, "technical-team-test");
   assert.equal(record.value.push_proof.binding, "active-technical-team-membership");
   assert.equal(
+    [...stub.store.keys()].some((path) => path.startsWith("index/rate/")),
+    false,
+    "a non-registrable test acquired a backoff that registration can never clear",
+  );
+  assert.equal(
     JSON.parse(stub.dispatched[0].body.inputs.options).authorization_relationship,
     "I am a Palomar Technical Maintainer testing the workflow",
   );
@@ -1485,6 +1498,57 @@ test("selecting the test exception does not trust a nonmember", async () => {
 
   assert.equal(response.status, 403);
   assert.match(await response.text(), /limited to Technical Maintainers/);
+  assert.equal(stub.written.filter((item) => item.path.endsWith("state.json")).length, 0);
+  assert.ok(!stub.store.has(`pending/${await digest(nonce)}.json`));
+});
+
+test("pending membership and provider failure both refuse and consume a technical test", async () => {
+  for (const [name, options, status] of [
+    ["pending invitation", { membership: "pending" }, 403],
+    ["provider failure", { membershipStatus: 503 }, 503],
+  ]) {
+    const nonce = name === "pending invitation" ? "6".repeat(64) : "5".repeat(64);
+    const pendingPath = `pending/${await digest(nonce)}.json`;
+    const stub = stubOAuth({
+      push: false,
+      ...options,
+      files: {
+        [pendingPath]: { ...PENDING, authorization_relationship: "technical-test" },
+      },
+    });
+    const originalError = console.error;
+    console.error = () => {};
+    let response;
+    try {
+      response = await callback(nonce);
+    } finally {
+      console.error = originalError;
+    }
+    assert.equal(response.status, status, name);
+    assert.ok(!stub.store.has(pendingPath), `${name} retained an unusable pending proof`);
+    assert.equal(
+      stub.written.filter((item) => item.path.endsWith("state.json")).length,
+      0,
+      name,
+    );
+  }
+});
+
+test("a technical test refuses a repository that disappeared after intake", async () => {
+  const nonce = "4".repeat(64);
+  const pendingPath = `pending/${await digest(nonce)}.json`;
+  const stub = stubOAuth({
+    push: false,
+    repository: null,
+    files: {
+      [pendingPath]: { ...PENDING, authorization_relationship: "technical-test" },
+    },
+  });
+  const response = await callback(nonce);
+
+  assert.equal(response.status, 409);
+  assert.match(await response.text(), /not the one this test began for/);
+  assert.ok(!stub.store.has(pendingPath));
   assert.equal(stub.written.filter((item) => item.path.endsWith("state.json")).length, 0);
 });
 
@@ -2064,6 +2128,38 @@ test("a repair request is capability-bound, allowlisted, and queued atomically",
   assert.ok(stub.dispatched.some((item) => item.path.includes("repairer.yml")));
 });
 
+test("a technical-team test cannot open a metadata repair pull request", async () => {
+  const record = {
+    id: "a1b2c3d4e5f6",
+    status: "changes-required",
+    repository: "example/project",
+    commit: "1".repeat(40),
+    test_submission: true,
+    authorization: { relationship: "technical-test" },
+    failure: { schema_version: 1, mode: "preflight", profile_version: 1 },
+    events: [],
+  };
+  const stub = stubAgent();
+  stub.store.set(`index/tokens/${await tokenDigest(ENV, TOKEN)}.json`, { id: record.id });
+  stub.store.set(statePath(record.id, "state.json"), record);
+  const response = await worker.fetch(
+    new Request("https://submit.palomar-registry.org/api/repair", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "sec-fetch-site": "same-origin",
+        cookie: `__Host-palomar_session=${TOKEN}`,
+      },
+      body: "{}",
+    }),
+    ENV,
+  );
+
+  assert.equal(response.status, 409);
+  assert.match((await response.json()).error, /does not open repair pull requests/);
+  assert.equal(stub.store.has(statePath(record.id, "repair.json")), false);
+});
+
 test("a non-repairable diagnostic cannot be turned into an automated edit", async () => {
   const failure = {
     schema_version: 1,
@@ -2399,7 +2495,11 @@ test("a browser technical test requests team visibility and the agent path refus
   );
   assert.equal(agent.status, 400);
   assert.match((await agent.json()).problems[0], /require browser GitHub sign-in/);
-  assert.ok(stub.written.some((item) => item.path.startsWith("pending/")));
+  assert.equal(
+    stub.written.filter((item) => item.path.startsWith("pending/")).length,
+    1,
+    "the refused agent request wrote another pending record",
+  );
 });
 
 test("starting a submission doubles the wait, and only registering clears it", async () => {

@@ -12,7 +12,8 @@
     "landed": "a submission with a registered event",
     "pricing": "official https://developers.openai.com/api/docs/models/gpt-5.6-sol; broker estimates are not billing authority",
     "round": "one completed spend item; started rounds are reported separately",
-    "submission": "one durable submissions/<id>/state.json record",
+    "submission": "one non-test durable submissions/<id>/state.json record",
+    "technical_test": "a marked workflow exercise excluded from outcome, latency, and spend denominators",
     "target": "case-folded repository plus normalized comparator configuration path; aggregate target metrics exclude historical rows without complete target identity"
   },
   "distributions": {
@@ -294,6 +295,7 @@
     "submissions_terminal_unlanded": 9,
     "targets": 3,
     "targets_landed": 1,
-    "targets_not_landed": 2
+    "targets_not_landed": 2,
+    "technical_test_submissions_excluded": 0
   }
 }

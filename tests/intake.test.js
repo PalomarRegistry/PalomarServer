@@ -7,6 +7,7 @@ import test from "node:test";
 import { readFile } from "node:fs/promises";
 import { intakeForm } from "../src/html.js";
 import worker from "../src/index.js";
+import { validateIntake } from "../src/intake-contract.js";
 
 // A configured deployment. The server refuses everything without these, so a
 // test env missing one would exercise the refusal rather than the thing it is
@@ -65,6 +66,22 @@ test("the approval note is a field of its own, so it can be turned off", () => {
   assert.match(form, /<div class="dependent" id="approval-evidence">/);
   assert.match(form, /Included in the public mechanical report during verification/);
   assert.match(form, /maxlength="4000"/);
+});
+
+test("approval evidence cannot be attached to the server-owned test relationship", () => {
+  for (const [relationship, expected] of [
+    ["approved", "Approved by the maintainer"],
+    ["maintainer", "Approved by the maintainer"],
+    ["technical-test", null],
+  ]) {
+    const fields = new FormData();
+    fields.set("repository", "owner/project");
+    fields.set("commit", "a".repeat(40));
+    fields.set("comparator_config_path", "comparator.json");
+    fields.set("authorization_relationship", relationship);
+    fields.set("authorization_evidence", "Approved by the maintainer");
+    assert.equal(validateIntake(fields).submission.authorization_evidence, expected);
+  }
 });
 
 test("what a submitter typed survives a rejected submission", () => {

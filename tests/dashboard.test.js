@@ -62,7 +62,8 @@ const REPORT = {
     pricing_schedule: "gpt-5.6-sol-2026-08-10",
   },
   definitions: {
-    submission: "one durable submissions/<id>/state.json record",
+    submission: "one non-test durable submissions/<id>/state.json record",
+    technical_test: "a marked workflow exercise excluded from outcome, latency, and spend denominators",
     round: "one completed spend item; started rounds are reported separately",
     target: "case-folded repository plus normalized comparator configuration path; aggregate target metrics exclude historical rows without complete target identity",
     landed: "a submission with a registered event",
@@ -70,6 +71,7 @@ const REPORT = {
   },
   totals: {
     submissions: 4,
+    technical_test_submissions_excluded: 0,
     submissions_landed: 1,
     submissions_not_landed: 3,
     submissions_active: 1,

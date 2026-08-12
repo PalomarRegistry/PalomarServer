@@ -168,9 +168,10 @@ still refuses to merge a withdrawn record, but source-preservation or rendering
 work that already started may remain public. Only an accepted review under the
 current review contract can be registered; an older in-flight review must be
 rerun. A technical-team test can reach the same accepted-review screen, but its
-registration control is disabled with an explanation. `/register`, State
-validation, and the reviewer independently refuse it even if a client bypasses
-the page or consent is edited by hand.
+registration control is disabled with an explanation. `/register` and the
+reviewer independently refuse it, and State validation reports any test record
+edited by hand to carry consent or registration state. Test submissions also
+cannot request an automated metadata-repair pull request.
 
 ## The state a submission holds
 

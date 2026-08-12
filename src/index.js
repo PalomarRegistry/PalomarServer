@@ -510,7 +510,13 @@ async function admitSubmission(
   const createdAtMs = Date.now();
   const createdAt = new Date(createdAtMs).toISOString().replace(/\.\d+Z$/, "Z");
   const tokenSha256 = await tokenDigest(env, token);
-  const rate = proof?.principal?.id ? await ratePath(env, proof.principal.id) : null;
+  const testSubmission = pending.authorization_relationship === "technical-test";
+  // Registration clears an ordinary submitter's exponential backoff. A test
+  // can never register, so applying that same record would make the explicitly
+  // authorized testing path less usable after every successful exercise.
+  const rate = proof?.principal?.id && !testSubmission
+    ? await ratePath(env, proof.principal.id)
+    : null;
   const recordPath = statePath(id, "state.json");
   const tokenPath = `index/tokens/${tokenSha256}.json`;
   const paths = [
@@ -531,7 +537,7 @@ async function admitSubmission(
       existingId: pending.existing_id,
       context: pending.context,
       requestedPaths: pending.requested_paths ?? {},
-      testSubmission: pending.authorization_relationship === "technical-test",
+      testSubmission,
       authorization: {
         relationship: pending.authorization_relationship,
         ...(pending.authorization_evidence
@@ -671,6 +677,9 @@ async function verifySubmission(request, env) {
   if (!pending.value) return json({ error: "that submission has already been verified" }, 404);
   if (pending.value.method !== "tag-and-gist") {
     return json({ error: "that intake is a browser sign-in, not an agent submission" }, 409);
+  }
+  if (pending.value.authorization_relationship === "technical-test") {
+    return json({ error: "technical-team tests require browser GitHub sign-in" }, 409);
   }
 
   // The attempt is spent before anything is spent on it, and claimed under the
@@ -915,10 +924,31 @@ async function completeSubmission(request, env) {
   }
 
   const technicalTest = pending.value.authorization_relationship === "technical-test";
+  if (technicalTest && (
+    !viewer ||
+    viewer.private === true ||
+    (pending.value.repository_id != null && viewer.id !== pending.value.repository_id)
+  )) {
+    if (!(await deleteState(env, pendingPath, pending.sha,
+                            "Discard a technical test whose repository changed"))) {
+      console.error("pending", `could not discard ${pendingPath}`);
+    }
+    return html(
+      errorPage(env, "That repository is not the one this test began for", spentSignInProblems([
+        `${pending.value.repository} could not be read as the same public repository.`,
+      ])),
+      409,
+      { "set-cookie": await intakeCookie(nonce, null, { clear: true }) },
+    );
+  }
   if (technicalTest) {
     const membership = await technicalTeamMembership(granted.access_token, submitter);
     if (membership.unavailable) {
       console.error("technical-test-oauth-membership", membership.status);
+      if (!(await deleteState(env, pendingPath, pending.sha,
+                              "Discard a test whose membership could not be verified"))) {
+        console.error("pending", `could not discard ${pendingPath}`);
+      }
       return html(
         errorPage(env, "Technical-team authorization is temporarily unavailable", spentSignInProblems([
           "Palomar could not confirm the GitHub team membership just now.",
@@ -928,6 +958,10 @@ async function completeSubmission(request, env) {
       );
     }
     if (!membership.active) {
+      if (!(await deleteState(env, pendingPath, pending.sha,
+                              "Discard a test requested by a nonmember"))) {
+        console.error("pending", `could not discard ${pendingPath}`);
+      }
       return html(
         errorPage(env, "This test exception is limited to Technical Maintainers", spentSignInProblems([
           "Choose an ordinary authorization relationship, or ask an active Technical Maintainer to run the test.",
@@ -1509,6 +1543,9 @@ export default {
       if (request.method === "POST" && url.pathname === "/api/repair") {
         const entry = await caller(env, request, { mutating: true });
         if (entry instanceof Response) return entry;
+        if (isTechnicalTest(entry.record)) {
+          return json({ error: "a technical-team test does not open repair pull requests" }, 409);
+        }
         const body = await request.json().catch(() => null);
         let edits;
         try {

@@ -124,7 +124,9 @@ export function validateIntake(fields) {
         formalization_metadata_path: metadataPath.path,
       },
       authorization_relationship: relationship,
-      authorization_evidence: evidence || null,
+      // The server-owned technical-test path must not carry submitter-written
+      // approval evidence, even when a hand-written POST supplies it.
+      authorization_evidence: relationship !== "technical-test" && evidence ? evidence : null,
     },
   };
 }
