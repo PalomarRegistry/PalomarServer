@@ -31,6 +31,43 @@ export function normalizeRepository(raw) {
     : null;
 }
 
+/**
+ * The completed owner and partial repository in a value still being typed.
+ *
+ * A slash is the boundary that makes the owner unambiguous, so callers can
+ * wait for it before doing any network work. The URL form is retained so an
+ * autocomplete choice does not unexpectedly replace a URL with a bare pair.
+ */
+export function repositoryQuery(raw) {
+  const value = String(raw ?? "").trim();
+  const match = /^(https?:\/\/github\.com\/)?([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]*)$/.exec(value);
+  if (!match || match[2] === "." || match[2] === "..") return null;
+  return { owner: match[2], prefix: match[3], url: Boolean(match[1]) };
+}
+
+/** Return safe public repository choices matching the value being typed. */
+export function publicRepositorySuggestions(rows, raw, limit = 100) {
+  const query = repositoryQuery(raw);
+  if (!query || !Array.isArray(rows) || !Number.isInteger(limit) || limit < 1) return [];
+  const owner = query.owner.toLowerCase();
+  const prefix = query.prefix.toLowerCase();
+  const seen = new Set();
+  const suggestions = [];
+  for (const row of rows) {
+    if (row?.private !== false) continue;
+    const fullName = normalizeRepository(row.full_name);
+    if (!fullName) continue;
+    const [candidateOwner, candidateName] = fullName.split("/");
+    const key = fullName.toLowerCase();
+    if (candidateOwner.toLowerCase() !== owner ||
+        !candidateName.toLowerCase().startsWith(prefix) || seen.has(key)) continue;
+    seen.add(key);
+    suggestions.push(query.url ? `https://github.com/${fullName}` : fullName);
+    if (suggestions.length === limit) break;
+  }
+  return suggestions;
+}
+
 /** A full commit, lowercased, or null. Abbreviations are not commits. */
 export function normalizeCommit(raw) {
   const value = String(raw ?? "").trim().toLowerCase();
