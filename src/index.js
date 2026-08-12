@@ -914,7 +914,12 @@ async function admitSubmission(
           : atRatePath(rate, () => rateRecord(current.value).value);
         limit = rateDecision(value, createdAtMs);
       }
-      const admission = limit.refused
+      // The technical-test marker reaches this function only after the browser
+      // OAuth path has verified active Technical Maintainer membership. Those
+      // maintainers exercise the workflow itself, so neither the ordinary
+      // submitter backoff above nor its owner/submitter concurrency caps should
+      // prevent a test from starting.
+      const admission = limit.refused || testSubmission
         ? limit
         : admissionDecision(availableInflight, { owner, submitter });
       if (admission.refused) {
@@ -1363,11 +1368,11 @@ async function completeSubmission(request, env) {
   }
 
   // Anyone with ordinary push access, and each explicitly verified Technical
-  // Maintainer test, can reach this point. Verification is expensive and
-  // long-running, so owner and submitter limits apply equally. There is
-  // deliberately no shared global cap: unrelated people cannot make intake
-  // refuse everyone. The per-principal backoff and edge throttle remain the
-  // broader abuse controls.
+  // Maintainer test, can reach this point. Ordinary submissions receive the
+  // per-principal backoff and owner/submitter caps in `admitSubmission`;
+  // verified Technical Maintainer tests bypass both. The unauthenticated edge
+  // throttle remains in front of this flow because a form choice alone cannot
+  // be trusted as team membership.
   const owner = viewer.owner?.login ?? null;
   const proof = {
     schema_version: 1,

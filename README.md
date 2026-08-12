@@ -92,7 +92,11 @@ the explicit technical-test relationship. That browser-only path requests
 pinned commit without write access. Its durable record says `test_submission`,
 does not claim `push_verified`, and carries a distinct team-membership proof.
 The agent intake cannot use this exception because its tag-and-gist proof does
-not establish team membership.
+not establish team membership. A verified technical-team test bypasses the
+ordinary per-principal start interval and the owner and submitter in-flight
+caps. The pre-authentication address throttle still applies: until OAuth proves
+membership, a technical-test form choice has no authority to bypass the abuse
+guard.
 
 ## Private operational dashboard
 
@@ -231,7 +235,8 @@ Each locator contains exactly `schema_version: 1` and a unique `submissions`
 array. Admission appends to it atomically with the new submission; terminal ids
 may remain because recovery intersects it with `index/open.json` before reading
 records. Technical-team tests use the same locator without acquiring the
-ordinary submitter backoff that those tests deliberately bypass.
+ordinary submitter backoff or in-flight caps that those tests deliberately
+bypass.
 
 The pure intake normalization and validation live in `src/intake-contract.js`;
 admission caps and rate-record projection live in `src/admission-contract.js`;

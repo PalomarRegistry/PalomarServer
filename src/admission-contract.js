@@ -162,12 +162,13 @@ export function resetRateRecord(value, resetAt) {
  * Decide whether one more proved submission fits the principal admission caps.
  *
  * Verification is expensive and long-running. Ordinary submitters have proved
- * push access by this point, and a marked test has proved Technical Maintainer
- * membership instead. The owner cap stops one project's repositories
+ * push access by this point. The owner cap stops one project's repositories
  * monopolising the runners; the one-per-submitter cap stops one person doing it
  * across many repositories, which the owner cap alone never noticed, because a
- * fresh organisation buys fresh slots. There is no global cap: unrelated
- * submitters must not be able to make intake refuse everyone.
+ * fresh organisation buys fresh slots. Verified Technical Maintainer tests are
+ * exempted by the composition root before this ordinary-submission policy is
+ * called. There is no global cap: unrelated submitters must not be able to make
+ * intake refuse everyone.
  */
 export function admissionDecision(open, { owner, submitter }) {
   if (owner && open.filter((item) => item.owner === owner).length >= MAX_INFLIGHT_PER_OWNER) {
