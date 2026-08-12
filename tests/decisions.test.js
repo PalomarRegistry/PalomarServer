@@ -1685,7 +1685,14 @@ test("recovery consumes its proof and reports an empty current list", async () =
   });
   const response = await callback(nonce);
   assert.equal(response.status, 200);
-  assert.match(await response.text(), /no submissions still in progress/i);
+  const body = await response.text();
+  assert.match(
+    body,
+    /<h1>There are no submissions still in progress for this GitHub account\.<\/h1>/,
+  );
+  assert.doesNotMatch(body, /Your submissions in progress/);
+  assert.doesNotMatch(body, /Here are your submissions in progress/);
+  assert.doesNotMatch(body, /<ul class="submission-list">/);
   assert.ok(!stub.store.has(pendingPath));
 });
 

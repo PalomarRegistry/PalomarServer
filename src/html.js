@@ -253,25 +253,28 @@ export function submissionsPage(
   env,
   { submissions = [], pending = null, nonce = null, problems = [] } = {},
 ) {
+  const emptyRecovery = !pending && submissions.length === 0;
+  const title = emptyRecovery
+    ? "There are no submissions still in progress for this GitHub account."
+    : "Your submissions in progress";
   const trouble = problems.length
     ? `<section class="disclosure problems-block" role="alert">
          <h2>The new submission has not started</h2>
          <ul class="problems">${problems.map((problem) => `<li>${escape(problem)}</li>`).join("")}</ul>
        </section>`
     : "";
-  const rows = submissions.length
-    ? submissions.map((submission) => {
-        const sameRepository = pending &&
-          String(submission.repository).toLowerCase() === String(pending.repository).toLowerCase();
-        const replacement = sameRepository && submission.replaceable
-          ? `<form method="post" action="/submission-choice">
+  const rows = submissions.map((submission) => {
+    const sameRepository = pending &&
+      String(submission.repository).toLowerCase() === String(pending.repository).toLowerCase();
+    const replacement = sameRepository && submission.replaceable
+      ? `<form method="post" action="/submission-choice">
                <input type="hidden" name="state" value="${escape(nonce)}">
                <input type="hidden" name="replace_id" value="${escape(submission.id)}">
                <button type="submit">Abandon this submission and start the new one</button>
                <p class="hint warning">This withdraws the earlier submission and cannot be undone.</p>
              </form>`
-          : "";
-        return `<li class="disclosure">
+      : "";
+    return `<li class="disclosure">
           <h2>${escape(submission.repository)}</h2>
           <dl class="details">
             <dt>Submission</dt><dd><code>${escape(submission.id)}</code></dd>
@@ -284,8 +287,7 @@ export function submissionsPage(
             : ""}
           ${replacement}
         </li>`;
-      }).join("")
-    : `<li>There are no submissions still in progress for this GitHub account.</li>`;
+  }).join("");
   const sameReplaceable = pending && submissions.some((submission) =>
     submission.replaceable &&
     String(submission.repository).toLowerCase() === String(pending.repository).toLowerCase()
@@ -303,7 +305,9 @@ export function submissionsPage(
          </form>
        </section>`
     : "";
-  const intro = pending
+  const intro = emptyRecovery
+    ? ""
+    : pending
     ? `<p class="lede">
          GitHub identified you. Before Palomar starts another submission, choose whether
          to return to work already in progress or continue with the new commit.
@@ -311,11 +315,11 @@ export function submissionsPage(
     : `<p class="lede">
          Here are your submissions in progress. Keep these links private.
        </p>`;
-  return page(env, "Your submissions in progress", `
-    <h1>Your submissions in progress</h1>
+  return page(env, title, `
+    <h1>${title}</h1>
     ${intro}
     ${trouble}
-    <ul class="submission-list">${rows}</ul>
+    ${rows ? `<ul class="submission-list">${rows}</ul>` : ""}
     ${continueNew}
     <p><a href="/">Return to the submission form</a></p>
   `);
