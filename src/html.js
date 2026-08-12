@@ -175,18 +175,9 @@ Identify every missing, malformed, obsolete, or inconsistent field. For each pro
                  ${values.authorization_relationship === "approved" ? "checked" : ""}>
           I have approval from a responsible author or maintainer
         </label>
-        <label class="choice">
-          <input type="radio" name="authorization_relationship" value="technical-test"
-                 ${values.authorization_relationship === "technical-test" ? "checked" : ""}>
-          I am a Palomar Technical Maintainer testing the workflow
-        </label>
         <p class="hint">
           If this repository is only a thin wrapper around another formalization,
           answer about that underlying repository, not the wrapper.
-        </p>
-        <p class="hint warning">
-          A technical-team test may exercise the full workflow without repository
-          write access, but it can never be registered.
         </p>
       </fieldset>
 
