@@ -50,6 +50,7 @@ import {
   REPAIR_INDEX_PATH,
   inflightOpen,
   isCurrentReview,
+  principalSubmissions,
   StateContractError,
   submitterReview,
   reviewerOpen,
@@ -545,6 +546,10 @@ async function ratePath(env, principalId) {
   return `index/rate/${await digest(`${pepper(env)}:${principalId}`)}.json`;
 }
 
+async function principalPath(env, principalId) {
+  return `index/principals/${await digest(`${pepper(env)}:${principalId}`)}.json`;
+}
+
 function principalOwns(record, principal) {
   return Number.isSafeInteger(principal?.id) &&
     record?.push_proof?.principal?.id === principal.id;
@@ -552,15 +557,12 @@ function principalOwns(record, principal) {
 
 async function openSubmissionsForPrincipal(env, principal) {
   try {
-    const principalPath = await ratePath(env, principal.id);
-    const principalIndex = await readRateState(env, principalPath);
+    const principalIndexPath = await principalPath(env, principal.id);
+    const principalIndex = await readState(env, principalIndexPath);
     if (principalIndex.sha === null) {
-      return { principalPath, principalIndex, queue: null, entries: [] };
+      return { principalIndexPath, principalIndex, queue: null, entries: [] };
     }
-    const indexed = atRatePath(
-      principalPath,
-      () => rateRecord(principalIndex.value).submissionIds,
-    );
+    const indexed = principalSubmissions(principalIndex.value, principalIndexPath);
     const queue = await readState(env, OPEN_INDEX_PATH);
     const ids = reviewerOpen(queue.value);
     const current = ids.filter((id) => indexed.includes(id));
@@ -577,11 +579,11 @@ async function openSubmissionsForPrincipal(env, principal) {
     for (const item of entries) {
       if (!principalOwns(item.entry.value, principal)) {
         throw new StateContractError(
-          `${principalPath} names a submission owned by another GitHub principal`,
+          `${principalIndexPath} names a submission owned by another GitHub principal`,
         );
       }
     }
-    return { principalPath, principalIndex, queue, entries };
+    return { principalIndexPath, principalIndex, queue, entries };
   } catch (error) {
     if (error instanceof StateContractError) throw error;
     if (error instanceof SyntaxError) {
@@ -644,7 +646,7 @@ async function issueRecoveryLinks(
     }));
     const paths = [...new Set([
       pendingPath,
-      ...(discovered.queue ? [OPEN_INDEX_PATH, discovered.principalPath] : []),
+      ...(discovered.queue ? [OPEN_INDEX_PATH, discovered.principalIndexPath] : []),
       ...issued.flatMap((item) => [
         item.path,
         item.tokenPath,
@@ -657,7 +659,7 @@ async function issueRecoveryLinks(
         files[pendingPath]?.sha !== pendingSha ||
         (discovered.queue && (
           files[OPEN_INDEX_PATH]?.sha !== discovered.queue.sha ||
-          files[discovered.principalPath]?.sha !== discovered.principalIndex.sha
+          files[discovered.principalIndexPath]?.sha !== discovered.principalIndex.sha
         ))
       ) {
         return { changes: [], message: "", result: { retry: true } };
@@ -767,6 +769,9 @@ async function admitSubmission(
   const rate = proof?.principal?.id && !testSubmission
     ? await ratePath(env, proof.principal.id)
     : null;
+  const principalIndexPath = proof?.principal?.id
+    ? await principalPath(env, proof.principal.id)
+    : null;
   const recordPath = statePath(id, "state.json");
   const tokenPath = `index/tokens/${tokenSha256}.json`;
   const replacedRecordPath = replaceId ? statePath(replaceId, "state.json") : null;
@@ -776,6 +781,7 @@ async function admitSubmission(
     OPEN_INDEX_PATH,
     recordPath,
     tokenPath,
+    ...(principalIndexPath ? [principalIndexPath] : []),
     ...(replacedRecordPath ? [replacedRecordPath] : []),
     ...(rate ? [rate] : []),
   ];
@@ -901,14 +907,11 @@ async function admitSubmission(
         };
       }
       let limit = { refused: false, interval: null, starts: null };
-      let submissionIds = [];
       if (rate) {
         const current = files[rate];
-        const parsed = current.sha === null
+        const value = current.sha === null
           ? null
-          : atRatePath(rate, () => rateRecord(current.value));
-        const value = parsed?.value ?? null;
-        submissionIds = parsed?.submissionIds ?? [];
+          : atRatePath(rate, () => rateRecord(current.value).value);
         limit = rateDecision(value, createdAtMs);
       }
       const admission = limit.refused
@@ -941,6 +944,16 @@ async function admitSubmission(
         { path: OPEN_INDEX_PATH, value: nextReviewer },
         { path: tokenPath, value: { id } },
       ];
+      if (principalIndexPath) {
+        const current = files[principalIndexPath];
+        const submissionIds = current.sha === null
+          ? []
+          : principalSubmissions(current.value, principalIndexPath);
+        changes.push({
+          path: principalIndexPath,
+          value: { schema_version: 1, submissions: [...submissionIds, id] },
+        });
+      }
       if (rate) {
         changes.push({
           path: rate,
@@ -949,7 +962,6 @@ async function admitSubmission(
             starts: limit.starts,
             interval: limit.interval,
             startedAt: record.created_at,
-            submissionIds: [...submissionIds, id],
             at: createdAtMs,
           }),
         });

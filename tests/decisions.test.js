@@ -1336,8 +1336,8 @@ function stubOAuth({
     .filter(([path, value]) =>
       path.endsWith("/state.json") && value?.push_proof?.principal?.id === 4242)
     .map(([, value]) => value.id);
-  if (indexed.length && !(PRINCIPAL_RATE_PATH in initial)) {
-    initial[PRINCIPAL_RATE_PATH] = principalRate(indexed);
+  if (indexed.length && !(PRINCIPAL_INDEX_PATH in initial)) {
+    initial[PRINCIPAL_INDEX_PATH] = { schema_version: 1, submissions: indexed };
   }
   const store = new Map(Object.entries(initial));
   const deleted = [];
@@ -1416,19 +1416,8 @@ const PENDING = {
   created_at: "2026-08-01T00:00:00Z",
 };
 
-const PRINCIPAL_RATE_PATH = `index/rate/${await digest(`${ENV.TOKEN_PEPPER}:4242`)}.json`;
-
-function principalRate(submissionIds = []) {
-  return {
-    schema_version: 1,
-    login: "someone",
-    starts: Math.max(1, submissionIds.length),
-    interval_seconds: 60,
-    last_start_at: "2026-08-01T00:00:00Z",
-    next_allowed_at: "2026-08-01T00:01:00Z",
-    submission_ids: submissionIds,
-  };
-}
+const PRINCIPAL_INDEX_PATH =
+  `index/principals/${await digest(`${ENV.TOKEN_PEPPER}:4242`)}.json`;
 
 function currentSubmission(overrides = {}) {
   return {
@@ -1516,6 +1505,10 @@ test("a submitter who can push is recorded as having proved it", async () => {
   assert.ok(record, "no submission record was written");
   assert.equal(record.value.push_verified, true);
   assert.equal(record.value.submitter, "someone");
+  assert.deepEqual(
+    written.find((item) => item.path === PRINCIPAL_INDEX_PATH).value.submissions,
+    [record.value.id],
+  );
   assert.equal(response.headers.get("set-cookie"), await clearedIntakeCookie(nonce));
 });
 
@@ -1539,6 +1532,7 @@ test("an active Technical Maintainer can run a marked test without push access",
   assert.equal(record.value.authorization.relationship, "technical-test");
   assert.equal(record.value.push_proof.method, "technical-team-test");
   assert.equal(record.value.push_proof.binding, "active-technical-team-membership");
+  assert.deepEqual(stub.store.get(PRINCIPAL_INDEX_PATH).submissions, [record.value.id]);
   assert.equal(
     [...stub.store.keys()].some((path) => path.startsWith("index/rate/")),
     false,
@@ -1784,7 +1778,6 @@ test("a refused replacement leaves the old submission and its slot intact", asyn
         interval_seconds: 60,
         last_start_at: "2026-08-12T00:00:00Z",
         next_allowed_at: "2099-01-01T00:00:00Z",
-        submission_ids: [old.id],
       },
     },
   });
@@ -2229,6 +2222,10 @@ async function agentRatePath() {
   return `index/rate/${await digest(`${ENV.TOKEN_PEPPER}:4242`)}.json`;
 }
 
+async function agentPrincipalPath() {
+  return `index/principals/${await digest(`${ENV.TOKEN_PEPPER}:4242`)}.json`;
+}
+
 test("an agent is told what to create, and the challenge is not the key", async () => {
   stubAgent();
   const begun = await agentSubmit();
@@ -2292,6 +2289,7 @@ test("a tag and a gist together admit a submission", async () => {
       "index/inflight.json",
       "index/open.json",
       `index/tokens/${record.value.token_sha256}.json`,
+      await agentPrincipalPath(),
       await agentRatePath(),
     ]),
   );

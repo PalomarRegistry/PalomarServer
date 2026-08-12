@@ -187,7 +187,8 @@ cannot request an automated metadata-repair pull request.
 submissions/<id>/state.json   # the record: status, source, authorization, run, consent
 submissions/<id>/review.json  # the private review, once delivered
 index/tokens/<digest>.json    # original or recovery token digest to submission id
-index/rate/<digest>.json      # backoff and private submission locator for one submitter
+index/principals/<digest>.json # private submission locator for one submitter
+index/rate/<digest>.json       # how long this submitter waits before starting again
 index/inflight.json           # admission slots, released by cron reconciliation
 index/open.json               # the reviewer's queue: added here, pruned there
 index/review-timing.json      # how long recent reviews took, for the estimate
@@ -217,7 +218,7 @@ Every other top-level field belongs to the reviewer: the server preserves it on
 append without interpreting its shape or timestamp precision. A missing or
 malformed queue is never replaced as though it were empty.
 
-Recovery first reads the authenticated principal's pepper-keyed rate record,
+Recovery first reads the authenticated principal's pepper-keyed locator,
 then intersects its submission ids with the current reviewer queue. It reads
 only that person's current records rather than fanning out across the shared
 queue, checks every stored numeric principal id, and atomically rotates their optional
@@ -225,6 +226,12 @@ queue, checks every stored numeric principal id, and atomically rotates their op
 work rather than registry history and retains at most one recovery pointer per
 submission. It neither invalidates the original pointer nor makes a login name
 an authority.
+
+Each locator contains exactly `schema_version: 1` and a unique `submissions`
+array. Admission appends to it atomically with the new submission; terminal ids
+may remain because recovery intersects it with `index/open.json` before reading
+records. Technical-team tests use the same locator without acquiring the
+ordinary submitter backoff that those tests deliberately bypass.
 
 The pure intake normalization and validation live in `src/intake-contract.js`;
 admission caps and rate-record projection live in `src/admission-contract.js`;
@@ -322,8 +329,7 @@ that fails full verification, or is withdrawn, leaves it where it is, because
 those are exactly the loops worth slowing down; ordinary metadata correction is
 not treated as abuse.
 
-The Server owns the rate document's current `schema_version: 1` contract. Its
-unique `submission_ids` are the private, pepper-keyed recovery locator. A
+The Server owns the rate document's current `schema_version: 1` contract. A
 present document records a GitHub `login`, positive integer `starts`, an integer
 `interval_seconds` of at least sixty, and canonical UTC-seconds
 `last_start_at` and `next_allowed_at` timestamps. The State repository's

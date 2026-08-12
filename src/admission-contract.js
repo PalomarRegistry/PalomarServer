@@ -10,7 +10,6 @@
 const MAX_INFLIGHT_PER_OWNER = 2;
 const MAX_INFLIGHT_PER_SUBMITTER = 1;
 const GITHUB_LOGIN = /^[A-Za-z0-9_-]{1,39}$/;
-const SUBMISSION_ID = /^[0-9a-z]{12}$/;
 const UTC_SECONDS = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
 const LAST_UTC_SECONDS_MS = Date.parse("9999-12-31T23:59:59Z");
 
@@ -81,13 +80,7 @@ export function rateRecord(value) {
   if (nextAllowed < lastStart) {
     fail("next_allowed_at must not precede last_start_at");
   }
-  const submissionIds = value.submission_ids ?? [];
-  if (!Array.isArray(submissionIds) ||
-      submissionIds.some((id) => typeof id !== "string" || !SUBMISSION_ID.test(id)) ||
-      new Set(submissionIds).size !== submissionIds.length) {
-    fail("submission_ids must be an array of unique submission ids when present");
-  }
-  return { value, nextAllowed, submissionIds };
+  return { value, nextAllowed };
 }
 
 /** Interpret the current rate record at one explicit instant. */
@@ -119,14 +112,7 @@ export function rateDecision(value, at = Date.now()) {
 }
 
 /** Project the rate record written after one accepted admission. */
-export function nextRateRecord({
-  login,
-  starts,
-  interval,
-  startedAt,
-  submissionIds = [],
-  at = Date.now(),
-}) {
+export function nextRateRecord({ login, starts, interval, startedAt, at = Date.now() }) {
   if (typeof login !== "string" || !GITHUB_LOGIN.test(login)) {
     fail("login must be a GitHub login");
   }
@@ -154,7 +140,6 @@ export function nextRateRecord({
     last_start_at: startedAt,
     next_allowed_at: new Date(nextAllowed).toISOString()
       .replace(/\.\d+Z$/, "Z"),
-    submission_ids: submissionIds,
   };
   rateRecord(result);
   return result;
