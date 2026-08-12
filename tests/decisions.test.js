@@ -1107,6 +1107,13 @@ test("guided metadata repair renders structured repeatable fields and safe prefi
     /shouldShowDiagnostic\(diagnostic, canRequestRepair \|\| repairInFlight, repairedFields\)/,
   );
   assert.match(script, /Apply the proposed patch manually/);
+  assert.match(script, /queued: "Preparing the pull request…"/);
+  assert.match(script, /setRepairStatus\("Preparing the pull request…", \{ busy: true \}\)/);
+  assert.match(script, /spinner\.setAttribute\("aria-hidden", "true"\)/);
+  assert.match(
+    script,
+    /\["queued", "preparing", "pr-open", "merged"\]\.includes/,
+  );
   assert.match(script, /diagnostics\.every/);
   assert.match(script, /profile_version: lastFailureProfileVersion/);
   assert.equal(
