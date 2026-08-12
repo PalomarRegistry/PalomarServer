@@ -1607,6 +1607,8 @@ test("a recovery sign-in issues fresh links to every current submission owned by
   assert.equal(response.status, 200);
   const body = await response.text();
   assert.match(body, /Your submissions in progress/);
+  assert.match(body, /Keep these links private/);
+  assert.doesNotMatch(body, /replaces only the previous link issued through recovery/);
   assert.match(body, new RegExp(old.id));
   assert.match(body, /href="\/s#[0-9a-f]{64}"/);
   assert.doesNotMatch(body, new RegExp(other.id));
