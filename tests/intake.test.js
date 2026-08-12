@@ -42,13 +42,15 @@ test("the introduction summarizes the submission requirements", () => {
 
 test("the self-check prompt names every strict Palomar metadata section", () => {
   for (const section of [
-    "project", "repository", "classification", "sources", "automation", "review",
+    "project", "classification", "sources", "automation", "review",
   ]) assert.match(form, new RegExp(`top-level sections:[\\s\\S]*${section}`));
   for (const requirement of [
-    "responsible_maintainers", "repository.role", "substantive_formalization",
+    "responsible_maintainers", "substantive_formalization",
     "classification.arxiv", "classification.msc2020", "automation.methods",
     "review.status",
   ]) assert.match(form, new RegExp(requirement.replace(".", "\\.")));
+  assert.match(form, /omit repository for an ordinary project/);
+  assert.match(form, /substantive development by default/);
 });
 
 test("the disclosure says what is recorded and when it becomes public", () => {
@@ -361,10 +363,10 @@ test("the status page keeps the key it tells the submitter to bookmark", async (
 });
 
 test("the sign-in is described as it will actually behave", () => {
-  // Someone already signed in to GitHub sees nothing happen, so promising
-  // they will be asked describes a step they never see.
+  // Being signed in and having authorized this OAuth app are different states.
   assert.match(form, /You may be asked to sign in/);
-  assert.match(form, /already signed\s+in to GitHub you will not see anything/);
+  assert.match(form, /already signed[\s\S]*authorize Palomar on your first submission/);
+  assert.doesNotMatch(form, /you will not see anything/);
   assert.doesNotMatch(form, /You will be asked to sign in/);
 });
 

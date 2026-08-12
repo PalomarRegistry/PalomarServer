@@ -1054,6 +1054,14 @@ test("verification failures show actionable public annotations and repeat the ru
   assert.match(script, /\.slice\(0, 3\)/);
 });
 
+test("structured failures do not repeat an identical summary as its explanation", async () => {
+  const script = await readFile(new URL("../public/status.js", import.meta.url), "utf8");
+  assert.match(
+    script,
+    /diagnostic\.explanation\s*&&\s*diagnostic\.explanation\s*!==\s*diagnostic\.summary/,
+  );
+});
+
 test("every status-script element is present in the status page", async () => {
   const script = await readFile(new URL("../public/status.js", import.meta.url), "utf8");
   const { statusPage } = await import("../src/html.js");
