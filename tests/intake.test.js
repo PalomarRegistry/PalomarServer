@@ -164,8 +164,9 @@ test("the form still works without the script", () => {
   assert.match(form, /<form method="get" action="\/submissions">/);
   assert.match(form, /id="repository" name="repository" required/);
   assert.match(form, /name="authorization_relationship" value="maintainer" required/);
-  assert.match(form, /name="authorization_relationship" value="technical-test"/);
-  assert.match(form, /technical-team test may exercise the full workflow/);
+  assert.doesNotMatch(form, /name="authorization_relationship" value="technical-test"/);
+  assert.doesNotMatch(form, /I am a Palomar Technical Maintainer testing the workflow/);
+  assert.doesNotMatch(form, /technical-team test may exercise the full workflow/);
 });
 
 test("the policy reaches exactly the two origins the form looks things up on", async () => {
