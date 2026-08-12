@@ -318,15 +318,31 @@ test("the repository field offers public repositories once its owner is complete
   assert.deepEqual(publicRepositorySuggestions(rows, "owner/", 1), ["Owner/Proof"]);
   assert.deepEqual(publicRepositorySuggestions(rows, "owner", 100), []);
 
-  // One bounded request is cached per owner. Subsequent keystrokes only
-  // rebuild the native datalist, while a different owner cancels stale I/O.
+  // One bounded request is cached per owner. Suffix keystrokes reset one idle
+  // timer and filter the cached rows; they never request a partial repository.
   assert.match(script, /repositorySuggestionCache = new Map\(\)/);
   assert.match(script, /users\/\$\{encodeURIComponent\(owner\)\}\/repos\?type=owner&sort=full_name&per_page=100/);
+  assert.match(script, /REPOSITORY_SUGGESTION_DELAY = 400/);
+  assert.match(script, /repositorySuggestionTimer = setTimeout\(/);
   assert.match(script, /new AbortController\(\)/);
   assert.match(script, /repositorySuggestionRequest\?\.controller\.abort\(\)/);
-  assert.match(script, /repositorySuggestionCache\.set\(key, Array\.isArray\(rows\) \? rows : \[\]\)/);
+  assert.match(script, /repositorySuggestionCache\.set\(key, Array\.isArray\(rows\) \? rows : rows \?\? "unavailable"\)/);
   assert.match(script, /publicRepositorySuggestions\(rows, repository\.input\.value\)/);
   assert.match(script, /repository\.input\?\.addEventListener\("input", \(\) => \{\s+updateRepositorySuggestions\(\)/);
+  assert.doesNotMatch(script, /githubJson\(`repos\/\$\{name\}`\)/);
+});
+
+test("GitHub convenience checks cache reads and stop at a rate limit", async () => {
+  const script = await readFile(new URL("../public/intake.js", import.meta.url), "utf8");
+
+  assert.match(script, /githubJsonCache = new Map\(\)/);
+  assert.match(script, /githubJsonCache\.set\(path, request\)/);
+  assert.match(script, /githubJsonCache\.set\(path, result\)/);
+  assert.match(script, /githubRetryAt > Date\.now\(\)/);
+  assert.match(script, /headers\.get\("retry-after"\)/);
+  assert.match(script, /headers\.get\("x-ratelimit-reset"\)/);
+  assert.match(script, /GitHub is rate-limiting this browser/);
+  assert.match(script, /tree = await githubJson\(`repos\/\$\{name\}\/git\/trees\/\$\{sha\}\?recursive=1`\)/);
 });
 
 test("the form still works without the script", () => {
