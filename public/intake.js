@@ -16,6 +16,8 @@
  */
 
 import {
+  comparatorConfigurationPaths,
+  comparatorPathSuggestions,
   defaultCommitSuggestion,
   exactRegistration,
   locateProject,
@@ -332,6 +334,38 @@ const layoutMessage = document.getElementById("layout-message");
 const projectPath = document.getElementById("project_path");
 const configPath = comparatorConfig.input;
 const metadataPath = document.getElementById("formalization_metadata_path");
+const comparatorSuggestionList = document.getElementById("comparator-config-suggestions");
+const DEFAULT_COMPARATOR_PATH = "comparator.json";
+let comparatorPaths = [DEFAULT_COMPARATOR_PATH];
+
+/**
+ * Keep only a small matching window in the DOM. The complete candidate list
+ * stays in memory, so typing can reach every path without making a large
+ * repository's datalist slow down the input itself.
+ */
+function renderComparatorSuggestions() {
+  if (!comparatorSuggestionList) return;
+  const fragment = document.createDocumentFragment();
+  for (const path of comparatorPathSuggestions(comparatorPaths, configPath?.value)) {
+    const option = document.createElement("option");
+    option.value = path;
+    fragment.append(option);
+  }
+  comparatorSuggestionList.replaceChildren(fragment);
+}
+
+function resetComparatorSuggestions() {
+  comparatorPaths = [DEFAULT_COMPARATOR_PATH];
+  renderComparatorSuggestions();
+}
+
+function setComparatorSuggestions(entries) {
+  const found = comparatorConfigurationPaths(entries);
+  comparatorPaths = found.includes(DEFAULT_COMPARATOR_PATH)
+    ? found
+    : [DEFAULT_COMPARATOR_PATH, ...found];
+  renderComparatorSuggestions();
+}
 
 let comparatorPathToken = 0;
 let comparatorPathTimer;
@@ -422,15 +456,22 @@ function say(text, found) {
  */
 function autofill(input, value) {
   if (!input) return;
+  // Once the submitter interacts with this field, even clearing it is a
+  // choice. An asynchronous tree response must never take ownership back.
+  if (input === configPath && input.dataset.userOwned === "true") return;
   const mine = input.dataset.suggested !== undefined && input.value === input.dataset.suggested;
   if (input.value !== "" && !mine) return;
   input.value = value;
   if (value) input.dataset.suggested = value;
   else delete input.dataset.suggested;
   if (input === projectPath || input === configPath) scheduleRegistrationLookup();
-  if (input === configPath) scheduleComparatorPathLookup();
+  if (input === configPath) {
+    renderComparatorSuggestions();
+    scheduleComparatorPathLookup();
+  }
   if (input === commit.input) {
     checkedCommit = null;
+    invalidateLayout();
     scheduleRegistrationLookup();
     scheduleComparatorPathLookup();
   }
@@ -660,6 +701,7 @@ repository.input?.addEventListener("input", () => {
   checkedRepository = null;
   checkedDefaultHead = null;
   checkedCommit = null;
+  invalidateLayout();
   registrationToken += 1;
   clearAutomaticExistingId();
   scheduleRegistrationLookup();
@@ -677,6 +719,7 @@ repository.input?.addEventListener("input", () => {
 // repository. A changed repository clears this flag above.
 commit.input?.addEventListener("input", () => {
   checkedCommit = null;
+  invalidateLayout();
   commit.input.dataset.defaultDeclined = "true";
   if (commit.input.dataset.suggested !== commit.input.value) {
     delete commit.input.dataset.suggested;
@@ -696,13 +739,24 @@ commit.input?.addEventListener("input", () => {
  * the paths again regardless.
  */
 let layoutToken = 0;
+let describedLayout = null;
+
+function invalidateLayout() {
+  layoutToken += 1;
+  describedLayout = null;
+  resetComparatorSuggestions();
+  clearSuggestions();
+}
 
 async function describeLayout(name, sha) {
   if (!layout) return;
+  if (describedLayout?.name === name && describedLayout.sha === sha) return;
   // Every exit below is a change of subject: whatever is filled in describes
   // the previous commit, and must go before anything is said about this one.
   const mine = ++layoutToken;
   const current = () => mine === layoutToken;
+  describedLayout = null;
+  resetComparatorSuggestions();
   clearSuggestions();
   if (!name || !sha) return;
 
@@ -726,6 +780,8 @@ async function describeLayout(name, sha) {
     layout.open = true;
     return say("This repository is too large for GitHub to list in one request, so the layout was not checked. Fill these in if the project is not at the root.");
   }
+  describedLayout = { name, sha };
+  setComparatorSuggestions(tree.tree);
   const where = locateProject(tree.tree);
   if (where.found) autofill(configPath, where.config);
 
@@ -763,10 +819,14 @@ for (const input of [projectPath, metadataPath]) {
 
 for (const input of [projectPath, configPath]) {
   input?.addEventListener("input", () => {
+    if (input === configPath) input.dataset.userOwned = "true";
     registrationToken += 1;
     clearAutomaticExistingId();
     scheduleRegistrationLookup();
-    if (input === configPath) scheduleComparatorPathLookup();
+    if (input === configPath) {
+      renderComparatorSuggestions();
+      scheduleComparatorPathLookup();
+    }
   });
 }
 

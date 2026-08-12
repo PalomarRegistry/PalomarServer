@@ -227,6 +227,65 @@ test("the Comparator path check reports a missing file without blocking submissi
   assert.doesNotMatch(script, /setCustomValidity/);
 });
 
+test("the Comparator path field filters every JSON file without taking over the input", async () => {
+  const script = await readFile(new URL("../public/intake.js", import.meta.url), "utf8");
+  const {
+    comparatorConfigurationPaths,
+    comparatorPathSuggestions,
+  } = await import("../public/normalize.js");
+
+  assert.match(form, /id="comparator_config_path" name="comparator_config_path" required\s+autocomplete="off" list="comparator-config-suggestions"/);
+  assert.match(form, /<datalist id="comparator-config-suggestions"><option value="comparator\.json"><\/option><\/datalist>/);
+  assert.match(form, /Type a repository-relative path or choose a JSON file found at this commit/);
+  assert.match(form, /<code>comparator\.json<\/code> is available immediately as the conventional default/);
+  assert.match(form, /type to narrow the suggestions, or continue typing any other path/);
+
+  const entries = [
+    "lake-manifest.json",
+    "proof/other.json",
+    "proof/Audit/settings.json",
+    ".vscode/settings.json",
+    "examples/second/comparator.json",
+    "proof/my-comparator-config.json",
+    "bad\\path.json",
+    "README.md",
+    ".lake/packages/dependency/comparator.json",
+    { path: "linked/comparator.json", type: "blob", mode: "120000" },
+    { path: "a-directory.json", type: "tree", mode: "040000" },
+  ];
+  const paths = comparatorConfigurationPaths(entries);
+  assert.deepEqual(paths, [
+    "examples/second/comparator.json",
+    "proof/my-comparator-config.json",
+    "proof/Audit/settings.json",
+    "proof/other.json",
+    ".vscode/settings.json",
+    "lake-manifest.json",
+  ]);
+  assert.deepEqual(comparatorPathSuggestions(paths, "PROOF/"), [
+    "proof/my-comparator-config.json",
+    "proof/Audit/settings.json",
+    "proof/other.json",
+  ]);
+  assert.deepEqual(comparatorPathSuggestions(paths, "json", 2), paths.slice(0, 2));
+  assert.deepEqual(comparatorPathSuggestions(paths, "json", -1), []);
+
+  // The tree enriches only the datalist. It never writes a suggestion into
+  // the editable field, and path validation remains on its independent timer.
+  const render = script.slice(
+    script.indexOf("function renderComparatorSuggestions"),
+    script.indexOf("function resetComparatorSuggestions"),
+  );
+  assert.match(render, /option\.value = path/);
+  assert.doesNotMatch(render, /configPath\.value\s*=/);
+  assert.match(script, /input === configPath && input\.dataset\.userOwned === "true"/);
+  assert.match(script, /if \(input === configPath\) input\.dataset\.userOwned = "true"/);
+  assert.match(script, /describedLayout\?\.name === name && describedLayout\.sha === sha/);
+  assert.match(script, /function invalidateLayout\(\)/);
+  assert.match(script, /setComparatorSuggestions\(tree\.tree\);\s+const where = locateProject/);
+  assert.match(script, /scheduleComparatorPathLookup\(\)/);
+});
+
 test("the repository field offers public repositories once its owner is complete", async () => {
   const script = await readFile(new URL("../public/intake.js", import.meta.url), "utf8");
   const { publicRepositorySuggestions, repositoryQuery } = await import("../public/normalize.js");

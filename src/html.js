@@ -135,12 +135,16 @@ Identify every missing, malformed, or inconsistent field. For each problem, name
 
       <label for="comparator_config_path">Comparator configuration</label>
       <input id="comparator_config_path" name="comparator_config_path" required
-             autocomplete="off" aria-describedby="comparator_config_path-hint"
+             autocomplete="off" list="comparator-config-suggestions"
+             aria-describedby="comparator_config_path-hint"
              placeholder="comparator.json" value="${escape(values.comparator_config_path)}">
+      <datalist id="comparator-config-suggestions"><option value="comparator.json"></option></datalist>
       <p class="hint" id="comparator_config_path-hint">
         <span class="field-status" id="comparator_config_path-status" aria-hidden="true"></span>
-        <span id="comparator_config_path-message">A repository-relative path to exactly one Comparator JSON file. One
-        Palomar entry records this configuration and every declaration it
+        <span id="comparator_config_path-message">Type a repository-relative path or choose a JSON file found at this commit.
+        <code>comparator.json</code> is available immediately as the conventional default;
+        type to narrow the suggestions, or continue typing any other path.
+        One Palomar entry records this configuration and every declaration it
         selects. Submit another configuration separately.</span>
       </p>
 
