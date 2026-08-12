@@ -47,7 +47,8 @@ export function intakeForm(env, values = {}, problems = []) {
     <p class="lede"><strong>Before submitting, check that:</strong></p>
     <ul>
       <li>The result has credible research interest and a clear informal explanation.</li>
-      <li>A public, pinned commit contains an auditable Challenge, matching Solution,
+      <li>A public, pinned commit contains an auditable <code>Challenge.lean</code>,
+          matching <code>Solution.lean</code>,
           <a href="https://github.com/leanprover/comparator">Comparator configuration</a>,
           <a href="https://github.com/mathlib-initiative/formalization.yaml"><code>formalization.yaml</code></a>,
           and a licence.</li>
