@@ -1352,7 +1352,7 @@ function stubOAuth({
   push,
   files = {},
   login = "someone",
-  membership = "active",
+  membership = null,
   membershipStatus = null,
   repository = undefined,
   inflight = { open: [] },
@@ -1542,6 +1542,54 @@ test("a submitter who can push is recorded as having proved it", async () => {
   assert.equal(response.headers.get("set-cookie"), await clearedIntakeCookie(nonce));
 });
 
+test("an active Technical Maintainer's ordinary submission bypasses account limits", async () => {
+  const nonce = "a".repeat(64);
+  const ratePathName = await agentRatePath();
+  const rate = {
+    schema_version: 1,
+    login: "someone",
+    starts: 6,
+    interval_seconds: 1920,
+    last_start_at: "2026-08-12T00:00:00Z",
+    next_allowed_at: "2099-01-01T00:00:00Z",
+  };
+  const stub = stubOAuth({
+    push: true,
+    membership: "active",
+    inflight: { open: [
+      {
+        id: "ownerslot001",
+        owner: "example",
+        submitter: "someone",
+        at: "2026-08-01T00:00:00Z",
+      },
+      {
+        id: "ownerslot002",
+        owner: "example",
+        submitter: "somebody-else",
+        at: "2026-08-01T00:00:00Z",
+      },
+    ] },
+    files: {
+      [`pending/${await digest(nonce)}.json`]: PENDING,
+      [ratePathName]: rate,
+    },
+  });
+
+  const response = await callback(nonce);
+
+  assert.equal(response.status, 303);
+  const record = stub.written.find((item) => item.path.endsWith("state.json"));
+  assert.equal(record.value.authorization.relationship, "maintainer");
+  assert.equal(record.value.push_proof.method, "oauth");
+  assert.equal(record.value.push_proof.technical_maintainer, true);
+  assert.deepEqual(
+    stub.store.get("index/inflight.json").open.map((item) => item.id),
+    ["ownerslot001", "ownerslot002", record.value.id],
+  );
+  assert.deepEqual(stub.store.get(ratePathName), rate, "the maintainer backoff was modified");
+});
+
 test("an active Technical Maintainer can run a marked test without push access or rate limits", async () => {
   const nonce = "7".repeat(64);
   const pending = {
@@ -1576,6 +1624,7 @@ test("an active Technical Maintainer can run a marked test without push access o
   assert.equal(record.value.authorization.relationship, "technical-test");
   assert.equal(record.value.push_proof.method, "technical-team-test");
   assert.equal(record.value.push_proof.binding, "active-technical-team-membership");
+  assert.equal(record.value.push_proof.technical_maintainer, true);
   assert.deepEqual(stub.store.get(PRINCIPAL_INDEX_PATH).submissions, [record.value.id]);
   assert.deepEqual(
     stub.store.get("index/inflight.json").open.map((item) => item.id),
@@ -1870,6 +1919,29 @@ test("selecting the test exception does not trust a nonmember", async () => {
   assert.match(await response.text(), /This submission is not authorized/);
   assert.equal(stub.written.filter((item) => item.path.endsWith("state.json")).length, 0);
   assert.ok(!stub.store.has(`pending/${await digest(nonce)}.json`));
+});
+
+test("a membership-provider failure does not silently throttle an ordinary maintainer", async () => {
+  const nonce = "d".repeat(64);
+  const pendingPath = `pending/${await digest(nonce)}.json`;
+  const stub = stubOAuth({
+    push: true,
+    membershipStatus: 503,
+    files: { [pendingPath]: PENDING },
+  });
+  const originalError = console.error;
+  console.error = () => {};
+  let response;
+  try {
+    response = await callback(nonce);
+  } finally {
+    console.error = originalError;
+  }
+
+  assert.equal(response.status, 503);
+  assert.match(await response.text(), /could not check Technical Maintainer membership/);
+  assert.ok(!stub.store.has(pendingPath));
+  assert.equal(stub.written.filter((item) => item.path.endsWith("state.json")).length, 0);
 });
 
 test("pending membership and provider failure both refuse and consume a technical test", async () => {
@@ -2926,7 +2998,7 @@ test("a challenge cannot be spent twice", async () => {
   assert.equal(second.status, 404, "a spent challenge admitted a second submission");
 });
 
-test("a browser sign-in cannot be completed as an agent submission", async () => {
+test("a browser sign-in requests team visibility and cannot be completed as an agent", async () => {
   // The two intakes prove different things and record different bindings.
   // A pending record must be redeemed by the path that created it.
   const stub = stubAgent();
@@ -2940,7 +3012,10 @@ test("a browser sign-in cannot be completed as an agent submission", async () =>
   );
   const pending = stub.written.find((item) => item.path.startsWith("pending/"));
   assert.equal(pending.value.method, "oauth");
-  assert.equal(new URL(response.headers.get("location")).searchParams.get("scope"), "read:user");
+  assert.equal(
+    new URL(response.headers.get("location")).searchParams.get("scope"),
+    "read:user read:org",
+  );
 });
 
 test("a browser technical test requests team visibility and the agent path refuses it", async () => {
