@@ -318,18 +318,25 @@ test("the repository field offers public repositories once its owner is complete
   assert.deepEqual(publicRepositorySuggestions(rows, "owner/", 1), ["Owner/Proof"]);
   assert.deepEqual(publicRepositorySuggestions(rows, "owner", 100), []);
 
-  // One bounded request is cached per owner. Suffix keystrokes reset one idle
-  // timer and filter the cached rows; they never request a partial repository.
+  // One bounded request is cached per owner for autocomplete. Once a complete
+  // repository has been quiet for 400 ms, it is queried exactly: absence from
+  // the owner's first 100 rows is not evidence that it does not exist, and the
+  // exact response supplies the default branch for commit autofill.
   assert.match(script, /repositorySuggestionCache = new Map\(\)/);
   assert.match(script, /users\/\$\{encodeURIComponent\(owner\)\}\/repos\?type=owner&sort=full_name&per_page=100/);
-  assert.match(script, /REPOSITORY_SUGGESTION_DELAY = 400/);
+  assert.match(script, /REPOSITORY_LOOKUP_DELAY = 400/);
   assert.match(script, /repositorySuggestionTimer = setTimeout\(/);
   assert.match(script, /new AbortController\(\)/);
   assert.match(script, /repositorySuggestionRequest\?\.controller\.abort\(\)/);
   assert.match(script, /repositorySuggestionCache\.set\(key, Array\.isArray\(rows\) \? rows : rows \?\? "unavailable"\)/);
   assert.match(script, /publicRepositorySuggestions\(rows, repository\.input\.value\)/);
-  assert.match(script, /repository\.input\?\.addEventListener\("input", \(\) => \{\s+updateRepositorySuggestions\(\)/);
-  assert.doesNotMatch(script, /githubJson\(`repos\/\$\{name\}`\)/);
+  assert.match(script, /exactRepositoryCache = new Map\(\)/);
+  assert.match(script, /exactRepositoryTimer = setTimeout\(async \(\) => \{/);
+  assert.match(script, /data = await githubJson\(`repos\/\$\{name\}`\)/);
+  assert.match(script, /function repositoryData\(name\)[\s\S]*exactRepositoryCache\.has\(key\)/);
+  assert.match(script, /exactRepositoryCache\.set\(key, data\);[\s\S]*checkedRepository = null;[\s\S]*checkRepository\(repository\)/);
+  assert.doesNotMatch(script, /first 100 results|not-listed/);
+  assert.match(script, /repository\.input\?\.addEventListener\("input", \(\) => \{\s+updateRepositorySuggestions\(\);\s+updateExactRepositoryLookup\(\)/);
 });
 
 test("GitHub convenience checks cache reads and stop at a rate limit", async () => {

@@ -205,7 +205,9 @@ const repositorySuggestionList = document.getElementById("repository-suggestions
 const repositorySuggestionCache = new Map();
 let repositorySuggestionRequest = null;
 let repositorySuggestionTimer;
-const REPOSITORY_SUGGESTION_DELAY = 400;
+const exactRepositoryCache = new Map();
+let exactRepositoryTimer;
+const REPOSITORY_LOOKUP_DELAY = 400;
 
 function renderRepositorySuggestions() {
   if (!repositorySuggestionList || !repository.input) return;
@@ -293,7 +295,47 @@ function updateRepositorySuggestions() {
         repositorySuggestionRequest?.key !== key) {
       void loadRepositorySuggestions(current.owner);
     }
-  }, REPOSITORY_SUGGESTION_DELAY);
+  }, REPOSITORY_LOOKUP_DELAY);
+}
+
+/**
+ * Look up the completed repository itself after typing settles.
+ *
+ * The owner's repository list exists only to populate the datalist. GitHub
+ * caps that list at 100 rows, so absence from it says nothing about whether a
+ * completed owner/name exists. The exact response is also what supplies the
+ * default branch used by commit autofill.
+ */
+function updateExactRepositoryLookup() {
+  const name = normalizeRepository(repository.input?.value);
+  clearTimeout(exactRepositoryTimer);
+  if (!name) return;
+  const key = name.toLowerCase();
+  const cached = exactRepositoryCache.get(key);
+  if (cached === "unavailable" ||
+      (cached === "rate-limited" && githubRetryAt <= Date.now())) {
+    exactRepositoryCache.delete(key);
+  }
+  if (exactRepositoryCache.has(key)) return;
+  exactRepositoryTimer = setTimeout(async () => {
+    exactRepositoryTimer = null;
+    const current = normalizeRepository(repository.input?.value);
+    if (current?.toLowerCase() !== key || exactRepositoryCache.has(key)) return;
+    exactRepositoryCache.set(key, "loading");
+    let data;
+    try {
+      data = await githubJson(`repos/${name}`);
+    } catch {
+      data = "unavailable";
+    }
+    exactRepositoryCache.set(key, data);
+    if (normalizeRepository(repository.input?.value)?.toLowerCase() === key) {
+      // A quick positive answer from the autocomplete list must not mask the
+      // authoritative exact response (including a 404 or renamed repository).
+      checkedRepository = null;
+      checkRepository(repository);
+    }
+  }, REPOSITORY_LOOKUP_DELAY);
 }
 
 function cachedSuggestedRepository(name) {
@@ -304,9 +346,22 @@ function cachedSuggestedRepository(name) {
   if (!Array.isArray(rows)) return rows;
   const found = rows.find((row) => row?.private === false &&
     normalizeRepository(row.full_name)?.toLowerCase() === name.toLowerCase());
-  // GitHub caps this response at 100. Absence from a full page is not evidence
-  // that the repository does not exist, and must not trigger a suffix lookup.
-  return found ?? (rows.length === 100 ? "not-listed" : null);
+  return found ?? null;
+}
+
+function repositoryData(name) {
+  if (checkedRepository?.name === name) return checkedRepository.data;
+  const key = name.toLowerCase();
+  if (exactRepositoryCache.has(key)) {
+    const exact = exactRepositoryCache.get(key);
+    if (exact !== "loading") return exact;
+  }
+  // A row in the autocomplete list may give a quick positive answer while
+  // the exact request is in flight. A negative list result is never evidence.
+  const suggested = cachedSuggestedRepository(name);
+  return suggested && !["rate-limited", "unavailable"].includes(suggested)
+    ? suggested
+    : undefined;
 }
 
 function offerDefaultCommit(parts, name) {
@@ -329,18 +384,15 @@ function offerDefaultCommit(parts, name) {
 const checkRepository = latest(async (settle, parts) => {
   const name = normalizeRepository(parts.input.value);
   if (!name) return settle("", DEFAULT.repository);
-  const data = checkedRepository?.name === name
-    ? checkedRepository.data
-    : cachedSuggestedRepository(name);
-  if (data === undefined) return settle("checking", `Loading ${name.split("/")[0]}'s repositories…`);
+  const data = repositoryData(name);
+  if (data === undefined || data === "loading") {
+    return settle("checking", `Looking for ${name}…`);
+  }
   if (data === "rate-limited") {
-    return settle("", githubRateLimitMessage("its repositories"));
+    return settle("", githubRateLimitMessage("that repository"));
   }
   if (data === "unavailable") {
-    return settle("", "GitHub's repository list is unavailable just now. You can still enter the repository and submit it.");
-  }
-  if (data === "not-listed") {
-    return settle("", "That repository is not in GitHub's first 100 results for this owner. You can still enter it and submit it.");
+    return settle("", "GitHub's repository lookup is unavailable just now. You can still enter the repository and submit it.");
   }
   if (!data) return settle("missing", `No public repository called ${name}.`);
   if (data.private) return settle("missing", `${name} is private; Palomar indexes public repositories.`);
@@ -792,6 +844,7 @@ function scheduleRegistrationLookup() {
 // submitter typed or edited is never discarded.
 repository.input?.addEventListener("input", () => {
   updateRepositorySuggestions();
+  updateExactRepositoryLookup();
   checkedRepository = null;
   checkedDefaultHead = null;
   checkedCommit = null;
@@ -1002,7 +1055,11 @@ syncApproval();
 
 // Values restored by the browser, or filled in after a rejected submission,
 // deserve the same checks as ones typed now.
-if (repository.input?.value) checkRepository(repository);
+if (repository.input?.value) {
+  updateRepositorySuggestions();
+  updateExactRepositoryLookup();
+  checkRepository(repository);
+}
 if (commit.input?.value) checkCommit(commit);
 if (configPath?.value) scheduleComparatorPathLookup();
 if (existingId.input?.value) checkExistingId(existingId);
