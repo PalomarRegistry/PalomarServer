@@ -120,7 +120,7 @@ export async function intakeCookie(nonce, binding, { clear = false } = {}) {
   const attributes = "Path=/; HttpOnly; Secure; SameSite=Lax";
   return clear
     ? `${name}=; ${attributes}; Max-Age=0`
-    : `${name}=${binding}; ${attributes}; Max-Age=900`;
+    : `${name}=${binding}; ${attributes}; Max-Age=3600`;
 }
 
 /** Parse the exact binding named by an already validated lowercase-hex nonce digest. */

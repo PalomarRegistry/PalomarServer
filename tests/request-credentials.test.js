@@ -91,7 +91,7 @@ test("an intake cookie is scoped to one nonce and clears with the same attribute
 
   const active = await intakeCookie(nonce, binding);
   const cleared = await intakeCookie(nonce, null, { clear: true });
-  assert.equal(active, `${name}=${binding}; ${attributes}; Max-Age=900`);
+  assert.equal(active, `${name}=${binding}; ${attributes}; Max-Age=3600`);
   assert.equal(cleared, `${name}=; ${attributes}; Max-Age=0`);
   assert.doesNotMatch(active, /(?:^|;)\s*Domain=/i);
   assert.doesNotMatch(cleared, /(?:^|;)\s*Domain=/i);

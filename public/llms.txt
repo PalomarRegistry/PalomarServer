@@ -89,6 +89,11 @@ equivalent.
 Treat `access_token` as a credential. It reads the private review and it can
 register permanently.
 
+If that token is lost, do not drive the browser recovery sign-in. Hand control
+back to your user: `/submissions` (the submission form's **Find my
+submissions** action) lets them authenticate with GitHub and receive a fresh
+link while the submission is still in progress.
+
 ## After that, monitoring is yours
 
 With the token you can drive the rest through the HTTPS API. Send it as a

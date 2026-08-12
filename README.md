@@ -47,15 +47,23 @@ submitted the repository and that an account named itself, which are not
 provably the same account, so the record carries `separately-attested` rather
 than `same-account` and the two are not treated as equivalent anywhere.
 
-Afterwards the only way back to a submission is its access token. On the agent
-path there is no link to put it in, so `/api/verify` returns it in the response
-body. On the browser path it is carried after the `#`, because a browser leaves
-that part out of the requests it makes, so it does not reach an access log or a
+An access token is the ordinary way back to a submission. On the agent path
+there is no link to put it in, so `/api/verify` returns it in the response body.
+On the browser path it is carried after the `#`, because a browser leaves that
+part out of the requests it makes, so it does not reach an access log or a
 `Referer` header.
 The status page does send it to Palomar once, in the body of a `POST`, to
 exchange it for a short-lived cookie. Saying it is "never sent to a server"
 would be wrong, and the page does not say so: it says to treat the link like a
 password, which is the part a submitter can act on.
+
+Losing the link is not permanent while a submission remains in the open-work
+queue. `/submissions`, also linked from the submission form, starts a separate
+recovery sign-in. GitHub identifies the same numeric account id recorded in the
+original proof; Palomar then shows
+every matching open submission and rotates one recovery token for each. The
+original token remains valid. Numeric identity, not a reusable login, is the
+authority: GitHub logins can be renamed and later reused.
 
 For a completed verification failure, the browser reads the public run's job
 and check annotations directly from `api.github.com` so it can show the actual
@@ -178,13 +186,14 @@ cannot request an automated metadata-repair pull request.
 ```text
 submissions/<id>/state.json   # the record: status, source, authorization, run, consent
 submissions/<id>/review.json  # the private review, once delivered
-index/tokens/<digest>.json    # access token digest to submission id
-index/rate/<digest>.json      # how long this submitter waits before starting again
+index/tokens/<digest>.json    # original or recovery token digest to submission id
+index/rate/<digest>.json      # backoff and private submission locator for one submitter
 index/inflight.json           # admission slots, released by cron reconciliation
 index/open.json               # the reviewer's queue: added here, pruned there
 index/review-timing.json      # how long recent reviews took, for the estimate
-pending/<digest>.json         # a one-time intake nonce, consumed at the OAuth
-                              #   callback or at /api/verify, swept after an hour
+pending/<digest>.json         # a one-time intake nonce; an OAuth submission may
+                              #   retain its proved identity until the choice,
+                              #   and abandoned records are swept after an hour
 ```
 
 `index/inflight.json` has exactly one top-level field, `open`, and no versioned
@@ -207,6 +216,15 @@ remain independent controls.
 Every other top-level field belongs to the reviewer: the server preserves it on
 append without interpreting its shape or timestamp precision. A missing or
 malformed queue is never replaced as though it were empty.
+
+Recovery first reads the authenticated principal's pepper-keyed rate record,
+then intersects its submission ids with the current reviewer queue. It reads
+only that person's current records rather than fanning out across the shared
+queue, checks every stored numeric principal id, and atomically rotates their optional
+`recovery_token_sha256` pointers. Repeated recovery therefore costs current
+work rather than registry history and retains at most one recovery pointer per
+submission. It neither invalidates the original pointer nor makes a login name
+an authority.
 
 The pure intake normalization and validation live in `src/intake-contract.js`;
 admission caps and rate-record projection live in `src/admission-contract.js`;
@@ -234,6 +252,14 @@ deletion. Damaged or unavailable State publishes nothing and leaves an agent's
 proof retryable within its reported attempt budget. If a ref-update response
 and the follow-up reachability checks are all unavailable, the Worker reports
 the outcome as unknown instead of claiming that the proof survived.
+
+A browser submission pauses after OAuth when that submitter already has open
+work. The choice page includes fresh links to all of it. When a matching
+repository is selected for replacement, withdrawing the earlier record,
+exchanging any admission slot, consuming the pending OAuth proof, admitting the
+new record, and updating both queues happen in the same transaction. A rate or
+capacity refusal writes none of those changes, so “start the new one” cannot
+strand the earlier submission halfway through the choice.
 
 The external verification dispatch cannot be part of a Git commit. A newly
 committed `preflighting` record therefore doubles as a durable outbox item and
@@ -296,7 +322,8 @@ that fails full verification, or is withdrawn, leaves it where it is, because
 those are exactly the loops worth slowing down; ordinary metadata correction is
 not treated as abuse.
 
-The Server owns the rate document's current `schema_version: 1` contract. A
+The Server owns the rate document's current `schema_version: 1` contract. Its
+unique `submission_ids` are the private, pepper-keyed recovery locator. A
 present document records a GitHub `login`, positive integer `starts`, an integer
 `interval_seconds` of at least sixty, and canonical UTC-seconds
 `last_start_at` and `next_allowed_at` timestamps. The State repository's

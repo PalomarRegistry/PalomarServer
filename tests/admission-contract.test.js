@@ -151,6 +151,10 @@ test("present rate state has one strict current contract", () => {
 
   const extended = rate({ producer_extension: { retained: true } });
   assert.equal(rateRecord(extended).value, extended);
+  assert.throws(
+    () => rateRecord(rate({ submission_ids: ["not-an-id"] })),
+    (error) => error instanceof RateContractError && /submission_ids/.test(error.message),
+  );
 });
 
 test("an unrepresentable next deadline fails before it can be written", () => {
@@ -180,6 +184,7 @@ test("an accepted start gets one deterministic next rate record", () => {
     interval_seconds: 60,
     last_start_at: "2026-08-08T00:00:00Z",
     next_allowed_at: "2026-08-08T00:01:00Z",
+    submission_ids: [],
   });
   assert.equal(nextRateRecord({
     login: "someone",
@@ -198,6 +203,7 @@ test("registration reset preserves rate history and returns to the floor", () =>
     interval_seconds: 240,
     last_start_at: "2026-08-07T00:00:00Z",
     next_allowed_at: "2026-08-07T00:04:00Z",
+    submission_ids: ["a1b2c3d4e5f6"],
   }, "2026-08-08T00:00:00Z"), {
     schema_version: 1,
     login: "someone",
@@ -205,6 +211,7 @@ test("registration reset preserves rate history and returns to the floor", () =>
     interval_seconds: 60,
     last_start_at: "2026-08-07T00:00:00Z",
     next_allowed_at: "2026-08-08T00:00:00Z",
+    submission_ids: ["a1b2c3d4e5f6"],
   });
   assert.throws(
     () => resetRateRecord(null, "2026-08-08T00:00:00Z"),

@@ -5,6 +5,7 @@ import {
   newRecord,
   pepper,
   recordedAt,
+  STATUSES,
   statePath,
   tokenDigest,
 } from "./submission.js";
@@ -25,7 +26,7 @@ import {
   writeState,
   transactState,
 } from "./github.js";
-import { intakeForm, statusPage, errorPage } from "./html.js";
+import { intakeForm, statusPage, errorPage, submissionsPage } from "./html.js";
 import {
   admissionDecision,
   nextRateRecord,
@@ -486,11 +487,251 @@ async function beginSubmission(request, env, { machine = false } = {}) {
   });
 }
 
+/** Begin a GitHub sign-in that recovers current submissions without starting one. */
+async function beginRecovery(request, env) {
+  let pendingCount;
+  try {
+    pendingCount = (await listState(env, "pending")).length;
+  } catch (error) {
+    console.error("pending", String(error?.stack ?? error));
+    return intakeUnavailable(env, false);
+  }
+  if (pendingCount >= MAX_PENDING) {
+    return html(errorPage(env, "Submission recovery is temporarily busy", [
+      "Please try again shortly.",
+    ]), 429);
+  }
+
+  const nonce = newAccessToken();
+  const binding = newAccessToken();
+  const pending = {
+    schema_version: 2,
+    binding_sha256: await digest(binding),
+    method: "oauth-recovery",
+    created_at: recordedAt(),
+  };
+  try {
+    await writeState(
+      env,
+      `pending/${await digest(nonce)}.json`,
+      pending,
+      "Begin submission recovery",
+    );
+  } catch {
+    return html(errorPage(env, "Submission recovery could not begin", [
+      "Nothing was changed. Please try again.",
+    ]), 503);
+  }
+
+  const authorize = new URL("https://github.com/login/oauth/authorize");
+  authorize.searchParams.set("client_id", env.OAUTH_CLIENT_ID);
+  authorize.searchParams.set("redirect_uri", `${new URL(request.url).origin}/oauth/callback`);
+  authorize.searchParams.set("scope", "read:user");
+  authorize.searchParams.set("state", nonce);
+  return new Response(null, {
+    status: 303,
+    headers: {
+      location: authorize.toString(),
+      "set-cookie": await intakeCookie(nonce, binding),
+      ...SECURITY_HEADERS,
+    },
+  });
+}
+
 // Filed under a peppered digest rather than a login, so reading the state
 // repository does not enumerate everyone who has ever submitted — the same
 // reason `index/tokens/` is shaped that way.
 async function ratePath(env, principalId) {
   return `index/rate/${await digest(`${pepper(env)}:${principalId}`)}.json`;
+}
+
+function principalOwns(record, principal) {
+  return Number.isSafeInteger(principal?.id) &&
+    record?.push_proof?.principal?.id === principal.id;
+}
+
+async function openSubmissionsForPrincipal(env, principal) {
+  try {
+    const principalPath = await ratePath(env, principal.id);
+    const principalIndex = await readRateState(env, principalPath);
+    if (principalIndex.sha === null) {
+      return { principalPath, principalIndex, queue: null, entries: [] };
+    }
+    const indexed = atRatePath(
+      principalPath,
+      () => rateRecord(principalIndex.value).submissionIds,
+    );
+    const queue = await readState(env, OPEN_INDEX_PATH);
+    const ids = reviewerOpen(queue.value);
+    const current = ids.filter((id) => indexed.includes(id));
+    const entries = await Promise.all(current.map(async (id) => ({
+      id,
+      path: statePath(id, "state.json"),
+      entry: await readState(env, statePath(id, "state.json")),
+    })));
+    for (const item of entries) {
+      if (!item.entry.value) {
+        throw new StateContractError(`${OPEN_INDEX_PATH} names missing submission ${item.id}`);
+      }
+    }
+    for (const item of entries) {
+      if (!principalOwns(item.entry.value, principal)) {
+        throw new StateContractError(
+          `${principalPath} names a submission owned by another GitHub principal`,
+        );
+      }
+    }
+    return { principalPath, principalIndex, queue, entries };
+  } catch (error) {
+    if (error instanceof StateContractError) throw error;
+    if (error instanceof SyntaxError) {
+      throw new StateContractError(`${OPEN_INDEX_PATH} or one of its submissions is not valid JSON`);
+    }
+    throw error;
+  }
+}
+
+/**
+ * Rotate the authenticated recovery capability for each current submission.
+ *
+ * The original link remains valid. Exactly one additional recovery link is
+ * retained per record, so repeatedly signing in neither invalidates a bookmark
+ * nor grows the token index without bound.
+ */
+async function issueRecoveryLinks(
+  env,
+  {
+    pendingPath,
+    pendingSha,
+    principal,
+    verification = null,
+    consumePending = false,
+    onlyIfAny = false,
+  },
+) {
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const discovered = await openSubmissionsForPrincipal(env, principal);
+    if (onlyIfAny && discovered.entries.length === 0) {
+      return { submissions: [] };
+    }
+    const issued = await Promise.all(discovered.entries.map(async (item) => {
+      const token = newAccessToken();
+      const tokenSha256 = await tokenDigest(env, token);
+      const original = item.entry.value.token_sha256;
+      const oldRecovery = item.entry.value.recovery_token_sha256 ?? null;
+      if (!/^[0-9a-f]{64}$/.test(original)) {
+        throw new StateContractError(`${item.path}.token_sha256 must be a SHA-256 digest`);
+      }
+      if (oldRecovery !== null && !/^[0-9a-f]{64}$/.test(oldRecovery)) {
+        throw new StateContractError(
+          `${item.path}.recovery_token_sha256 must be a SHA-256 digest`,
+        );
+      }
+      if (oldRecovery === original) {
+        throw new StateContractError(
+          `${item.path}.recovery_token_sha256 must differ from token_sha256`,
+        );
+      }
+      return {
+        ...item,
+        token,
+        tokenSha256,
+        tokenPath: `index/tokens/${tokenSha256}.json`,
+        originalTokenPath: `index/tokens/${original}.json`,
+        oldRecovery,
+        oldTokenPath: oldRecovery ? `index/tokens/${oldRecovery}.json` : null,
+      };
+    }));
+    const paths = [...new Set([
+      pendingPath,
+      ...(discovered.queue ? [OPEN_INDEX_PATH, discovered.principalPath] : []),
+      ...issued.flatMap((item) => [
+        item.path,
+        item.tokenPath,
+        item.originalTokenPath,
+        ...(item.oldTokenPath ? [item.oldTokenPath] : []),
+      ]),
+    ])];
+    const result = await transactState(env, paths, (files) => {
+      if (
+        files[pendingPath]?.sha !== pendingSha ||
+        (discovered.queue && (
+          files[OPEN_INDEX_PATH]?.sha !== discovered.queue.sha ||
+          files[discovered.principalPath]?.sha !== discovered.principalIndex.sha
+        ))
+      ) {
+        return { changes: [], message: "", result: { retry: true } };
+      }
+      const currentIds = discovered.queue
+        ? reviewerOpen(files[OPEN_INDEX_PATH]?.value)
+        : [];
+      for (const item of issued) {
+        const current = files[item.path];
+        if (current?.sha !== item.entry.sha || !currentIds.includes(item.id)) {
+          return { changes: [], message: "", result: { retry: true } };
+        }
+        if (!principalOwns(current.value, principal)) {
+          throw new StateContractError(
+            `${item.path} no longer belongs to the authenticated GitHub principal`,
+          );
+        }
+        if (files[item.tokenPath]?.sha !== null) {
+          throw new StateContractError("a generated recovery token already exists");
+        }
+        if (files[item.originalTokenPath]?.value?.id !== item.id) {
+          throw new StateContractError(`${item.path} has no matching original token pointer`);
+        }
+        if (item.oldTokenPath && files[item.oldTokenPath]?.value?.id !== item.id) {
+          throw new StateContractError(`${item.path} has no matching recovery token pointer`);
+        }
+      }
+
+      const held = files[pendingPath].value;
+      const pendingChange = consumePending
+        ? { path: pendingPath, delete: true }
+        : {
+            path: pendingPath,
+            value: {
+              ...held,
+              oauth_verification: verification,
+              created_at: recordedAt(),
+            },
+          };
+      const changes = [pendingChange];
+      for (const item of issued) {
+        changes.push({
+          path: item.path,
+          value: {
+            ...files[item.path].value,
+            recovery_token_sha256: item.tokenSha256,
+            recovery_token_bound_at: recordedAt(),
+          },
+        });
+        if (item.oldTokenPath) changes.push({ path: item.oldTokenPath, delete: true });
+        changes.push({ path: item.tokenPath, value: { id: item.id } });
+      }
+      return {
+        changes,
+        message: consumePending
+          ? `Recover ${issued.length} submission link(s)`
+          : `Prepare submission choice with ${issued.length} current link(s)`,
+        result: {
+          retry: false,
+          submissions: issued.map((item) => ({
+            id: item.id,
+            repository: item.entry.value.repository,
+            commit: item.entry.value.commit,
+            status: item.entry.value.status,
+            statusLabel: STATUSES[item.entry.value.status] ?? item.entry.value.status,
+            replaceable: !CLOSED.has(item.entry.value.status),
+            token: item.token,
+          })),
+        },
+      };
+    });
+    if (!result.retry) return result;
+  }
+  throw new StateContractError("the open-submission list kept changing during recovery");
 }
 
 /**
@@ -503,7 +744,16 @@ async function ratePath(env, principalId) {
  */
 async function admitSubmission(
   env,
-  { pendingPath, pendingSha, pending, owner, submitter, proof },
+  {
+    pendingPath,
+    pendingSha,
+    pending,
+    owner,
+    submitter,
+    proof,
+    replaceId = null,
+    preserveOnRefusal = false,
+  },
 ) {
   const id = newSubmissionId();
   const token = newAccessToken();
@@ -519,12 +769,14 @@ async function admitSubmission(
     : null;
   const recordPath = statePath(id, "state.json");
   const tokenPath = `index/tokens/${tokenSha256}.json`;
+  const replacedRecordPath = replaceId ? statePath(replaceId, "state.json") : null;
   const paths = [
     pendingPath,
     INFLIGHT_INDEX_PATH,
     OPEN_INDEX_PATH,
     recordPath,
     tokenPath,
+    ...(replacedRecordPath ? [replacedRecordPath] : []),
     ...(rate ? [rate] : []),
   ];
   const record = {
@@ -587,28 +839,95 @@ async function admitSubmission(
       const inflight = inflightOpen(files[INFLIGHT_INDEX_PATH]?.value);
       const reviewer = files[OPEN_INDEX_PATH];
       const reviewerIds = reviewerOpen(reviewer?.value);
+      let replaced = null;
+      let availableInflight = inflight;
+      if (replaceId) {
+        const old = files[replacedRecordPath]?.value;
+        const oldPrincipal = old?.push_proof?.principal;
+        if (!reviewerIds.includes(replaceId) || !old) {
+          return {
+            changes: [],
+            message: "",
+            result: {
+              refused: true,
+              retryable: true,
+              status: 409,
+              title: "That earlier submission is no longer in progress",
+              detail: ["Refresh the list before deciding what to replace."],
+            },
+          };
+        }
+        if (oldPrincipal?.id !== proof?.principal?.id) {
+          throw new StateContractError("a replacement did not belong to its authenticated submitter");
+        }
+        if (String(old.repository).toLowerCase() !== String(pending.repository).toLowerCase()) {
+          return {
+            changes: [],
+            message: "",
+            result: {
+              refused: true,
+              retryable: true,
+              status: 409,
+              title: "That is not an earlier submission of this repository",
+              detail: ["Choose the matching submission, or continue with the new one separately."],
+            },
+          };
+        }
+        if (CLOSED.has(old.status)) {
+          return {
+            changes: [],
+            message: "",
+            result: {
+              refused: true,
+              retryable: true,
+              status: 409,
+              title: "That earlier submission can no longer be abandoned",
+              detail: [`It is already ${old.status}.`],
+            },
+          };
+        }
+        availableInflight = inflight.filter((item) => item.id !== replaceId);
+        replaced = {
+          ...old,
+          status: "withdrawn",
+          events: [
+            ...old.events,
+            {
+              at: record.created_at,
+              status: "withdrawn",
+              note: `Replaced by submission ${id}`,
+            },
+          ],
+        };
+      }
       let limit = { refused: false, interval: null, starts: null };
+      let submissionIds = [];
       if (rate) {
         const current = files[rate];
-        const value = current.sha === null
+        const parsed = current.sha === null
           ? null
-          : atRatePath(rate, () => rateRecord(current.value).value);
+          : atRatePath(rate, () => rateRecord(current.value));
+        const value = parsed?.value ?? null;
+        submissionIds = parsed?.submissionIds ?? [];
         limit = rateDecision(value, createdAtMs);
       }
       const admission = limit.refused
         ? limit
-        : admissionDecision(inflight, { owner, submitter });
+        : admissionDecision(availableInflight, { owner, submitter });
       if (admission.refused) {
         return {
-          changes: [{ path: pendingPath, delete: true }],
-          message: "Consume refused submission proof",
-          result: admission,
+          changes: preserveOnRefusal ? [] : [{ path: pendingPath, delete: true }],
+          message: preserveOnRefusal ? "" : "Consume refused submission proof",
+          result: { ...admission, retryable: preserveOnRefusal || admission.retryable },
         };
       }
       if (files[recordPath]?.sha !== null || files[tokenPath]?.sha !== null) {
         throw new StateContractError("a generated submission identity already exists");
       }
-      const nextInflight = [...inflight, { id, owner, submitter, at: record.created_at }];
+      const nextInflight = [
+        ...availableInflight,
+        { id, owner, submitter, at: record.created_at },
+      ];
       inflightOpen({ open: nextInflight });
       const nextReviewer = reviewerIds.includes(id)
         ? reviewer.value
@@ -616,6 +935,7 @@ async function admitSubmission(
       reviewerOpen(nextReviewer);
       const changes = [
         { path: pendingPath, delete: true },
+        ...(replaced ? [{ path: replacedRecordPath, value: replaced }] : []),
         { path: recordPath, value: record },
         { path: INFLIGHT_INDEX_PATH, value: { open: nextInflight } },
         { path: OPEN_INDEX_PATH, value: nextReviewer },
@@ -629,13 +949,16 @@ async function admitSubmission(
             starts: limit.starts,
             interval: limit.interval,
             startedAt: record.created_at,
+            submissionIds: [...submissionIds, id],
             at: createdAtMs,
           }),
         });
       }
       return {
         changes,
-        message: `Admit submission ${id}`,
+        message: replaced
+          ? `Replace submission ${replaceId} with ${id}`
+          : `Admit submission ${id}`,
         result: { refused: false, id, token, record },
       };
     });
@@ -899,7 +1222,6 @@ async function completeSubmission(request, env) {
     return html(errorPage(env, "GitHub declined that sign-in", []), 400);
   }
 
-  const viewer = await fetchRepository(granted.access_token, pending.value.repository);
   const user = await (
     await fetch("https://api.github.com/user", {
       headers: {
@@ -911,7 +1233,8 @@ async function completeSubmission(request, env) {
   ).json();
 
   const submitter = user?.login;
-  if (!submitter) {
+  const principal = { login: submitter, id: user?.id };
+  if (!submitter || !Number.isSafeInteger(user?.id)) {
     // Every quota keys on this. Without it the old code bucketed submissions
     // under the empty string, where they throttled each other.
     return html(
@@ -922,6 +1245,45 @@ async function completeSubmission(request, env) {
       { "set-cookie": await intakeCookie(nonce, null, { clear: true }) },
     );
   }
+
+  if (pending.value.method === "oauth-recovery") {
+    try {
+      const recovered = await issueRecoveryLinks(env, {
+        pendingPath,
+        pendingSha: pending.sha,
+        principal,
+        consumePending: true,
+      });
+      return html(
+        submissionsPage(env, { submissions: recovered.submissions }),
+        200,
+        { "set-cookie": await intakeCookie(nonce, null, { clear: true }) },
+      );
+    } catch (error) {
+      if (error instanceof StateUpdateOutcomeError) {
+        console.error("submission-recovery", error.message);
+      } else if (isDurableContractError(error)) {
+        reportDurableContract(error);
+      } else {
+        console.error("submission-recovery", error?.stack ?? String(error));
+      }
+      return html(
+        errorPage(env, "Submission recovery is temporarily unavailable", [
+          "No original link was invalidated. Please try recovery again in a moment.",
+        ]),
+        503,
+        { "set-cookie": await intakeCookie(nonce, null, { clear: true }) },
+      );
+    }
+  }
+
+  if (pending.value.oauth_verification) {
+    return html(errorPage(env, "That sign-in is already waiting for your choice", [
+      "Return to the choice page, or start again from the submission form.",
+    ]), 409);
+  }
+
+  const viewer = await fetchRepository(granted.access_token, pending.value.repository);
 
   const technicalTest = pending.value.authorization_relationship === "technical-test";
   if (technicalTest && (
@@ -940,6 +1302,12 @@ async function completeSubmission(request, env) {
       409,
       { "set-cookie": await intakeCookie(nonce, null, { clear: true }) },
     );
+  }
+  if (!viewer) {
+    return html(errorPage(env, "That repository can no longer be read", [
+      `${pending.value.repository} may have been deleted, transferred, or made private.`,
+      "Start again after confirming that the public repository is available.",
+    ]), 403);
   }
   if (technicalTest) {
     const membership = await technicalTeamMembership(granted.access_token, submitter);
@@ -989,23 +1357,39 @@ async function completeSubmission(request, env) {
   // refuse everyone. The per-principal backoff and edge throttle remain the
   // broader abuse controls.
   const owner = viewer.owner?.login ?? null;
+  const proof = {
+    schema_version: 1,
+    method: technicalTest ? "technical-team-test" : "oauth",
+    binding: technicalTest ? "active-technical-team-membership" : "same-account",
+    verified_at: recordedAt(),
+    repository_id: viewer.id ?? null,
+    commit: pending.value.commit,
+    principal,
+  };
+  const verification = { owner, submitter, proof };
   let admitted;
   try {
+    const current = await issueRecoveryLinks(env, {
+      pendingPath,
+      pendingSha: pending.sha,
+      principal,
+      verification,
+      onlyIfAny: true,
+    });
+    if (current.submissions.length) {
+      return html(submissionsPage(env, {
+        submissions: current.submissions,
+        pending: pending.value,
+        nonce,
+      }));
+    }
     admitted = await admitSubmission(env, {
       pendingPath,
       pendingSha: pending.sha,
       pending: pending.value,
       owner,
       submitter,
-      proof: {
-        schema_version: 1,
-        method: technicalTest ? "technical-team-test" : "oauth",
-        binding: technicalTest ? "active-technical-team-membership" : "same-account",
-        verified_at: recordedAt(),
-        repository_id: viewer.id ?? null,
-        commit: pending.value.commit,
-        principal: { login: submitter, id: user?.id ?? null },
-      },
+      proof,
     });
   } catch (error) {
     if (error instanceof StateUpdateOutcomeError) {
@@ -1047,6 +1431,99 @@ async function completeSubmission(request, env) {
       location: `${new URL(request.url).origin}/s#${token}`,
       // Spent. Leaving it would put a live secret in the browser for fifteen
       // minutes against a record that no longer exists.
+      "set-cookie": await intakeCookie(nonce, null, { clear: true }),
+      ...SECURITY_HEADERS,
+    },
+  });
+}
+
+/** Finish a new intake after the authenticated submitter has seen current work. */
+async function completeSubmissionChoice(request, env) {
+  if (!madeByThisSite(request)) {
+    return html(errorPage(env, "That choice did not come from this site", [
+      "Return to Palomar's submission form and authenticate again.",
+    ]), 403);
+  }
+  let form;
+  try {
+    form = await request.formData();
+  } catch {
+    return html(errorPage(env, "That submission choice could not be read", []), 400);
+  }
+  const nonce = String(form.get("state") ?? "");
+  const replaceId = String(form.get("replace_id") ?? "") || null;
+  if (!/^[0-9a-f]{64}$/.test(nonce) || (replaceId && !/^[0-9a-z]{12}$/.test(replaceId))) {
+    return html(errorPage(env, "That submission choice is malformed", []), 400);
+  }
+
+  const nonceDigest = await digest(nonce);
+  const credential = intakeCredential(request, nonceDigest);
+  const pendingPath = `pending/${nonceDigest}.json`;
+  const pending = await readState(env, pendingPath);
+  const presented = credential.kind === "valid" ? credential.value : null;
+  const expected = pending.value?.binding_sha256;
+  if (
+    !pending.value ||
+    pending.value.method !== "oauth" ||
+    !expected ||
+    !presented ||
+    (await digest(presented)) !== expected
+  ) {
+    return html(errorPage(env, "That submission choice expired or opened elsewhere", [
+      "Authenticate again to get fresh links and make the choice in this browser.",
+    ]), 400, { "set-cookie": await intakeCookie(nonce, null, { clear: true }) });
+  }
+  const verification = pending.value.oauth_verification;
+  const proof = verification?.proof;
+  const principal = proof?.principal;
+  if (
+    typeof verification?.submitter !== "string" ||
+    !Number.isSafeInteger(principal?.id) ||
+    principal.login !== verification.submitter
+  ) {
+    return html(errorPage(env, "That submission choice is no longer usable", [
+      "Authenticate again before choosing whether to continue or replace earlier work.",
+    ]), 409);
+  }
+
+  let admitted;
+  try {
+    admitted = await admitSubmission(env, {
+      pendingPath,
+      pendingSha: pending.sha,
+      pending: pending.value,
+      owner: verification.owner ?? null,
+      submitter: verification.submitter,
+      proof,
+      replaceId,
+      preserveOnRefusal: true,
+    });
+  } catch (error) {
+    if (error instanceof StateUpdateOutcomeError) {
+      console.error("submission-choice", error.message);
+      return html(errorPage(env, "Submission intake outcome is unknown", [
+        "Do not make another choice yet; ask the registry operator to inspect State.",
+      ]), 503);
+    }
+    const contractFailure = isDurableContractError(error);
+    if (contractFailure) reportDurableContract(error);
+    else console.error("submission-choice", error?.stack ?? String(error));
+    return html(errorPage(env, "Submission intake is temporarily unavailable", [
+      "The earlier submission was not abandoned. Please try again in a moment.",
+    ]), contractFailure ? 503 : 500);
+  }
+
+  if (admitted.refused) {
+    return html(errorPage(env, admitted.title, [
+      ...admitted.detail,
+      "The earlier submission and its recovery link were not changed. Go back to review it or try this choice again later.",
+    ]), admitted.status);
+  }
+
+  return new Response(null, {
+    status: 303,
+    headers: {
+      location: `${new URL(request.url).origin}/s#${admitted.token}`,
       "set-cookie": await intakeCookie(nonce, null, { clear: true }),
       ...SECURITY_HEADERS,
     },
@@ -1374,6 +1851,19 @@ export default {
           (await intakeThrottle(env, request)) ?? (await beginSubmission(request, env))
         );
       }
+      if (request.method === "GET" && url.pathname === "/submissions") {
+        if (!madeByThisSite(request)) {
+          return html(errorPage(env, "Submission recovery did not begin here", [
+            "Open Palomar directly and choose ‘Find my submissions in progress’.",
+          ]), 403);
+        }
+        return (
+          (await intakeThrottle(env, request)) ?? (await beginRecovery(request, env))
+        );
+      }
+      if (request.method === "POST" && url.pathname === "/submission-choice") {
+        return completeSubmissionChoice(request, env);
+      }
       if (request.method === "GET" && url.pathname === "/oauth/callback") {
         if ((url.searchParams.get("state") ?? "").startsWith("dashboard_")) {
           return (
@@ -1381,7 +1871,10 @@ export default {
             (await completeDashboardLogin(request, env))
           );
         }
-        return await completeSubmission(request, env);
+        return (
+          (await intakeThrottle(env, request)) ??
+          (await completeSubmission(request, env))
+        );
       }
       if (request.method === "GET" && url.pathname === "/s") {
         // The token is in the fragment, which browsers never send. The page
