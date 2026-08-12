@@ -48,8 +48,10 @@ export function intakeForm(env, values = {}, problems = []) {
     <ul>
       <li>The result has credible research interest and a clear informal explanation.</li>
       <li>A public, pinned commit contains an auditable Challenge, matching Solution,
-          Comparator configuration, <code>formalization.yaml</code>, and a licence.</li>
-      <li>For a registrable submission, you are a responsible author or maintainer, or have their approval.</li>
+          <a href="https://github.com/leanprover/comparator">Comparator configuration</a>,
+          <a href="https://github.com/mathlib-initiative/formalization.yaml"><code>formalization.yaml</code></a>,
+          and a licence.</li>
+      <li>You are a responsible author or maintainer, or have their approval.</li>
     </ul>
     <p>See the
       <a href="https://github.com/PalomarRegistry/PalomarPolicy/blob/main/CONTRIBUTING.md">full submission requirements</a>.

@@ -31,7 +31,10 @@ test("the introduction summarizes the submission requirements", () => {
   assert.match(form, /credible research interest/);
   assert.match(form, /auditable Challenge, matching Solution/);
   assert.match(form, /formalization\.yaml/);
+  assert.match(form, /href="https:\/\/github\.com\/leanprover\/comparator"/);
+  assert.match(form, /href="https:\/\/github\.com\/mathlib-initiative\/formalization\.yaml"/);
   assert.match(form, /responsible author or maintainer, or have their approval/);
+  assert.doesNotMatch(form, /For a registrable submission/);
   assert.doesNotMatch(form, /Technical Maintainers may instead run a non-registerable test/);
   assert.match(form, /PalomarPolicy\/blob\/main\/CONTRIBUTING\.md/);
   assert.match(form, /Automated agents: read \/llms\.txt before submitting/);
