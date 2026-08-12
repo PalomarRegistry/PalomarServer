@@ -796,6 +796,30 @@ scheduleRegistrationLookup();
  */
 const form = document.querySelector('form[action="/submit"]');
 const submit = form?.querySelector('button[type="submit"]');
+const recoveryForm = document.querySelector('form[action="/submissions"]');
+const recoverySubmit = document.getElementById("find-submissions");
+
+function setRecoveryBusy(busy) {
+  if (!recoverySubmit) return;
+  if (busy) {
+    recoverySubmit.dataset.busy = "true";
+    recoverySubmit.setAttribute("aria-busy", "true");
+    recoverySubmit.textContent = "Finding your submissions…";
+    return;
+  }
+  delete recoverySubmit.dataset.busy;
+  recoverySubmit.removeAttribute("aria-busy");
+  recoverySubmit.textContent = "Find my submissions";
+}
+
+recoveryForm?.addEventListener("submit", () => {
+  setRecoveryBusy(true);
+  announce("Authenticating with GitHub to find your submissions.");
+});
+
+// A return from GitHub may restore this page from the back-forward cache.
+// Make sure the action does not still look as though it is in progress.
+window.addEventListener("pageshow", () => setRecoveryBusy(false));
 
 form?.addEventListener("submit", () => {
   if (!submit) return;
