@@ -22,8 +22,6 @@ import {
   normalizeRepository,
   registrationIdentity,
   registrationIdentityDigest,
-  repositoryRegistrations,
-  selectedRegistrationId,
 } from "./normalize.js";
 
 const promptButton = document.getElementById("copy-formalization-prompt");
@@ -251,15 +249,13 @@ function say(text, found) {
  */
 function autofill(input, value) {
   if (!input) return;
-  // Choosing a previous registration is stronger than a layout suggestion,
-  // including when its project is the empty repository root.
-  if (input.dataset.registrationSelected !== undefined) return;
   const mine = input.dataset.suggested !== undefined && input.value === input.dataset.suggested;
   if (input.value !== "" && !mine) return;
   input.value = value;
   if (value) input.dataset.suggested = value;
   else delete input.dataset.suggested;
   if (input === projectPath || input === configPath) scheduleRegistrationLookup();
+  if (input === commit.input) scheduleRegistrationLookup();
 }
 
 const DEFAULT_LAYOUT = layoutMessage?.textContent;
@@ -298,20 +294,38 @@ function clearSuggestions() {
 
 const registrationTarget = document.getElementById("registration-target");
 const registrationMessage = document.getElementById("registration-target-message");
-const registrationChoices = document.getElementById("registration-target-choices");
 const registrationManual = document.getElementById("registration-target-manual");
 let registrationToken = 0;
 let registrationTimer;
-let selectedRegistration = null;
-let pathsBeforeRegistration = null;
-const repositoryLookupCache = new Map();
 
-function registrationState(state, message) {
+function registrationState(state, ...content) {
   if (registrationTarget) registrationTarget.dataset.state = state;
-  if (registrationMessage) registrationMessage.textContent = message;
-  if (["exact", "alternatives", "ambiguous", "unavailable"].includes(state)) {
+  if (registrationMessage) registrationMessage.replaceChildren(...content);
+  const message = content.map((part) =>
+    typeof part === "string" ? part : part.textContent ?? "").join("");
+  if (["duplicate", "version", "ambiguous", "unavailable"].includes(state)) {
     announce(message);
   }
+}
+
+function registeredEntry(identifier) {
+  const link = document.createElement("a");
+  link.href = `https://palomar-registry.org/entry.html?id=${encodeURIComponent(identifier)}`;
+  link.textContent = identifier;
+  link.target = "_blank";
+  link.rel = "noreferrer noopener";
+  return link;
+}
+
+function manualRegistration({ hidden, open }) {
+  if (!registrationManual) return;
+  if (hidden && registrationManual.contains(document.activeElement) && registrationMessage) {
+    registrationMessage.tabIndex = -1;
+    registrationMessage.focus();
+  }
+  registrationManual.hidden = hidden;
+  if (hidden) registrationManual.open = false;
+  else if (open !== undefined) registrationManual.open = open;
 }
 
 function clearAutomaticExistingId() {
@@ -341,103 +355,6 @@ function automaticExistingId(identifier) {
   return true;
 }
 
-function clearSelectedRegistration({ restore = false, clearPaths = false } = {}) {
-  if (!selectedRegistration) return;
-  for (const input of [projectPath, configPath]) {
-    delete input.dataset.registrationSelected;
-    delete input.dataset.suggested;
-  }
-  if (restore && pathsBeforeRegistration) {
-    projectPath.value = pathsBeforeRegistration.project;
-    configPath.value = pathsBeforeRegistration.config;
-  } else if (clearPaths) {
-    projectPath.value = "";
-    configPath.value = "";
-  }
-  selectedRegistration = null;
-  pathsBeforeRegistration = null;
-  clearAutomaticExistingId();
-}
-
-function selectRegistration(row) {
-  if (!selectedRegistration) {
-    pathsBeforeRegistration = { project: projectPath.value, config: configPath.value };
-  }
-  selectedRegistration = row;
-  autofill(metadataPath, "");
-  for (const [input, value] of [
-    [projectPath, row.project_path ?? ""],
-    [configPath, row.comparator_config_path],
-  ]) {
-    delete input.dataset.suggested;
-    input.value = value;
-    input.dataset.registrationSelected = value;
-  }
-  automaticExistingId(row.id);
-  if (row.project_path) {
-    layout.open = true;
-    summarize("custom");
-  }
-  registrationState(
-    "exact",
-    `Selected ${row.id}. Its project and Comparator configuration paths have been filled in, so this submission will create a new version for that registration.`,
-  );
-  scheduleRegistrationLookup();
-}
-
-function registrationLabel(row) {
-  const project = row.project_path ?? "repository root";
-  return `${row.id} — ${project}; ${row.comparator_config_path}`;
-}
-
-function showRegistrationChoices(rows, { truncated = false } = {}) {
-  if (!registrationChoices) return;
-  const focusedValue = document.activeElement?.name === "registration_target_choice"
-    ? document.activeElement.value
-    : null;
-  registrationChoices.replaceChildren();
-  const fieldset = document.createElement("fieldset");
-  fieldset.className = "registration-options";
-  const legend = document.createElement("legend");
-  legend.textContent = "Choose the registration target";
-  fieldset.append(legend);
-
-  const addChoice = (value, labelText, checked, onChange) => {
-    const label = document.createElement("label");
-    label.className = "choice";
-    const input = document.createElement("input");
-    input.type = "radio";
-    input.name = "registration_target_choice";
-    input.value = value;
-    input.checked = checked;
-    input.addEventListener("change", () => {
-      if (input.checked) onChange();
-    });
-    label.append(input, document.createTextNode(labelText));
-    fieldset.append(label);
-  };
-
-  addChoice("new", "Make a new submission", !selectedRegistration, () => {
-    clearSelectedRegistration({ restore: true });
-    scheduleRegistrationLookup();
-  });
-  for (const row of rows) {
-    addChoice(row.id, registrationLabel(row), selectedRegistration?.id === row.id, () => {
-      selectRegistration(row);
-    });
-  }
-  registrationChoices.append(fieldset);
-  if (focusedValue !== null) {
-    [...fieldset.querySelectorAll('input[name="registration_target_choice"]')]
-      .find((input) => input.value === focusedValue)?.focus();
-  }
-  if (truncated && registrationManual) registrationManual.open = true;
-}
-
-function clearRegistrationChoices() {
-  registrationChoices?.replaceChildren();
-}
-
 async function registryJson(path) {
   try {
     const response = await fetch(`${REGISTRY_DATA}${path}`, { cache: "no-store" });
@@ -449,130 +366,94 @@ async function registryJson(path) {
   }
 }
 
-async function registryRepository(repositoryName) {
-  if (repositoryLookupCache.has(repositoryName)) {
-    return repositoryLookupCache.get(repositoryName);
-  }
-  const [owner, name] = repositoryName.split("/");
-  const request = registryJson(
-    `/repositories/${encodeURIComponent(owner)}/${encodeURIComponent(name)}.json`,
-  );
-  repositoryLookupCache.set(repositoryName, request);
-  const answer = await request;
-  if (answer.kind === "unavailable") repositoryLookupCache.delete(repositoryName);
-  return answer;
-}
-
 async function inspectRegistrationTarget() {
   const mine = ++registrationToken;
   const current = () => mine === registrationToken;
   const repositoryName = normalizeRepository(repository.input?.value)?.toLowerCase();
-  if (!repositoryName) {
-    clearRegistrationChoices();
-    clearAutomaticExistingId();
-    return registrationState(
-      "unchecked",
-      "Enter the repository and Comparator configuration. Palomar will check whether this should create a new registration or a new version.",
-    );
-  }
-
-  registrationState("checking", `Checking previous registrations for ${repositoryName}…`);
-  const repositoryRequest = registryRepository(repositoryName);
+  const commitSha = normalizeCommit(commit.input?.value);
   const identity = registrationIdentity(
     repositoryName,
     projectPath?.value,
     configPath?.value,
   );
-  const identityRequest = identity
-    ? registrationIdentityDigest(identity).then((digest) =>
-        digest
-          ? registryJson(`/registration-identities/${digest}.json`)
-          : { kind: "unavailable" }).catch(() => ({ kind: "unavailable" }))
-    : Promise.resolve({ kind: "missing" });
-  const [repositoryAnswer, identityAnswer] = await Promise.all([
-    repositoryRequest,
-    identityRequest,
-  ]);
+  if (!repositoryName || !commitSha || !identity) {
+    if (registrationTarget) registrationTarget.hidden = true;
+    clearAutomaticExistingId();
+    manualRegistration({ hidden: false });
+    return registrationState("unchecked", "");
+  }
+
+  if (registrationTarget) registrationTarget.hidden = false;
+  registrationState("checking", `Checking previous registrations for ${repositoryName}…`);
+  const identityAnswer = await registrationIdentityDigest(identity).then((digest) =>
+    digest
+      ? registryJson(`/registration-identities/${digest}.json`)
+      : { kind: "unavailable" }).catch(() => ({ kind: "unavailable" }));
   if (!current()) return;
 
-  const repositoryDocument = repositoryAnswer.kind === "found"
-    ? repositoryRegistrations(repositoryAnswer.value, repositoryName)
-    : null;
   const identityDocument = identity && identityAnswer.kind === "found"
     ? exactRegistration(identityAnswer.value, identity)
     : null;
-  const invalid =
-    (repositoryAnswer.kind === "found" && !repositoryDocument) ||
-    (identityAnswer.kind === "found" && !identityDocument);
+  const invalid = identityAnswer.kind === "found" && !identityDocument;
 
-  // A deliberate choice from the repository document is already a complete,
-  // explicit answer. Keep it even if the redundant exact probe is missing,
-  // stale, malformed, or temporarily unavailable.
-  const selectedId = selectedRegistrationId(selectedRegistration, identity);
-  if (selectedId) {
-    automaticExistingId(selectedId);
-    return registrationState(
-      "exact",
-      `Selected ${selectedId}, so this submission will create a new version for that registration.`,
-    );
-  }
-
-  if (identityDocument && !identityDocument.ambiguous) {
-    clearRegistrationChoices();
+  if (identityDocument && identityDocument.commits.includes(commitSha)) {
     const identifier = identityDocument.registration_id;
-    if (!automaticExistingId(identifier)) {
+    if (identifier && !automaticExistingId(identifier)) {
+      manualRegistration({ hidden: false, open: true });
       return registrationState(
         "unavailable",
         `We found the previous registration ${identifier}, but the manually entered Palomar ID is different. Check the intended registration below.`,
       );
     }
+    manualRegistration({ hidden: true });
     return registrationState(
-      "exact",
-      `We found the previous registration ${identifier}, so this submission will create a new version for that registration. If you intend to create a new registration, please specify the path to an alternative Comparator configuration file.`,
+      "duplicate",
+      ...(identifier ? ["The result ", registeredEntry(identifier)] : ["This result"]),
+      " has already been registered at this commit and cannot be registered again. " +
+        "Enter a different commit to create a new version with the same Palomar identifier, " +
+        "or specify a different Comparator configuration path to register a different theorem " +
+        "from the same repository.",
+    );
+  }
+
+  if (identityDocument && !identityDocument.ambiguous) {
+    const identifier = identityDocument.registration_id;
+    if (!automaticExistingId(identifier)) {
+      manualRegistration({ hidden: false, open: true });
+      return registrationState(
+        "unavailable",
+        `We found the previous registration ${identifier}, but the manually entered Palomar ID is different. Check the intended registration below.`,
+      );
+    }
+    manualRegistration({ hidden: true });
+    return registrationState(
+      "version",
+      "There is already a registration for this repository and Comparator configuration: ",
+      registeredEntry(identifier),
+      ". This submission will create a new version with the same Palomar identifier.",
     );
   }
 
   clearAutomaticExistingId();
   if (identityDocument?.ambiguous) {
-    const matching = (repositoryDocument?.registrations ?? []).filter((row) =>
-      row.project_path === identity.project_path &&
-      row.comparator_config_path === identity.comparator_config_path);
-    showRegistrationChoices(matching);
-    if (registrationManual) registrationManual.open = true;
+    manualRegistration({ hidden: false, open: true });
     return registrationState(
       "ambiguous",
-      "We found more than one active registration for these exact paths. Select the intended registration below, or enter its Palomar ID manually.",
+      "Palomar found more than one active registration for these exact paths. Enter the intended Palomar ID below.",
     );
   }
-  if (invalid || repositoryAnswer.kind === "unavailable" ||
-      identityAnswer.kind === "unavailable") {
-    clearRegistrationChoices();
-    if (registrationManual) registrationManual.open = true;
+  if (invalid || identityAnswer.kind === "unavailable") {
+    manualRegistration({ hidden: false, open: true });
     return registrationState(
       "unavailable",
       "Palomar could not check previous registrations just now. You can still submit, or enter an existing Palomar ID manually below.",
     );
   }
 
-  const registrations = repositoryDocument?.registrations ?? [];
-  if (registrations.length) {
-    showRegistrationChoices(registrations, { truncated: repositoryDocument.truncated });
-    return registrationState(
-      "alternatives",
-      (identity
-        ? "We found the previous registrations using different Comparator paths. Please select whether you would like to make a new submission, or create a new version of the registration for one of these."
-        : "We found previous registrations for this repository. Specify the Comparator configuration for a new submission, or select a registration to create a new version.") +
-        (repositoryDocument.truncated
-          ? " This repository has additional registrations that are not shown; use the manual Palomar ID field if needed."
-          : ""),
-    );
-  }
-  clearRegistrationChoices();
-  registrationState(
+  manualRegistration({ hidden: false });
+  return registrationState(
     "new",
-    identity
-      ? "Palomar did not find an active registration for this repository and Comparator configuration, so this is currently targeting a new registration. If you expected an existing one, use the manual Palomar ID field."
-      : "Palomar did not find active registrations for this repository. Specify the Comparator configuration to finish choosing the registration target, or use the manual Palomar ID field if you expected one.",
+    "This looks like a new submission. If you are trying to replace an existing submission, expand this box.",
   );
 }
 
@@ -591,7 +472,6 @@ repository.input?.addEventListener("input", () => {
   checkedRepository = null;
   checkedDefaultHead = null;
   registrationToken += 1;
-  clearSelectedRegistration({ restore: true });
   clearAutomaticExistingId();
   scheduleRegistrationLookup();
   if (commit.input) delete commit.input.dataset.defaultDeclined;
@@ -610,6 +490,8 @@ commit.input?.addEventListener("input", () => {
   if (commit.input.dataset.suggested !== commit.input.value) {
     delete commit.input.dataset.suggested;
   }
+  clearAutomaticExistingId();
+  scheduleRegistrationLookup();
 });
 
 /**
@@ -690,9 +572,6 @@ for (const input of [projectPath, metadataPath]) {
 for (const input of [projectPath, configPath]) {
   input?.addEventListener("input", () => {
     registrationToken += 1;
-    if (input.dataset.registrationSelected !== undefined) {
-      clearSelectedRegistration();
-    }
     clearAutomaticExistingId();
     scheduleRegistrationLookup();
   });

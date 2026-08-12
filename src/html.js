@@ -168,12 +168,7 @@ Identify every missing, malformed, or inconsistent field. For each problem, name
       <section class="disclosure registration-target" id="registration-target"
                data-state="unchecked" aria-labelledby="registration-target-heading">
         <h2 id="registration-target-heading">Registration target</h2>
-        <p id="registration-target-message">
-          The repository and Comparator configuration decide whether this makes
-          a new registration or a new version. If the automatic check is
-          unavailable, you can enter an existing Palomar ID below.
-        </p>
-        <div id="registration-target-choices"></div>
+        <p id="registration-target-message"></p>
 
         <details id="registration-target-manual"${manualRegistrationOpen ? " open" : ""}>
           <summary>Enter an existing Palomar ID manually</summary>
@@ -185,7 +180,7 @@ Identify every missing, malformed, or inconsistent field. For each problem, name
                  value="${escape(values.existing_id)}">
           <p class="hint" id="existing_id-hint">
             <span class="field-status" id="existing_id-status" aria-hidden="true"></span>
-            <span id="existing_id-message">Use this only to create a new version of a result already in the registry, if Palomar cannot identify it automatically.</span>
+            <span id="existing_id-message">Use this to identify the registration this submission should replace.</span>
           </p>
         </details>
       </section>
