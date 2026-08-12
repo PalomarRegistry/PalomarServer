@@ -619,6 +619,7 @@ function registrationState(state, ...content) {
       registrationMessage.focus();
     }
     submissionDetails.disabled = blocked;
+    submissionDetails.hidden = blocked;
   }
   const message = content.map((part) =>
     typeof part === "string" ? part : part.textContent ?? "").join("");
@@ -778,7 +779,10 @@ function scheduleRegistrationLookup() {
   // Invalidate an in-flight answer immediately; the replacement request is
   // debounced, but the old repository/path tuple stopped being current now.
   registrationToken += 1;
-  if (submissionDetails) submissionDetails.disabled = false;
+  if (submissionDetails) {
+    submissionDetails.disabled = false;
+    submissionDetails.hidden = false;
+  }
   clearTimeout(registrationTimer);
   registrationTimer = setTimeout(inspectRegistrationTarget, 250);
 }
