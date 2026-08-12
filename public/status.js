@@ -111,6 +111,18 @@ function el(tag, text) {
   return node;
 }
 
+function setRepairStatus(text = "", { busy = false } = {}) {
+  repairStatus.replaceChildren();
+  if (!text) return;
+  repairStatus.append(document.createTextNode(text));
+  if (busy) {
+    const spinner = document.createElement("span");
+    spinner.className = "spinner";
+    spinner.setAttribute("aria-hidden", "true");
+    repairStatus.append(" ", spinner);
+  }
+}
+
 function row(term, value, target = details) {
   const dt = document.createElement("dt");
   dt.textContent = term;
@@ -887,16 +899,25 @@ function showStructuredFailure(data) {
     repairSubmit.hidden = true;
     repairFields.replaceChildren();
     const messages = {
-      queued: "The repair request is queued.",
-      preparing: "Palomar is validating the proposed metadata changes.",
+      queued: "Preparing the pull request…",
+      preparing: "Preparing the pull request…",
       "pr-open": "Palomar opened a pull request. Review and merge it, then make a new submission.",
       merged: "The repair pull request was merged. Make a new submission using the merged commit.",
       "needs-input": "Palomar could not safely prepare this change. Use the explanation below to update the file manually.",
       failed: "Palomar could not create the repair pull request. This is a fault at our end; you can still make the changes manually.",
       closed: "The repair pull request was closed without merging. Update the file manually or make a new submission after changing it.",
     };
-    repairStatus.textContent = messages[data.repair.status] ?? `Repair status: ${data.repair.status}`;
-    if (data.repair.explanation) repairStatus.append(` ${data.repair.explanation}`);
+    const preparing = ["queued", "preparing"].includes(data.repair.status);
+    setRepairStatus(
+      messages[data.repair.status] ?? `Repair status: ${data.repair.status}`,
+      { busy: preparing },
+    );
+    const explanationIsStatus = ["queued", "preparing", "pr-open", "merged"].includes(
+      data.repair.status,
+    );
+    if (data.repair.explanation && !explanationIsStatus) {
+      repairStatus.append(` ${data.repair.explanation}`);
+    }
     if (data.repair.pr_url) repairStatus.append(" ", link(data.repair.pr_url, "Open the pull request."));
     if (data.repair.patch && !data.repair.pr_url) {
       const disclosure = document.createElement("details");
@@ -907,7 +928,7 @@ function showStructuredFailure(data) {
       repairFields.append(disclosure);
     }
   } else {
-    repairStatus.textContent = "";
+    setRepairStatus();
   }
   return true;
 }
@@ -916,13 +937,12 @@ repairForm?.addEventListener("submit", async (event) => {
   event.preventDefault();
   repairValidationAttempted = true;
   if (!validateRepairForm() || !repairForm.checkValidity()) {
-    repairStatus.textContent =
-      "Complete the highlighted fields before preparing the pull request.";
+    setRepairStatus("Complete the highlighted fields before preparing the pull request.");
     repairForm.reportValidity();
     return;
   }
   const edits = repairEdits();
-  repairStatus.textContent = "Submitting the repair request…";
+  setRepairStatus("Submitting the repair request…", { busy: true });
   const response = await submissionRequest(token, "/api/repair", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -934,10 +954,10 @@ repairForm?.addEventListener("submit", async (event) => {
   });
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
-    repairStatus.textContent = `That did not work: ${body.error ?? response.status}`;
+    setRepairStatus(`That did not work: ${body.error ?? response.status}`);
     return;
   }
-  repairStatus.textContent = "The repair request is queued.";
+  setRepairStatus("Preparing the pull request…", { busy: true });
   repairSubmit.disabled = true;
   pollDelay = 0;
   poll();
