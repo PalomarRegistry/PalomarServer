@@ -227,6 +227,49 @@ test("the Comparator path check reports a missing file without blocking submissi
   assert.doesNotMatch(script, /setCustomValidity/);
 });
 
+test("the repository field offers public repositories once its owner is complete", async () => {
+  const script = await readFile(new URL("../public/intake.js", import.meta.url), "utf8");
+  const { publicRepositorySuggestions, repositoryQuery } = await import("../public/normalize.js");
+
+  assert.match(form, /id="repository" name="repository" required autocomplete="off"\s+list="repository-suggestions"/);
+  assert.match(form, /<datalist id="repository-suggestions"><\/datalist>/);
+  assert.match(form, /Type <code>owner\/<\/code> to choose from its repositories/);
+
+  assert.deepEqual(repositoryQuery("Owner/"), { owner: "Owner", prefix: "", url: false });
+  assert.deepEqual(repositoryQuery("https://github.com/Owner/pro"), {
+    owner: "Owner", prefix: "pro", url: true,
+  });
+  for (const incomplete of ["Owner", "https://github.com/Owner", "../"]) {
+    assert.equal(repositoryQuery(incomplete), null);
+  }
+
+  const rows = [
+    { full_name: "Owner/Proof", private: false },
+    { full_name: "Owner/project", private: false },
+    { full_name: "Owner/private-project", private: true },
+    { full_name: "Someone/project", private: false },
+    { full_name: "invalid", private: false },
+  ];
+  assert.deepEqual(publicRepositorySuggestions(rows, "owner/pr"), [
+    "Owner/Proof", "Owner/project",
+  ]);
+  assert.deepEqual(publicRepositorySuggestions(rows, "https://github.com/owner/pro"), [
+    "https://github.com/Owner/Proof", "https://github.com/Owner/project",
+  ]);
+  assert.deepEqual(publicRepositorySuggestions(rows, "owner/", 1), ["Owner/Proof"]);
+  assert.deepEqual(publicRepositorySuggestions(rows, "owner", 100), []);
+
+  // One bounded request is cached per owner. Subsequent keystrokes only
+  // rebuild the native datalist, while a different owner cancels stale I/O.
+  assert.match(script, /repositorySuggestionCache = new Map\(\)/);
+  assert.match(script, /users\/\$\{encodeURIComponent\(owner\)\}\/repos\?type=owner&sort=full_name&per_page=100/);
+  assert.match(script, /new AbortController\(\)/);
+  assert.match(script, /repositorySuggestionRequest\?\.controller\.abort\(\)/);
+  assert.match(script, /repositorySuggestionCache\.set\(key, Array\.isArray\(rows\) \? rows : \[\]\)/);
+  assert.match(script, /publicRepositorySuggestions\(rows, repository\.input\.value\)/);
+  assert.match(script, /repository\.input\?\.addEventListener\("input", \(\) => \{\s+updateRepositorySuggestions\(\)/);
+});
+
 test("the form still works without the script", () => {
   // Nothing required lives behind JavaScript: the method, action, and every
   // required control are in the markup.

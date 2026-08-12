@@ -115,11 +115,13 @@ Identify every missing, malformed, or inconsistent field. For each problem, name
     <form method="post" action="/submit">
       <label for="repository">Repository</label>
       <input id="repository" name="repository" required autocomplete="off"
+             list="repository-suggestions"
              aria-describedby="repository-hint"
              placeholder="owner/formalization" value="${escape(values.repository)}">
+      <datalist id="repository-suggestions"></datalist>
       <p class="hint" id="repository-hint">
         <span class="field-status" id="repository-status" aria-hidden="true"></span>
-        <span id="repository-message">A public GitHub repository, as <code>owner/name</code> or a URL.</span>
+        <span id="repository-message">A public GitHub repository. Type <code>owner/</code> to choose from its repositories, or paste a URL.</span>
       </p>
 
       <label for="commit">Commit</label>

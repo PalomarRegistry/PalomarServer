@@ -23,8 +23,10 @@ import {
   normalizePalomarId,
   normalizeRepository,
   normalizeRepositoryPath,
+  publicRepositorySuggestions,
   registrationIdentity,
   registrationIdentityDigest,
+  repositoryQuery,
 } from "./normalize.js";
 
 const promptButton = document.getElementById("copy-formalization-prompt");
@@ -124,9 +126,10 @@ function debounce(run, ms) {
   };
 }
 
-async function githubJson(path) {
+async function githubJson(path, { signal } = {}) {
   const response = await fetch(`https://api.github.com/${path}`, {
     headers: { accept: "application/vnd.github+json" },
+    signal,
   });
   if (response.status === 403 || response.status === 429) return "rate-limited";
   return response.ok ? response.json() : null;
@@ -146,6 +149,87 @@ const DEFAULT = {
 let checkedRepository = null;
 let checkedDefaultHead = null;
 let checkedCommit = null;
+const repositorySuggestionList = document.getElementById("repository-suggestions");
+const repositorySuggestionCache = new Map();
+let repositorySuggestionRequest = null;
+
+function renderRepositorySuggestions() {
+  if (!repositorySuggestionList || !repository.input) return;
+  const query = repositoryQuery(repository.input.value);
+  const rows = query
+    ? repositorySuggestionCache.get(query.owner.toLowerCase()) ?? []
+    : [];
+  const fragment = document.createDocumentFragment();
+  for (const value of publicRepositorySuggestions(rows, repository.input.value)) {
+    const option = document.createElement("option");
+    option.value = value;
+    fragment.append(option);
+  }
+  repositorySuggestionList.replaceChildren(fragment);
+}
+
+/**
+ * Fetch once after the owner is complete, then do all further filtering in
+ * memory. A changed owner aborts obsolete I/O; typing a repository suffix does
+ * neither network work nor a large DOM update (GitHub returns at most 100).
+ */
+async function loadRepositorySuggestions(owner) {
+  const key = owner.toLowerCase();
+  const controller = new AbortController();
+  repositorySuggestionRequest = { key, controller };
+  try {
+    const rows = await githubJson(
+      `users/${encodeURIComponent(owner)}/repos?type=owner&sort=full_name&per_page=100`,
+      { signal: controller.signal },
+    );
+    if (repositorySuggestionRequest?.controller !== controller) return;
+    // A failed convenience lookup stays failed for this page. Retrying it on
+    // every suffix keystroke would turn a GitHub outage or rate limit into a
+    // burst of requests while making the field feel worse, not better.
+    repositorySuggestionCache.set(key, Array.isArray(rows) ? rows : []);
+    const current = repositoryQuery(repository.input?.value);
+    if (current?.owner.toLowerCase() === key) renderRepositorySuggestions();
+  } catch (error) {
+    if (error?.name !== "AbortError" &&
+        repositorySuggestionRequest?.controller === controller) {
+      repositorySuggestionCache.set(key, []);
+    }
+  } finally {
+    if (repositorySuggestionRequest?.controller === controller) {
+      repositorySuggestionRequest = null;
+    }
+  }
+}
+
+function updateRepositorySuggestions() {
+  const query = repositoryQuery(repository.input?.value);
+  if (!query) {
+    repositorySuggestionRequest?.controller.abort();
+    repositorySuggestionRequest = null;
+    return renderRepositorySuggestions();
+  }
+  const key = query.owner.toLowerCase();
+  if (repositorySuggestionCache.has(key)) {
+    if (repositorySuggestionRequest?.key !== key) {
+      repositorySuggestionRequest?.controller.abort();
+      repositorySuggestionRequest = null;
+    }
+    return renderRepositorySuggestions();
+  }
+  if (repositorySuggestionRequest?.key === key) return;
+  repositorySuggestionRequest?.controller.abort();
+  repositorySuggestionList?.replaceChildren();
+  void loadRepositorySuggestions(query.owner);
+}
+
+function cachedSuggestedRepository(name) {
+  const [owner] = name.split("/");
+  const rows = repositorySuggestionCache.get(owner.toLowerCase());
+  return Array.isArray(rows)
+    ? rows.find((row) => row?.private === false &&
+        normalizeRepository(row.full_name)?.toLowerCase() === name.toLowerCase())
+    : null;
+}
 
 function offerDefaultCommit(parts, name) {
   const known = checkedDefaultHead?.name === name ? checkedDefaultHead : null;
@@ -170,7 +254,7 @@ const checkRepository = latest(async (settle, parts) => {
   settle("checking", `Looking for ${name}…`);
   const data = checkedRepository?.name === name
     ? checkedRepository.data
-    : await githubJson(`repos/${name}`);
+    : cachedSuggestedRepository(name) ?? await githubJson(`repos/${name}`);
   if (data === "rate-limited") return settle("", DEFAULT.repository);
   if (!data) return settle("missing", `No public repository called ${name}.`);
   if (data.private) return settle("missing", `${name} is private; Palomar indexes public repositories.`);
@@ -572,6 +656,7 @@ function scheduleRegistrationLookup() {
 // Changing that repository clears only an untouched suggestion; a commit the
 // submitter typed or edited is never discarded.
 repository.input?.addEventListener("input", () => {
+  updateRepositorySuggestions();
   checkedRepository = null;
   checkedDefaultHead = null;
   checkedCommit = null;
