@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   inflightOpen,
   isCurrentReview,
+  principalSubmissions,
   repairOpen,
   reviewerOpen,
   StateContractError,
@@ -55,6 +56,22 @@ test("the reviewer queue validates its owned fields and preserves the rest", () 
     /index\/open\.json open\[1\] is duplicated/,
   );
   assert.throws(() => reviewerOpen({ schema_version: 2, open: [] }), StateContractError);
+});
+
+test("the private principal locator is strict and duplicate-free", () => {
+  const path = `index/principals/${"a".repeat(64)}.json`;
+  assert.deepEqual(
+    principalSubmissions({ schema_version: 1, submissions: [ID] }, path),
+    [ID],
+  );
+  assert.throws(
+    () => principalSubmissions({ schema_version: 1, submissions: [ID, ID] }, path),
+    /duplicated/,
+  );
+  assert.throws(
+    () => principalSubmissions({ schema_version: 1, submissions: [], extra: true }, path),
+    /exactly/,
+  );
 });
 
 test("the repair outbox is a strict unique submission-id queue", () => {

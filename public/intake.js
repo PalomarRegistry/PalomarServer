@@ -441,7 +441,7 @@ for (const [parts, check, normalize] of [
 }
 
 /**
- * The approval note only means anything for one of the two answers, so it is
+ * The approval note only means anything for one of the three answers, so it is
  * disabled until that answer is given. Disabled rather than hidden: a control
  * that appears from nowhere is harder to follow than one that was always there.
  */

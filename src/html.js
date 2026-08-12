@@ -49,11 +49,23 @@ export function intakeForm(env, values = {}, problems = []) {
       <li>The result has credible research interest and a clear informal explanation.</li>
       <li>A public, pinned commit contains an auditable Challenge, matching Solution,
           Comparator configuration, <code>formalization.yaml</code>, and a licence.</li>
-      <li>You are a responsible author or maintainer, or have their approval.</li>
+      <li>For a registrable submission, you are a responsible author or maintainer, or have their approval.
+          Technical Maintainers may instead run a non-registerable test.</li>
     </ul>
     <p>See the
       <a href="https://github.com/PalomarRegistry/PalomarPolicy/blob/main/CONTRIBUTING.md">full submission requirements</a>.
     </p>
+
+    <section class="disclosure">
+      <h2>Already have a submission in progress?</h2>
+      <p>
+        Sign in with GitHub to get fresh private links to every submission
+        Palomar is still working on for you. You do not need the original link.
+      </p>
+      <form method="get" action="/submissions">
+        <button type="submit" class="secondary">Find my submissions</button>
+      </form>
+    </section>
 
     <section class="disclosure metadata-warning">
       <h2>Check <code>formalization.yaml</code> before you submit</h2>
@@ -168,9 +180,18 @@ Identify every missing, malformed, obsolete, or inconsistent field. For each pro
                  ${values.authorization_relationship === "approved" ? "checked" : ""}>
           I have approval from a responsible author or maintainer
         </label>
+        <label class="choice">
+          <input type="radio" name="authorization_relationship" value="technical-test"
+                 ${values.authorization_relationship === "technical-test" ? "checked" : ""}>
+          I am a Palomar Technical Maintainer testing the workflow
+        </label>
         <p class="hint">
           If this repository is only a thin wrapper around another formalization,
           answer about that underlying repository, not the wrapper.
+        </p>
+        <p class="hint warning">
+          A technical-team test may exercise the full workflow without repository
+          write access, but it can never be registered.
         </p>
       </fieldset>
 
@@ -209,13 +230,88 @@ Identify every missing, malformed, obsolete, or inconsistent field. For each pro
       <button type="submit">Authenticate via GitHub</button>
       <p class="hint">
         You may be asked to sign in, so Palomar can confirm you have write
-        access to the repository you are submitting. If you are already signed
-        in to GitHub you will not see anything. The sign-in is used once and
-        not stored.
+        access to the repository you are submitting, or active Technical
+        Maintainer membership for a marked test. If you are
+        already signed in to GitHub you will not see anything. The sign-in is
+        used once and not stored.
       </p>
       <p class="visually-hidden" role="status" id="live-status"></p>
     </form>
     <script type="module" src="/intake.js"></script>
+  `);
+}
+
+export function submissionsPage(
+  env,
+  { submissions = [], pending = null, nonce = null, problems = [] } = {},
+) {
+  const trouble = problems.length
+    ? `<section class="disclosure problems-block" role="alert">
+         <h2>The new submission has not started</h2>
+         <ul class="problems">${problems.map((problem) => `<li>${escape(problem)}</li>`).join("")}</ul>
+       </section>`
+    : "";
+  const rows = submissions.length
+    ? submissions.map((submission) => {
+        const sameRepository = pending &&
+          String(submission.repository).toLowerCase() === String(pending.repository).toLowerCase();
+        const replacement = sameRepository && submission.replaceable
+          ? `<form method="post" action="/submission-choice">
+               <input type="hidden" name="state" value="${escape(nonce)}">
+               <input type="hidden" name="replace_id" value="${escape(submission.id)}">
+               <button type="submit">Abandon this submission and start the new one</button>
+               <p class="hint warning">This withdraws the earlier submission and cannot be undone.</p>
+             </form>`
+          : "";
+        return `<li class="disclosure">
+          <h2>${escape(submission.repository)}</h2>
+          <dl class="details">
+            <dt>Submission</dt><dd><code>${escape(submission.id)}</code></dd>
+            <dt>Commit</dt><dd><code>${escape(submission.commit)}</code></dd>
+            <dt>Status</dt><dd>${escape(submission.statusLabel)}</dd>
+          </dl>
+          <p><a href="/s#${escape(submission.token)}">Open this submission</a></p>
+          ${sameRepository
+            ? `<p class="hint">This is the same repository as the submission you just tried to start.</p>`
+            : ""}
+          ${replacement}
+        </li>`;
+      }).join("")
+    : `<li>There are no submissions still in progress for this GitHub account.</li>`;
+  const sameReplaceable = pending && submissions.some((submission) =>
+    submission.replaceable &&
+    String(submission.repository).toLowerCase() === String(pending.repository).toLowerCase()
+  );
+  const continueNew = pending && !sameReplaceable
+    ? `<section class="disclosure">
+         <h2>Start the new submission</h2>
+         <p>
+           Continue with <strong>${escape(pending.repository)}</strong> at
+           <code>${escape(pending.commit)}</code>. Existing submissions are left unchanged.
+         </p>
+         <form method="post" action="/submission-choice">
+           <input type="hidden" name="state" value="${escape(nonce)}">
+           <button type="submit">Start the new submission</button>
+         </form>
+       </section>`
+    : "";
+  const intro = pending
+    ? `<p class="lede">
+         GitHub identified you. Before Palomar starts another submission, choose whether
+         to return to work already in progress or continue with the new commit.
+       </p>`
+    : `<p class="lede">
+         The original link for each submission remains valid; a fresh link here replaces
+         only the previous link issued through recovery. Anyone with one can read that
+         submission's review and make its decisions, so treat it like a password.
+       </p>`;
+  return page(env, "Your submissions in progress", `
+    <h1>Your submissions in progress</h1>
+    ${intro}
+    ${trouble}
+    <ul class="submission-list">${rows}</ul>
+    ${continueNew}
+    <p><a href="/">Return to the submission form</a></p>
   `);
 }
 
@@ -297,9 +393,10 @@ export function statusPage(env) {
     <section class="disclosure">
       <h2>Keep this link</h2>
       <p>
-        This is the only way back to this submission. Palomar does not email,
-        and there is no account to sign in to. Bookmark it, or copy it
-        somewhere you will still have it tomorrow.
+        This is the quickest way back to this submission. Bookmark it, or copy
+        it somewhere you will still have it tomorrow. If you lose it, the
+        submission form can authenticate you with GitHub and issue a fresh link
+        while the submission is still in progress.
       </p>
       <p class="details">
         <input id="submission-link" readonly aria-label="Link to this submission">

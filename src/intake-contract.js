@@ -12,11 +12,12 @@ import {
   normalizeRepository,
 } from "./submission.js";
 
-const RELATIONSHIPS = new Set(["maintainer", "approved"]);
+const RELATIONSHIPS = new Set(["maintainer", "approved", "technical-test"]);
 // The verifier speaks the long form; the form and the record speak the short.
 const RELATIONSHIP_LABELS = {
   maintainer: "I am a responsible author or maintainer",
   approved: "I have approval from a responsible author or maintainer",
+  "technical-test": "I am a Palomar Technical Maintainer testing the workflow",
 };
 
 export function authorizationRelationshipLabel(relationship) {
@@ -90,7 +91,9 @@ export function validateIntake(fields) {
     problems.push("Existing Palomar ID is malformed.");
   }
   if (!RELATIONSHIPS.has(relationship)) {
-    problems.push("Say whether you maintain this formalization or have approval to submit it.");
+    problems.push(
+      "Say whether you maintain this formalization, have approval, or are running a technical-team test.",
+    );
   }
   if (!configPath.path) {
     problems.push(
@@ -121,7 +124,9 @@ export function validateIntake(fields) {
         formalization_metadata_path: metadataPath.path,
       },
       authorization_relationship: relationship,
-      authorization_evidence: evidence || null,
+      // The server-owned technical-test path must not carry submitter-written
+      // approval evidence, even when a hand-written POST supplies it.
+      authorization_evidence: relationship !== "technical-test" && evidence ? evidence : null,
     },
   };
 }

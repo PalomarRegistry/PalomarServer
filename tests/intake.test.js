@@ -7,6 +7,7 @@ import test from "node:test";
 import { readFile } from "node:fs/promises";
 import { intakeForm } from "../src/html.js";
 import worker from "../src/index.js";
+import { validateIntake } from "../src/intake-contract.js";
 
 // A configured deployment. The server refuses everything without these, so a
 // test env missing one would exercise the refusal rather than the thing it is
@@ -67,6 +68,22 @@ test("the approval note is a field of its own, so it can be turned off", () => {
   assert.match(form, /maxlength="4000"/);
 });
 
+test("approval evidence cannot be attached to the server-owned test relationship", () => {
+  for (const [relationship, expected] of [
+    ["approved", "Approved by the maintainer"],
+    ["maintainer", "Approved by the maintainer"],
+    ["technical-test", null],
+  ]) {
+    const fields = new FormData();
+    fields.set("repository", "owner/project");
+    fields.set("commit", "a".repeat(40));
+    fields.set("comparator_config_path", "comparator.json");
+    fields.set("authorization_relationship", relationship);
+    fields.set("authorization_evidence", "Approved by the maintainer");
+    assert.equal(validateIntake(fields).submission.authorization_evidence, expected);
+  }
+});
+
 test("what a submitter typed survives a rejected submission", () => {
   // Retyping a 40-character SHA and a paragraph of notes because the server
   // had a bad moment is not acceptable.
@@ -101,6 +118,7 @@ test("public text speaks of registration, not publication", () => {
 
 test("the button says what it does", () => {
   assert.match(form, /Authenticate via GitHub/);
+  assert.match(form, /Find my submissions/);
   assert.doesNotMatch(form, /Continue with GitHub/);
 });
 
@@ -139,8 +157,11 @@ test("the form still works without the script", () => {
   // Nothing required lives behind JavaScript: the method, action, and every
   // required control are in the markup.
   assert.match(form, /<form method="post" action="\/submit">/);
+  assert.match(form, /<form method="get" action="\/submissions">/);
   assert.match(form, /id="repository" name="repository" required/);
   assert.match(form, /name="authorization_relationship" value="maintainer" required/);
+  assert.match(form, /name="authorization_relationship" value="technical-test"/);
+  assert.match(form, /technical-team test may exercise the full workflow/);
 });
 
 test("the policy reaches exactly the two origins the form looks things up on", async () => {
@@ -312,8 +333,8 @@ test("the policy permits the sign-in the form redirects to", async () => {
 
   // And the place the form is actually sent is inside that list.
   const { intakeForm } = await import("../src/html.js");
-  const action = /action="([^"]+)"/.exec(intakeForm(ENV))[1];
-  assert.equal(action, "/submit", "the form posts somewhere form-action must allow");
+  const actions = [...intakeForm(ENV).matchAll(/action="([^"]+)"/g)].map((match) => match[1]);
+  assert.deepEqual(actions.sort(), ["/submissions", "/submit"]);
 });
 
 test("the status page keeps the key it tells the submitter to bookmark", async () => {
@@ -327,6 +348,7 @@ test("the status page keeps the key it tells the submitter to bookmark", async (
   const page = statusPage(ENV);
   assert.match(page, /id="submission-link"/);
   assert.match(page, /Treat it like a password/);
+  assert.match(page, /authenticate you with GitHub and issue a fresh link/);
   // The page used to claim the fragment was never sent to any server, while
   // the same page posts it to /session to start the session. Browsers keep it
   // out of the requests they make; that is not the same claim.
@@ -423,7 +445,7 @@ test("agent intake returns all contract problems before spending a GitHub call",
         "Repository must be a GitHub owner/name or URL.",
         "Commit must be a full 40-character SHA. Branches and tags move.",
         "Existing Palomar ID is malformed.",
-        "Say whether you maintain this formalization or have approval to submit it.",
+        "Say whether you maintain this formalization, have approval, or are running a technical-team test.",
         "Comparator configuration is required. Give the repository-relative path to the one configuration this entry records.",
         "Project directory must be a path inside the repository, written with forward slashes.",
         "Comparator configuration must be a path inside the repository, written with forward slashes.",
@@ -667,6 +689,39 @@ test("an intake refused by the throttle never reaches GitHub", async () => {
       assert.equal(response.status, 429, `${path} was not refused`);
       assert.match(await response.text(), expected);
     }
+    const recovery = await worker.fetch(
+      new Request("https://submit.palomar-registry.org/submissions", {
+        headers: { "sec-fetch-site": "none" },
+      }),
+      env,
+    );
+    assert.equal(recovery.status, 429);
+    assert.match(await recovery.text(), /Too many submissions/);
+  } finally {
+    globalThis.fetch = previous;
+  }
+});
+
+test("recovery start rejects cross-site navigation and its callback is throttled", async () => {
+  const previous = globalThis.fetch;
+  globalThis.fetch = async () => {
+    throw new Error("a guarded recovery request reached GitHub");
+  };
+  try {
+    const crossSite = await worker.fetch(
+      new Request("https://submit.palomar-registry.org/submissions", {
+        headers: { "sec-fetch-site": "cross-site" },
+      }),
+      ENV,
+    );
+    assert.equal(crossSite.status, 403);
+
+    const env = { ...ENV, INTAKE_LIMITER: { limit: async () => ({ success: false }) } };
+    const callback = await worker.fetch(
+      new Request(`https://submit.palomar-registry.org/oauth/callback?state=${"a".repeat(64)}`),
+      env,
+    );
+    assert.equal(callback.status, 429);
   } finally {
     globalThis.fetch = previous;
   }
@@ -730,7 +785,7 @@ test("a deployment missing a secret serves nothing, and says so without naming i
     // would tell a stranger which secrets this deployment has lost.
     assert.deepEqual(Object.keys(body), ["ok"]);
 
-    for (const path of ["/", "/submit", "/api/review"]) {
+    for (const path of ["/", "/submit", "/submissions", "/api/review"]) {
       const response = await worker.fetch(
         new Request(`https://submit.palomar-registry.org${path}`, {
           method: path === "/submit" ? "POST" : "GET",
@@ -768,6 +823,13 @@ test("intake refuses when the limiter binding has gone missing", async () => {
       );
       assert.equal(response.status, 503, `${path} was not refused`);
     }
+    const recovery = await worker.fetch(
+      new Request("https://submit.palomar-registry.org/submissions", {
+        headers: { "sec-fetch-site": "none" },
+      }),
+      env,
+    );
+    assert.equal(recovery.status, 503, "/submissions was not refused");
     // And the health check knows, rather than being the last place to find out.
     const health = await worker.fetch(
       new Request("https://submit.palomar-registry.org/healthz"),

@@ -678,10 +678,18 @@ async function poll() {
   }
   registerButton.hidden = !presentation.register;
   withdrawButton.hidden = !presentation.withdraw;
-  registerButton.disabled = decisionInFlight || !presentation.register;
+  const testSubmission = data.test_submission === true;
+  registerButton.disabled = decisionInFlight || !presentation.register || testSubmission;
   withdrawButton.disabled = decisionInFlight || !presentation.withdraw;
   registerWarning.hidden = !presentation.register;
   withdrawWarning.hidden = !presentation.withdraw;
+  if (presentation.register && testSubmission) {
+    decisionIntro.textContent =
+      "This test has reached the point where an ordinary accepted submission could be registered.";
+    registerWarning.textContent =
+      "Registration would be allowed here if this were not a technical-team test submission. " +
+      "Tests can exercise review, but they cannot enter the public registry.";
+  }
   if (!effectiveConsent) {
     withdrawWarning.textContent =
       "Withdrawing ends this submission. Nothing about the review or decision becomes public.";

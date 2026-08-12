@@ -112,6 +112,27 @@ export function reviewerOpen(value) {
   return value.open;
 }
 
+/** The private, pepper-keyed locator used to recover one principal's work. */
+export function principalSubmissions(value, path) {
+  if (!plainObject(value) || !hasExactlyKeys(value, ["schema_version", "submissions"]) ||
+      value.schema_version !== 1 || !Array.isArray(value.submissions)) {
+    throw new StateContractError(
+      `${path} must contain exactly schema_version 1 and a submissions array`,
+    );
+  }
+  const ids = new Set();
+  for (const [index, id] of value.submissions.entries()) {
+    if (typeof id !== "string" || !SUBMISSION_ID_RE.test(id)) {
+      throw new StateContractError(`${path}.submissions[${index}] is not a submission id`);
+    }
+    if (ids.has(id)) {
+      throw new StateContractError(`${path}.submissions[${index}] is duplicated`);
+    }
+    ids.add(id);
+  }
+  return value.submissions;
+}
+
 /** The repair worker's durable outbox, with the same fail-closed rules as review. */
 export function repairOpen(value) {
   if (!plainObject(value) || value.schema_version !== 1 || !Array.isArray(value.open)) {

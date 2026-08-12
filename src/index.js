@@ -5,6 +5,7 @@ import {
   newRecord,
   pepper,
   recordedAt,
+  STATUSES,
   statePath,
   tokenDigest,
 } from "./submission.js";
@@ -25,7 +26,7 @@ import {
   writeState,
   transactState,
 } from "./github.js";
-import { intakeForm, statusPage, errorPage } from "./html.js";
+import { intakeForm, statusPage, errorPage, submissionsPage } from "./html.js";
 import {
   admissionDecision,
   nextRateRecord,
@@ -49,6 +50,7 @@ import {
   REPAIR_INDEX_PATH,
   inflightOpen,
   isCurrentReview,
+  principalSubmissions,
   StateContractError,
   submitterReview,
   reviewerOpen,
@@ -66,6 +68,7 @@ import {
   beginDashboardLogin,
   completeDashboardLogin,
   dashboardPrincipal,
+  technicalTeamMembership,
 } from "./dashboard-auth.js";
 import { dashboardHtml, withDashboardActions } from "./dashboard.js";
 import { SECURITY_HEADERS } from "./response-security.js";
@@ -156,6 +159,13 @@ function formalizationPath(record) {
   if (explicit) return explicit;
   const project = record.requested_paths?.project_path;
   return project ? `${project}/formalization.yaml` : "formalization.yaml";
+}
+
+/** A redundant marker set: losing any one field must not make a test registrable. */
+function isTechnicalTest(record) {
+  return record?.test_submission === true ||
+    record?.authorization?.relationship === "technical-test" ||
+    record?.push_proof?.method === "technical-team-test";
 }
 
 function submitterRepair(repair) {
@@ -348,6 +358,13 @@ async function beginSubmission(request, env, { machine = false } = {}) {
     authorization_relationship: relationship,
     authorization_evidence: evidence,
   } = submission;
+  const technicalTest = relationship === "technical-test";
+
+  if (machine && technicalTest) {
+    return rejected(
+      "Technical-team tests require browser GitHub sign-in so Palomar can verify active team membership.",
+    );
+  }
 
   // Ahead of the two reads below and ahead of the write, so an intake refused
   // here costs one call rather than three. For one that is allowed it adds a
@@ -441,7 +458,7 @@ async function beginSubmission(request, env, { machine = false } = {}) {
       commit,
       instructions: [
         `Create a tag at the commit you are submitting. Creating a ref needs the`,
-        `same write access the browser sign-in checks for, which is why it is here:`,
+        `same write access an ordinary browser submission checks for, which is why it is here:`,
         `  gh api -X POST repos/${repositoryName}/git/refs \\`,
         `    -f ref=refs/tags/${CHALLENGE_TAG_PREFIX}${challenge} -f sha=${commit}`,
         `Then a secret gist carrying the same challenge, which is what tells`,
@@ -457,10 +474,61 @@ async function beginSubmission(request, env, { machine = false } = {}) {
   const authorize = new URL("https://github.com/login/oauth/authorize");
   authorize.searchParams.set("client_id", env.OAUTH_CLIENT_ID);
   authorize.searchParams.set("redirect_uri", `${new URL(request.url).origin}/oauth/callback`);
-  authorize.searchParams.set("scope", "read:user");
+  authorize.searchParams.set("scope", technicalTest ? "read:user read:org" : "read:user");
   authorize.searchParams.set("state", nonce);
   // `Response.redirect` answers with immutable headers, so the redirect is
   // built by hand in order to carry the cookie.
+  return new Response(null, {
+    status: 303,
+    headers: {
+      location: authorize.toString(),
+      "set-cookie": await intakeCookie(nonce, binding),
+      ...SECURITY_HEADERS,
+    },
+  });
+}
+
+/** Begin a GitHub sign-in that recovers current submissions without starting one. */
+async function beginRecovery(request, env) {
+  let pendingCount;
+  try {
+    pendingCount = (await listState(env, "pending")).length;
+  } catch (error) {
+    console.error("pending", String(error?.stack ?? error));
+    return intakeUnavailable(env, false);
+  }
+  if (pendingCount >= MAX_PENDING) {
+    return html(errorPage(env, "Submission recovery is temporarily busy", [
+      "Please try again shortly.",
+    ]), 429);
+  }
+
+  const nonce = newAccessToken();
+  const binding = newAccessToken();
+  const pending = {
+    schema_version: 2,
+    binding_sha256: await digest(binding),
+    method: "oauth-recovery",
+    created_at: recordedAt(),
+  };
+  try {
+    await writeState(
+      env,
+      `pending/${await digest(nonce)}.json`,
+      pending,
+      "Begin submission recovery",
+    );
+  } catch {
+    return html(errorPage(env, "Submission recovery could not begin", [
+      "Nothing was changed. Please try again.",
+    ]), 503);
+  }
+
+  const authorize = new URL("https://github.com/login/oauth/authorize");
+  authorize.searchParams.set("client_id", env.OAUTH_CLIENT_ID);
+  authorize.searchParams.set("redirect_uri", `${new URL(request.url).origin}/oauth/callback`);
+  authorize.searchParams.set("scope", "read:user");
+  authorize.searchParams.set("state", nonce);
   return new Response(null, {
     status: 303,
     headers: {
@@ -478,32 +546,243 @@ async function ratePath(env, principalId) {
   return `index/rate/${await digest(`${pepper(env)}:${principalId}`)}.json`;
 }
 
+async function principalPath(env, principalId) {
+  return `index/principals/${await digest(`${pepper(env)}:${principalId}`)}.json`;
+}
+
+function principalOwns(record, principal) {
+  return Number.isSafeInteger(principal?.id) &&
+    record?.push_proof?.principal?.id === principal.id;
+}
+
+async function openSubmissionsForPrincipal(env, principal) {
+  try {
+    const principalIndexPath = await principalPath(env, principal.id);
+    const principalIndex = await readState(env, principalIndexPath);
+    if (principalIndex.sha === null) {
+      return { principalIndexPath, principalIndex, queue: null, entries: [] };
+    }
+    const indexed = principalSubmissions(principalIndex.value, principalIndexPath);
+    const queue = await readState(env, OPEN_INDEX_PATH);
+    const ids = reviewerOpen(queue.value);
+    const current = ids.filter((id) => indexed.includes(id));
+    const entries = await Promise.all(current.map(async (id) => ({
+      id,
+      path: statePath(id, "state.json"),
+      entry: await readState(env, statePath(id, "state.json")),
+    })));
+    for (const item of entries) {
+      if (!item.entry.value) {
+        throw new StateContractError(`${OPEN_INDEX_PATH} names missing submission ${item.id}`);
+      }
+    }
+    for (const item of entries) {
+      if (!principalOwns(item.entry.value, principal)) {
+        throw new StateContractError(
+          `${principalIndexPath} names a submission owned by another GitHub principal`,
+        );
+      }
+    }
+    return { principalIndexPath, principalIndex, queue, entries };
+  } catch (error) {
+    if (error instanceof StateContractError) throw error;
+    if (error instanceof SyntaxError) {
+      throw new StateContractError(`${OPEN_INDEX_PATH} or one of its submissions is not valid JSON`);
+    }
+    throw error;
+  }
+}
+
+/**
+ * Rotate the authenticated recovery capability for each current submission.
+ *
+ * The original link remains valid. Exactly one additional recovery link is
+ * retained per record, so repeatedly signing in neither invalidates a bookmark
+ * nor grows the token index without bound.
+ */
+async function issueRecoveryLinks(
+  env,
+  {
+    pendingPath,
+    pendingSha,
+    principal,
+    verification = null,
+    consumePending = false,
+    onlyIfAny = false,
+  },
+) {
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const discovered = await openSubmissionsForPrincipal(env, principal);
+    if (onlyIfAny && discovered.entries.length === 0) {
+      return { submissions: [] };
+    }
+    const issued = await Promise.all(discovered.entries.map(async (item) => {
+      const token = newAccessToken();
+      const tokenSha256 = await tokenDigest(env, token);
+      const original = item.entry.value.token_sha256;
+      const oldRecovery = item.entry.value.recovery_token_sha256 ?? null;
+      if (!/^[0-9a-f]{64}$/.test(original)) {
+        throw new StateContractError(`${item.path}.token_sha256 must be a SHA-256 digest`);
+      }
+      if (oldRecovery !== null && !/^[0-9a-f]{64}$/.test(oldRecovery)) {
+        throw new StateContractError(
+          `${item.path}.recovery_token_sha256 must be a SHA-256 digest`,
+        );
+      }
+      if (oldRecovery === original) {
+        throw new StateContractError(
+          `${item.path}.recovery_token_sha256 must differ from token_sha256`,
+        );
+      }
+      return {
+        ...item,
+        token,
+        tokenSha256,
+        tokenPath: `index/tokens/${tokenSha256}.json`,
+        originalTokenPath: `index/tokens/${original}.json`,
+        oldRecovery,
+        oldTokenPath: oldRecovery ? `index/tokens/${oldRecovery}.json` : null,
+      };
+    }));
+    const paths = [...new Set([
+      pendingPath,
+      ...(discovered.queue ? [OPEN_INDEX_PATH, discovered.principalIndexPath] : []),
+      ...issued.flatMap((item) => [
+        item.path,
+        item.tokenPath,
+        item.originalTokenPath,
+        ...(item.oldTokenPath ? [item.oldTokenPath] : []),
+      ]),
+    ])];
+    const result = await transactState(env, paths, (files) => {
+      if (
+        files[pendingPath]?.sha !== pendingSha ||
+        (discovered.queue && (
+          files[OPEN_INDEX_PATH]?.sha !== discovered.queue.sha ||
+          files[discovered.principalIndexPath]?.sha !== discovered.principalIndex.sha
+        ))
+      ) {
+        return { changes: [], message: "", result: { retry: true } };
+      }
+      const currentIds = discovered.queue
+        ? reviewerOpen(files[OPEN_INDEX_PATH]?.value)
+        : [];
+      for (const item of issued) {
+        const current = files[item.path];
+        if (current?.sha !== item.entry.sha || !currentIds.includes(item.id)) {
+          return { changes: [], message: "", result: { retry: true } };
+        }
+        if (!principalOwns(current.value, principal)) {
+          throw new StateContractError(
+            `${item.path} no longer belongs to the authenticated GitHub principal`,
+          );
+        }
+        if (files[item.tokenPath]?.sha !== null) {
+          throw new StateContractError("a generated recovery token already exists");
+        }
+        if (files[item.originalTokenPath]?.value?.id !== item.id) {
+          throw new StateContractError(`${item.path} has no matching original token pointer`);
+        }
+        if (item.oldTokenPath && files[item.oldTokenPath]?.value?.id !== item.id) {
+          throw new StateContractError(`${item.path} has no matching recovery token pointer`);
+        }
+      }
+
+      const held = files[pendingPath].value;
+      const pendingChange = consumePending
+        ? { path: pendingPath, delete: true }
+        : {
+            path: pendingPath,
+            value: {
+              ...held,
+              oauth_verification: verification,
+              created_at: recordedAt(),
+            },
+          };
+      const changes = [pendingChange];
+      for (const item of issued) {
+        changes.push({
+          path: item.path,
+          value: {
+            ...files[item.path].value,
+            recovery_token_sha256: item.tokenSha256,
+            recovery_token_bound_at: recordedAt(),
+          },
+        });
+        if (item.oldTokenPath) changes.push({ path: item.oldTokenPath, delete: true });
+        changes.push({ path: item.tokenPath, value: { id: item.id } });
+      }
+      return {
+        changes,
+        message: consumePending
+          ? `Recover ${issued.length} submission link(s)`
+          : `Prepare submission choice with ${issued.length} current link(s)`,
+        result: {
+          retry: false,
+          submissions: issued.map((item) => ({
+            id: item.id,
+            repository: item.entry.value.repository,
+            commit: item.entry.value.commit,
+            status: item.entry.value.status,
+            statusLabel: STATUSES[item.entry.value.status] ?? item.entry.value.status,
+            replaceable: !CLOSED.has(item.entry.value.status),
+            token: item.token,
+          })),
+        },
+      };
+    });
+    if (!result.retry) return result;
+  }
+  throw new StateContractError("the open-submission list kept changing during recovery");
+}
+
 /**
  * Everything after the proof, shared so the two intakes cannot drift apart.
  *
- * A browser sign-in and an agent's tag prove the same thing by different
- * means. What follows must not depend on which: the same admission, the same
- * record, the same indexes, the same dispatch. Two copies of this would be two
- * definitions of what a submission is.
+ * Ordinary browser and agent intakes prove write access by different means; a
+ * marked browser test proves technical-team membership instead. What follows
+ * records that distinction but otherwise shares the same admission, indexes,
+ * and dispatch. Two copies would be two definitions of what a submission is.
  */
 async function admitSubmission(
   env,
-  { pendingPath, pendingSha, pending, owner, submitter, proof },
+  {
+    pendingPath,
+    pendingSha,
+    pending,
+    owner,
+    submitter,
+    proof,
+    replaceId = null,
+    preserveOnRefusal = false,
+  },
 ) {
   const id = newSubmissionId();
   const token = newAccessToken();
   const createdAtMs = Date.now();
   const createdAt = new Date(createdAtMs).toISOString().replace(/\.\d+Z$/, "Z");
   const tokenSha256 = await tokenDigest(env, token);
-  const rate = proof?.principal?.id ? await ratePath(env, proof.principal.id) : null;
+  const testSubmission = pending.authorization_relationship === "technical-test";
+  // Registration clears an ordinary submitter's exponential backoff. A test
+  // can never register, so applying that same record would make the explicitly
+  // authorized testing path less usable after every successful exercise.
+  const rate = proof?.principal?.id && !testSubmission
+    ? await ratePath(env, proof.principal.id)
+    : null;
+  const principalIndexPath = proof?.principal?.id
+    ? await principalPath(env, proof.principal.id)
+    : null;
   const recordPath = statePath(id, "state.json");
   const tokenPath = `index/tokens/${tokenSha256}.json`;
+  const replacedRecordPath = replaceId ? statePath(replaceId, "state.json") : null;
   const paths = [
     pendingPath,
     INFLIGHT_INDEX_PATH,
     OPEN_INDEX_PATH,
     recordPath,
     tokenPath,
+    ...(principalIndexPath ? [principalIndexPath] : []),
+    ...(replacedRecordPath ? [replacedRecordPath] : []),
     ...(rate ? [rate] : []),
   ];
   const record = {
@@ -516,6 +795,7 @@ async function admitSubmission(
       existingId: pending.existing_id,
       context: pending.context,
       requestedPaths: pending.requested_paths ?? {},
+      testSubmission,
       authorization: {
         relationship: pending.authorization_relationship,
         ...(pending.authorization_evidence
@@ -565,6 +845,67 @@ async function admitSubmission(
       const inflight = inflightOpen(files[INFLIGHT_INDEX_PATH]?.value);
       const reviewer = files[OPEN_INDEX_PATH];
       const reviewerIds = reviewerOpen(reviewer?.value);
+      let replaced = null;
+      let availableInflight = inflight;
+      if (replaceId) {
+        const old = files[replacedRecordPath]?.value;
+        const oldPrincipal = old?.push_proof?.principal;
+        if (!reviewerIds.includes(replaceId) || !old) {
+          return {
+            changes: [],
+            message: "",
+            result: {
+              refused: true,
+              retryable: true,
+              status: 409,
+              title: "That earlier submission is no longer in progress",
+              detail: ["Refresh the list before deciding what to replace."],
+            },
+          };
+        }
+        if (oldPrincipal?.id !== proof?.principal?.id) {
+          throw new StateContractError("a replacement did not belong to its authenticated submitter");
+        }
+        if (String(old.repository).toLowerCase() !== String(pending.repository).toLowerCase()) {
+          return {
+            changes: [],
+            message: "",
+            result: {
+              refused: true,
+              retryable: true,
+              status: 409,
+              title: "That is not an earlier submission of this repository",
+              detail: ["Choose the matching submission, or continue with the new one separately."],
+            },
+          };
+        }
+        if (CLOSED.has(old.status)) {
+          return {
+            changes: [],
+            message: "",
+            result: {
+              refused: true,
+              retryable: true,
+              status: 409,
+              title: "That earlier submission can no longer be abandoned",
+              detail: [`It is already ${old.status}.`],
+            },
+          };
+        }
+        availableInflight = inflight.filter((item) => item.id !== replaceId);
+        replaced = {
+          ...old,
+          status: "withdrawn",
+          events: [
+            ...old.events,
+            {
+              at: record.created_at,
+              status: "withdrawn",
+              note: `Replaced by submission ${id}`,
+            },
+          ],
+        };
+      }
       let limit = { refused: false, interval: null, starts: null };
       if (rate) {
         const current = files[rate];
@@ -575,18 +916,21 @@ async function admitSubmission(
       }
       const admission = limit.refused
         ? limit
-        : admissionDecision(inflight, { owner, submitter });
+        : admissionDecision(availableInflight, { owner, submitter });
       if (admission.refused) {
         return {
-          changes: [{ path: pendingPath, delete: true }],
-          message: "Consume refused submission proof",
-          result: admission,
+          changes: preserveOnRefusal ? [] : [{ path: pendingPath, delete: true }],
+          message: preserveOnRefusal ? "" : "Consume refused submission proof",
+          result: { ...admission, retryable: preserveOnRefusal || admission.retryable },
         };
       }
       if (files[recordPath]?.sha !== null || files[tokenPath]?.sha !== null) {
         throw new StateContractError("a generated submission identity already exists");
       }
-      const nextInflight = [...inflight, { id, owner, submitter, at: record.created_at }];
+      const nextInflight = [
+        ...availableInflight,
+        { id, owner, submitter, at: record.created_at },
+      ];
       inflightOpen({ open: nextInflight });
       const nextReviewer = reviewerIds.includes(id)
         ? reviewer.value
@@ -594,11 +938,22 @@ async function admitSubmission(
       reviewerOpen(nextReviewer);
       const changes = [
         { path: pendingPath, delete: true },
+        ...(replaced ? [{ path: replacedRecordPath, value: replaced }] : []),
         { path: recordPath, value: record },
         { path: INFLIGHT_INDEX_PATH, value: { open: nextInflight } },
         { path: OPEN_INDEX_PATH, value: nextReviewer },
         { path: tokenPath, value: { id } },
       ];
+      if (principalIndexPath) {
+        const current = files[principalIndexPath];
+        const submissionIds = current.sha === null
+          ? []
+          : principalSubmissions(current.value, principalIndexPath);
+        changes.push({
+          path: principalIndexPath,
+          value: { schema_version: 1, submissions: [...submissionIds, id] },
+        });
+      }
       if (rate) {
         changes.push({
           path: rate,
@@ -613,7 +968,9 @@ async function admitSubmission(
       }
       return {
         changes,
-        message: `Admit submission ${id}`,
+        message: replaced
+          ? `Replace submission ${replaceId} with ${id}`
+          : `Admit submission ${id}`,
         result: { refused: false, id, token, record },
       };
     });
@@ -655,6 +1012,9 @@ async function verifySubmission(request, env) {
   if (!pending.value) return json({ error: "that submission has already been verified" }, 404);
   if (pending.value.method !== "tag-and-gist") {
     return json({ error: "that intake is a browser sign-in, not an agent submission" }, 409);
+  }
+  if (pending.value.authorization_relationship === "technical-test") {
+    return json({ error: "technical-team tests require browser GitHub sign-in" }, 409);
   }
 
   // The attempt is spent before anything is spent on it, and claimed under the
@@ -809,11 +1169,11 @@ async function refusedIntakeCredential(env, nonce) {
 }
 
 /**
- * Prove the submitter can push to the repository they are submitting.
+ * Prove ordinary repository write access or an explicit technical-team test.
  *
- * The token is used once, here, and never stored. Push access is not the same
- * as authorship, and does not replace the declaration a submitter makes about
- * their relationship to the substantive formalization.
+ * The token is used once, here, and never stored. Ordinary push access is not
+ * the same as authorship; the test exception claims neither, and its distinct
+ * relationship and proof make it permanently non-registerable.
  */
 async function completeSubmission(request, env) {
   const url = new URL(request.url);
@@ -874,7 +1234,6 @@ async function completeSubmission(request, env) {
     return html(errorPage(env, "GitHub declined that sign-in", []), 400);
   }
 
-  const viewer = await fetchRepository(granted.access_token, pending.value.repository);
   const user = await (
     await fetch("https://api.github.com/user", {
       headers: {
@@ -885,18 +1244,9 @@ async function completeSubmission(request, env) {
     })
   ).json();
 
-  if (!viewer?.permissions?.push) {
-    // Deliberately before the pending record is consumed. Consuming first
-    // meant a refused submitter lost everything they had typed, undoing the
-    // care `beginSubmission` takes to hand it back to them.
-    return html(errorPage(env, "You cannot push to that repository", [
-      `Palomar asks submitters to prove write access to ${pending.value.repository}.`,
-      "If you are submitting someone else's formalization, ask a maintainer to submit it.",
-    ]), 403);
-  }
-
   const submitter = user?.login;
-  if (!submitter) {
+  const principal = { login: submitter, id: user?.id };
+  if (!submitter || !Number.isSafeInteger(user?.id)) {
     // Every quota keys on this. Without it the old code bucketed submissions
     // under the empty string, where they throttled each other.
     return html(
@@ -908,30 +1258,150 @@ async function completeSubmission(request, env) {
     );
   }
 
-  // Anyone who can prove push access to any public repository can reach this
-  // point, including on a repository they created a minute ago. Verification
-  // is expensive and long-running, so owner and submitter limits apply. There
-  // is deliberately no shared global cap: unrelated people cannot make intake
+  if (pending.value.method === "oauth-recovery") {
+    try {
+      const recovered = await issueRecoveryLinks(env, {
+        pendingPath,
+        pendingSha: pending.sha,
+        principal,
+        consumePending: true,
+      });
+      return html(
+        submissionsPage(env, { submissions: recovered.submissions }),
+        200,
+        { "set-cookie": await intakeCookie(nonce, null, { clear: true }) },
+      );
+    } catch (error) {
+      if (error instanceof StateUpdateOutcomeError) {
+        console.error("submission-recovery", error.message);
+      } else if (isDurableContractError(error)) {
+        reportDurableContract(error);
+      } else {
+        console.error("submission-recovery", error?.stack ?? String(error));
+      }
+      return html(
+        errorPage(env, "Submission recovery is temporarily unavailable", [
+          "No original link was invalidated. Please try recovery again in a moment.",
+        ]),
+        503,
+        { "set-cookie": await intakeCookie(nonce, null, { clear: true }) },
+      );
+    }
+  }
+
+  if (pending.value.oauth_verification) {
+    return html(errorPage(env, "That sign-in is already waiting for your choice", [
+      "Return to the choice page, or start again from the submission form.",
+    ]), 409);
+  }
+
+  const viewer = await fetchRepository(granted.access_token, pending.value.repository);
+
+  const technicalTest = pending.value.authorization_relationship === "technical-test";
+  if (technicalTest && (
+    !viewer ||
+    viewer.private === true ||
+    (pending.value.repository_id != null && viewer.id !== pending.value.repository_id)
+  )) {
+    if (!(await deleteState(env, pendingPath, pending.sha,
+                            "Discard a technical test whose repository changed"))) {
+      console.error("pending", `could not discard ${pendingPath}`);
+    }
+    return html(
+      errorPage(env, "That repository is not the one this test began for", spentSignInProblems([
+        `${pending.value.repository} could not be read as the same public repository.`,
+      ])),
+      409,
+      { "set-cookie": await intakeCookie(nonce, null, { clear: true }) },
+    );
+  }
+  if (!viewer) {
+    return html(errorPage(env, "That repository can no longer be read", [
+      `${pending.value.repository} may have been deleted, transferred, or made private.`,
+      "Start again after confirming that the public repository is available.",
+    ]), 403);
+  }
+  if (technicalTest) {
+    const membership = await technicalTeamMembership(granted.access_token, submitter);
+    if (membership.unavailable) {
+      console.error("technical-test-oauth-membership", membership.status);
+      if (!(await deleteState(env, pendingPath, pending.sha,
+                              "Discard a test whose membership could not be verified"))) {
+        console.error("pending", `could not discard ${pendingPath}`);
+      }
+      return html(
+        errorPage(env, "Technical-team authorization is temporarily unavailable", spentSignInProblems([
+          "Palomar could not confirm the GitHub team membership just now.",
+        ])),
+        503,
+        { "set-cookie": await intakeCookie(nonce, null, { clear: true }) },
+      );
+    }
+    if (!membership.active) {
+      if (!(await deleteState(env, pendingPath, pending.sha,
+                              "Discard a test requested by a nonmember"))) {
+        console.error("pending", `could not discard ${pendingPath}`);
+      }
+      return html(
+        errorPage(env, "This test exception is limited to Technical Maintainers", spentSignInProblems([
+          "Choose an ordinary authorization relationship, or ask an active Technical Maintainer to run the test.",
+        ])),
+        403,
+        { "set-cookie": await intakeCookie(nonce, null, { clear: true }) },
+      );
+    }
+  }
+
+  if (!viewer?.permissions?.push && !technicalTest) {
+    // Deliberately before the pending record is consumed. Consuming first
+    // meant a refused submitter lost everything they had typed, undoing the
+    // care `beginSubmission` takes to hand it back to them.
+    return html(errorPage(env, "You cannot push to that repository", [
+      `Palomar asks submitters to prove write access to ${pending.value.repository}.`,
+      "If you are submitting someone else's formalization, ask a maintainer to submit it.",
+    ]), 403);
+  }
+
+  // Anyone with ordinary push access, and each explicitly verified Technical
+  // Maintainer test, can reach this point. Verification is expensive and
+  // long-running, so owner and submitter limits apply equally. There is
+  // deliberately no shared global cap: unrelated people cannot make intake
   // refuse everyone. The per-principal backoff and edge throttle remain the
   // broader abuse controls.
   const owner = viewer.owner?.login ?? null;
+  const proof = {
+    schema_version: 1,
+    method: technicalTest ? "technical-team-test" : "oauth",
+    binding: technicalTest ? "active-technical-team-membership" : "same-account",
+    verified_at: recordedAt(),
+    repository_id: viewer.id ?? null,
+    commit: pending.value.commit,
+    principal,
+  };
+  const verification = { owner, submitter, proof };
   let admitted;
   try {
+    const current = await issueRecoveryLinks(env, {
+      pendingPath,
+      pendingSha: pending.sha,
+      principal,
+      verification,
+      onlyIfAny: true,
+    });
+    if (current.submissions.length) {
+      return html(submissionsPage(env, {
+        submissions: current.submissions,
+        pending: pending.value,
+        nonce,
+      }));
+    }
     admitted = await admitSubmission(env, {
       pendingPath,
       pendingSha: pending.sha,
       pending: pending.value,
       owner,
       submitter,
-      proof: {
-        schema_version: 1,
-        method: "oauth",
-        binding: "same-account",
-        verified_at: recordedAt(),
-        repository_id: viewer.id ?? null,
-        commit: pending.value.commit,
-        principal: { login: submitter, id: user?.id ?? null },
-      },
+      proof,
     });
   } catch (error) {
     if (error instanceof StateUpdateOutcomeError) {
@@ -973,6 +1443,99 @@ async function completeSubmission(request, env) {
       location: `${new URL(request.url).origin}/s#${token}`,
       // Spent. Leaving it would put a live secret in the browser for fifteen
       // minutes against a record that no longer exists.
+      "set-cookie": await intakeCookie(nonce, null, { clear: true }),
+      ...SECURITY_HEADERS,
+    },
+  });
+}
+
+/** Finish a new intake after the authenticated submitter has seen current work. */
+async function completeSubmissionChoice(request, env) {
+  if (!madeByThisSite(request)) {
+    return html(errorPage(env, "That choice did not come from this site", [
+      "Return to Palomar's submission form and authenticate again.",
+    ]), 403);
+  }
+  let form;
+  try {
+    form = await request.formData();
+  } catch {
+    return html(errorPage(env, "That submission choice could not be read", []), 400);
+  }
+  const nonce = String(form.get("state") ?? "");
+  const replaceId = String(form.get("replace_id") ?? "") || null;
+  if (!/^[0-9a-f]{64}$/.test(nonce) || (replaceId && !/^[0-9a-z]{12}$/.test(replaceId))) {
+    return html(errorPage(env, "That submission choice is malformed", []), 400);
+  }
+
+  const nonceDigest = await digest(nonce);
+  const credential = intakeCredential(request, nonceDigest);
+  const pendingPath = `pending/${nonceDigest}.json`;
+  const pending = await readState(env, pendingPath);
+  const presented = credential.kind === "valid" ? credential.value : null;
+  const expected = pending.value?.binding_sha256;
+  if (
+    !pending.value ||
+    pending.value.method !== "oauth" ||
+    !expected ||
+    !presented ||
+    (await digest(presented)) !== expected
+  ) {
+    return html(errorPage(env, "That submission choice expired or opened elsewhere", [
+      "Authenticate again to get fresh links and make the choice in this browser.",
+    ]), 400, { "set-cookie": await intakeCookie(nonce, null, { clear: true }) });
+  }
+  const verification = pending.value.oauth_verification;
+  const proof = verification?.proof;
+  const principal = proof?.principal;
+  if (
+    typeof verification?.submitter !== "string" ||
+    !Number.isSafeInteger(principal?.id) ||
+    principal.login !== verification.submitter
+  ) {
+    return html(errorPage(env, "That submission choice is no longer usable", [
+      "Authenticate again before choosing whether to continue or replace earlier work.",
+    ]), 409);
+  }
+
+  let admitted;
+  try {
+    admitted = await admitSubmission(env, {
+      pendingPath,
+      pendingSha: pending.sha,
+      pending: pending.value,
+      owner: verification.owner ?? null,
+      submitter: verification.submitter,
+      proof,
+      replaceId,
+      preserveOnRefusal: true,
+    });
+  } catch (error) {
+    if (error instanceof StateUpdateOutcomeError) {
+      console.error("submission-choice", error.message);
+      return html(errorPage(env, "Submission intake outcome is unknown", [
+        "Do not make another choice yet; ask the registry operator to inspect State.",
+      ]), 503);
+    }
+    const contractFailure = isDurableContractError(error);
+    if (contractFailure) reportDurableContract(error);
+    else console.error("submission-choice", error?.stack ?? String(error));
+    return html(errorPage(env, "Submission intake is temporarily unavailable", [
+      "The earlier submission was not abandoned. Please try again in a moment.",
+    ]), contractFailure ? 503 : 500);
+  }
+
+  if (admitted.refused) {
+    return html(errorPage(env, admitted.title, [
+      ...admitted.detail,
+      "The earlier submission and its recovery link were not changed. Go back to review it or try this choice again later.",
+    ]), admitted.status);
+  }
+
+  return new Response(null, {
+    status: 303,
+    headers: {
+      location: `${new URL(request.url).origin}/s#${admitted.token}`,
       "set-cookie": await intakeCookie(nonce, null, { clear: true }),
       ...SECURITY_HEADERS,
     },
@@ -1300,6 +1863,19 @@ export default {
           (await intakeThrottle(env, request)) ?? (await beginSubmission(request, env))
         );
       }
+      if (request.method === "GET" && url.pathname === "/submissions") {
+        if (!madeByThisSite(request)) {
+          return html(errorPage(env, "Submission recovery did not begin here", [
+            "Open Palomar directly and choose ‘Find my submissions in progress’.",
+          ]), 403);
+        }
+        return (
+          (await intakeThrottle(env, request)) ?? (await beginRecovery(request, env))
+        );
+      }
+      if (request.method === "POST" && url.pathname === "/submission-choice") {
+        return completeSubmissionChoice(request, env);
+      }
       if (request.method === "GET" && url.pathname === "/oauth/callback") {
         if ((url.searchParams.get("state") ?? "").startsWith("dashboard_")) {
           return (
@@ -1307,7 +1883,10 @@ export default {
             (await completeDashboardLogin(request, env))
           );
         }
-        return await completeSubmission(request, env);
+        return (
+          (await intakeThrottle(env, request)) ??
+          (await completeSubmission(request, env))
+        );
       }
       if (request.method === "GET" && url.pathname === "/s") {
         // The token is in the fragment, which browsers never send. The page
@@ -1403,6 +1982,11 @@ export default {
         if (CLOSED.has(entry.record.status)) {
           return json({ error: `already ${entry.record.status}` }, 409);
         }
+        if (isTechnicalTest(entry.record)) {
+          return json({
+            error: "registration would be allowed if this were not a technical-team test submission",
+          }, 409);
+        }
         // Consent is only meaningful once the submitter can see what they
         // would be registering.
         if (entry.record.status !== "review-ready") {
@@ -1464,6 +2048,9 @@ export default {
       if (request.method === "POST" && url.pathname === "/api/repair") {
         const entry = await caller(env, request, { mutating: true });
         if (entry instanceof Response) return entry;
+        if (isTechnicalTest(entry.record)) {
+          return json({ error: "a technical-team test does not open repair pull requests" }, 409);
+        }
         const body = await request.json().catch(() => null);
         let edits;
         try {
@@ -1612,6 +2199,7 @@ export default {
           review_started_at: record.review_started_at ?? null,
           typical_review_seconds: await typicalReviewSeconds(env),
           registration_consent: record.registration_consent === true,
+          test_submission: isTechnicalTest(record),
           // This lets a page that becomes visible again notice that the review
           // it rendered has been replaced before offering consent for it.
           review_sha256:

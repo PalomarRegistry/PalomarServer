@@ -184,6 +184,18 @@ test("registration consent is recorded, and only by the submitter", async () => 
   assert.equal(state.sha, `sha-${statePath("a1b2c3d4e5f6", "state.json")}`);
 });
 
+test("a technical-team test can never record registration consent", async () => {
+  const { written } = stubState(await fixture({
+    test_submission: true,
+    push_verified: false,
+    authorization: { relationship: "technical-test" },
+  }));
+  const response = await worker.fetch(request("/register", "POST"), ENV);
+  assert.equal(response.status, 409);
+  assert.match((await response.json()).error, /would be allowed if this were not.*test/i);
+  assert.equal(written.length, 0);
+});
+
 test("consent cannot be given before there is a review to consent to", async () => {
   const { written } = stubState(await fixture({ status: "awaiting-review" }));
   const response = await worker.fetch(request("/register", "POST"), ENV);
@@ -326,6 +338,13 @@ test("the status feed never carries the submitter or the review", async () => {
   assert.equal(response.status, 200);
   assert.ok(!body.includes("someone"), "the submitter's login must not be echoed");
   assert.ok(!body.includes("An example review"), "the review must not ride along");
+});
+
+test("the status feed tells the page when registration is blocked as a test", async () => {
+  stubState(await fixture({ test_submission: true, push_verified: false }));
+  const response = await worker.fetch(request("/api/submission"), ENV);
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).test_submission, true);
 });
 
 test("the health check says whether the service is up and nothing else", async () => {
@@ -956,6 +975,11 @@ test("every status gets exactly the review and decision controls the server perm
   assert.match(script, /data\.review_sha256 !== reviewDigest[\s\S]*resetReview\(\)/);
   assert.match(script, /path === "\/register"[\s\S]*resetReview\(\);[\s\S]*await poll\(\)/);
   assert.match(script, /withdrawButton\.disabled = decisionInFlight \|\| !presentation\.withdraw/);
+  assert.match(
+    script,
+    /registerButton\.disabled = decisionInFlight \|\| !presentation\.register \|\| testSubmission/,
+  );
+  assert.match(script, /Registration would be allowed here if this were not a technical-team test/);
   assert.match(script, /reviewShown &&[\s\S]*!effectiveConsent && !reviewNeedsRerun/);
 
   const { statusPage } = await import("../src/html.js");
@@ -1298,6 +1322,9 @@ function stubOAuth({
   push,
   files = {},
   login = "someone",
+  membership = "active",
+  membershipStatus = null,
+  repository = undefined,
   inflight = { open: [] },
   reviewer = { schema_version: 1, open: [] },
 }) {
@@ -1305,6 +1332,13 @@ function stubOAuth({
   const initial = { ...files };
   if (inflight !== null) initial["index/inflight.json"] = inflight;
   if (reviewer !== null) initial["index/open.json"] = reviewer;
+  const indexed = [...Object.entries(files)]
+    .filter(([path, value]) =>
+      path.endsWith("/state.json") && value?.push_proof?.principal?.id === 4242)
+    .map(([, value]) => value.id);
+  if (indexed.length && !(PRINCIPAL_INDEX_PATH in initial)) {
+    initial[PRINCIPAL_INDEX_PATH] = { schema_version: 1, submissions: indexed };
+  }
   const store = new Map(Object.entries(initial));
   const deleted = [];
   const dispatched = [];
@@ -1318,16 +1352,26 @@ function stubOAuth({
     if (target.pathname === "/user") {
       return Response.json({ login, id: 4242 });
     }
+    if (target.pathname === `/orgs/PalomarRegistry/teams/technical-maintainers/memberships/${login}`) {
+      if (membershipStatus !== null) {
+        return new Response("", { status: membershipStatus });
+      }
+      return membership === null
+        ? new Response("", { status: 404 })
+        : Response.json({ state: membership, role: "member" });
+    }
     if (target.pathname === "/repos/example/project") {
-      return Response.json({
+      const value = repository === undefined ? {
+        id: 987654321,
         full_name: "example/project",
         private: false,
         owner: { login: "example" },
         permissions: { push },
-      });
+      } : repository;
+      return value === null ? new Response("", { status: 404 }) : Response.json(value);
     }
     if (target.pathname.includes("/actions/workflows/")) {
-      dispatched.push(target.pathname);
+      dispatched.push({ path: target.pathname, body: JSON.parse(init.body) });
       return Response.json({ ok: true });
     }
     const git = stateGitApi(target, init, { store, written, deleted, refUpdates });
@@ -1360,6 +1404,8 @@ const BINDING = "9".repeat(64);
 const PENDING = {
   schema_version: 2,
   binding_sha256: await digest(BINDING),
+  repository_id: 987654321,
+  method: "oauth",
   repository: "example/project",
   commit: "1".repeat(40),
   existing_id: null,
@@ -1369,6 +1415,33 @@ const PENDING = {
   authorization_evidence: null,
   created_at: "2026-08-01T00:00:00Z",
 };
+
+const PRINCIPAL_INDEX_PATH =
+  `index/principals/${await digest(`${ENV.TOKEN_PEPPER}:4242`)}.json`;
+
+function currentSubmission(overrides = {}) {
+  return {
+    schema_version: 1,
+    id: "oldsubmit123",
+    status: "verifying",
+    repository: "example/project",
+    commit: "0".repeat(40),
+    owner: "example",
+    submitter: "someone",
+    push_verified: true,
+    token_sha256: "e".repeat(64),
+    push_proof: {
+      schema_version: 1,
+      method: "oauth",
+      binding: "same-account",
+      principal: { login: "someone", id: 4242 },
+    },
+    authorization: { relationship: "maintainer" },
+    created_at: "2026-08-01T00:00:00Z",
+    events: [{ at: "2026-08-01T00:00:00Z", status: "verifying" }],
+    ...overrides,
+  };
+}
 
 async function callback(nonce, { binding = BINDING, cookies = [] } = {}) {
   const name = `__Host-palomar_intake_${(await digest(nonce)).slice(0, 16)}`;
@@ -1384,6 +1457,24 @@ async function callback(nonce, { binding = BINDING, cookies = [] } = {}) {
 async function clearedIntakeCookie(nonce) {
   const name = `__Host-palomar_intake_${(await digest(nonce)).slice(0, 16)}`;
   return `${name}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0`;
+}
+
+async function chooseSubmission(nonce, replaceId = null) {
+  const name = `__Host-palomar_intake_${(await digest(nonce)).slice(0, 16)}`;
+  return worker.fetch(
+    new Request("https://submit.palomar-registry.org/submission-choice", {
+      method: "POST",
+      headers: {
+        "sec-fetch-site": "same-origin",
+        cookie: `${name}=${BINDING}`,
+      },
+      body: new URLSearchParams({
+        state: nonce,
+        ...(replaceId ? { replace_id: replaceId } : {}),
+      }),
+    }),
+    ENV,
+  );
 }
 
 test("a submitter who cannot push writes no submission", async () => {
@@ -1414,7 +1505,363 @@ test("a submitter who can push is recorded as having proved it", async () => {
   assert.ok(record, "no submission record was written");
   assert.equal(record.value.push_verified, true);
   assert.equal(record.value.submitter, "someone");
+  assert.deepEqual(
+    written.find((item) => item.path === PRINCIPAL_INDEX_PATH).value.submissions,
+    [record.value.id],
+  );
   assert.equal(response.headers.get("set-cookie"), await clearedIntakeCookie(nonce));
+});
+
+test("an active Technical Maintainer can run a marked test without push access", async () => {
+  const nonce = "7".repeat(64);
+  const pending = {
+    ...PENDING,
+    authorization_relationship: "technical-test",
+  };
+  const stub = stubOAuth({
+    push: false,
+    membership: "active",
+    files: { [`pending/${await digest(nonce)}.json`]: pending },
+  });
+  const response = await callback(nonce);
+
+  assert.equal(response.status, 303);
+  const record = stub.written.find((item) => item.path.endsWith("state.json"));
+  assert.equal(record.value.test_submission, true);
+  assert.equal(record.value.push_verified, false);
+  assert.equal(record.value.authorization.relationship, "technical-test");
+  assert.equal(record.value.push_proof.method, "technical-team-test");
+  assert.equal(record.value.push_proof.binding, "active-technical-team-membership");
+  assert.deepEqual(stub.store.get(PRINCIPAL_INDEX_PATH).submissions, [record.value.id]);
+  assert.equal(
+    [...stub.store.keys()].some((path) => path.startsWith("index/rate/")),
+    false,
+    "a non-registrable test acquired a backoff that registration can never clear",
+  );
+  assert.equal(
+    JSON.parse(stub.dispatched[0].body.inputs.options).authorization_relationship,
+    "I am a Palomar Technical Maintainer testing the workflow",
+  );
+});
+
+test("submission recovery is a first-class GitHub sign-in with no new submission fields", async () => {
+  const stub = stubOAuth({ push: true });
+  const response = await worker.fetch(
+    new Request("https://submit.palomar-registry.org/submissions", {
+      headers: { "sec-fetch-site": "none" },
+    }),
+    ENV,
+  );
+  assert.equal(response.status, 303);
+  const authorize = new URL(response.headers.get("location"));
+  assert.equal(authorize.origin, "https://github.com");
+  assert.equal(authorize.searchParams.get("scope"), "read:user");
+  assert.match(authorize.searchParams.get("state"), /^[0-9a-f]{64}$/);
+  const pending = stub.written.find((item) => item.path.startsWith("pending/"));
+  assert.equal(pending.value.method, "oauth-recovery");
+  assert.deepEqual(
+    Object.keys(pending.value).sort(),
+    ["binding_sha256", "created_at", "method", "schema_version"],
+  );
+});
+
+test("a recovery sign-in issues fresh links to every current submission owned by the account", async () => {
+  const nonce = "6".repeat(64);
+  const pendingPath = `pending/${await digest(nonce)}.json`;
+  const previousRecovery = "d".repeat(64);
+  const old = currentSubmission({
+    status: "review-ready",
+    recovery_token_sha256: previousRecovery,
+  });
+  const other = currentSubmission({
+    id: "othersubmit1",
+    repository: "other/project",
+    submitter: "another-person",
+    token_sha256: "f".repeat(64),
+    push_proof: {
+      schema_version: 1,
+      method: "oauth",
+      binding: "same-account",
+      principal: { login: "another-person", id: 9999 },
+    },
+  });
+  const stub = stubOAuth({
+    push: true,
+    reviewer: { schema_version: 1, open: [old.id, other.id] },
+    files: {
+      [pendingPath]: {
+        schema_version: 2,
+        binding_sha256: await digest(BINDING),
+        method: "oauth-recovery",
+        created_at: "2026-08-01T00:00:00Z",
+      },
+      [statePath(old.id, "state.json")]: old,
+      [statePath(other.id, "state.json")]: other,
+      [`index/tokens/${old.token_sha256}.json`]: { id: old.id },
+      [`index/tokens/${previousRecovery}.json`]: { id: old.id },
+      [`index/tokens/${other.token_sha256}.json`]: { id: other.id },
+    },
+  });
+
+  const response = await callback(nonce);
+  assert.equal(response.status, 200);
+  const body = await response.text();
+  assert.match(body, /Your submissions in progress/);
+  assert.match(body, new RegExp(old.id));
+  assert.match(body, /href="\/s#[0-9a-f]{64}"/);
+  assert.doesNotMatch(body, new RegExp(other.id));
+  assert.equal(response.headers.get("set-cookie"), await clearedIntakeCookie(nonce));
+  assert.ok(!stub.store.has(pendingPath), "a completed recovery retained its OAuth proof");
+  assert.ok(
+    stub.store.has(`index/tokens/${old.token_sha256}.json`),
+    "recovery invalidated the originally issued link",
+  );
+  assert.ok(
+    !stub.store.has(`index/tokens/${previousRecovery}.json`),
+    "recovery retained the superseded recovery link",
+  );
+  const recovered = stub.store.get(statePath(old.id, "state.json"));
+  assert.match(recovered.recovery_token_sha256, /^[0-9a-f]{64}$/);
+  assert.match(recovered.recovery_token_bound_at, /^\d{4}-\d{2}-\d{2}T/);
+  assert.equal(
+    stub.store.get(`index/tokens/${recovered.recovery_token_sha256}.json`).id,
+    old.id,
+  );
+  const recoveredToken = /href="\/s#([0-9a-f]{64})"/.exec(body)[1];
+  const exchange = await worker.fetch(
+    new Request("https://submit.palomar-registry.org/session", {
+      method: "POST",
+      headers: { "sec-fetch-site": "same-origin" },
+      body: new URLSearchParams({ token: recoveredToken }),
+    }),
+    ENV,
+  );
+  assert.equal(exchange.status, 200, "the issued recovery link was not a usable credential");
+});
+
+test("recovery consumes its proof and reports an empty current list", async () => {
+  const nonce = "7".repeat(64);
+  const pendingPath = `pending/${await digest(nonce)}.json`;
+  const stub = stubOAuth({
+    push: true,
+    files: {
+      [pendingPath]: {
+        schema_version: 2,
+        binding_sha256: await digest(BINDING),
+        method: "oauth-recovery",
+        created_at: "2026-08-01T00:00:00Z",
+      },
+    },
+  });
+  const response = await callback(nonce);
+  assert.equal(response.status, 200);
+  assert.match(await response.text(), /no submissions still in progress/i);
+  assert.ok(!stub.store.has(pendingPath));
+});
+
+test("a same-repository sign-in offers the old link before starting anything new", async () => {
+  const nonce = "5".repeat(64);
+  const pendingPath = `pending/${await digest(nonce)}.json`;
+  const old = currentSubmission();
+  const stub = stubOAuth({
+    push: true,
+    inflight: { open: [{
+      id: old.id,
+      owner: old.owner,
+      submitter: old.submitter,
+      at: old.created_at,
+    }] },
+    reviewer: { schema_version: 1, open: [old.id] },
+    files: {
+      [pendingPath]: PENDING,
+      [statePath(old.id, "state.json")]: old,
+      [`index/tokens/${old.token_sha256}.json`]: { id: old.id },
+    },
+  });
+
+  const response = await callback(nonce);
+  assert.equal(response.status, 200);
+  const body = await response.text();
+  assert.match(body, /same repository as the submission you just tried to start/);
+  assert.match(body, /Open this submission/);
+  assert.match(body, /Abandon this submission and start the new one/);
+  assert.equal(stub.dispatched.length, 0, "showing the choice started new work");
+  assert.equal(stub.store.get(statePath(old.id, "state.json")).status, "verifying");
+  assert.ok(stub.store.get(pendingPath).oauth_verification, "the choice lost its spent OAuth proof");
+});
+
+test("a new repository still pauses to list the submitter's other current work", async () => {
+  const nonce = "2".repeat(64);
+  const pendingPath = `pending/${await digest(nonce)}.json`;
+  const old = currentSubmission({
+    status: "review-ready",
+    repository: "other/project",
+  });
+  const stub = stubOAuth({
+    push: true,
+    reviewer: { schema_version: 1, open: [old.id] },
+    files: {
+      [pendingPath]: PENDING,
+      [statePath(old.id, "state.json")]: old,
+      [`index/tokens/${old.token_sha256}.json`]: { id: old.id },
+    },
+  });
+
+  const response = await callback(nonce);
+  assert.equal(response.status, 200);
+  const body = await response.text();
+  assert.match(body, /other\/project/);
+  assert.match(body, /Start the new submission/);
+  assert.doesNotMatch(body, /Abandon this submission and start the new one/);
+  assert.equal(stub.dispatched.length, 0);
+});
+
+test("replacing a same-repository submission atomically withdraws the old and admits the new", async () => {
+  const nonce = "4".repeat(64);
+  const pendingPath = `pending/${await digest(nonce)}.json`;
+  const old = currentSubmission();
+  const stub = stubOAuth({
+    push: true,
+    inflight: { open: [{
+      id: old.id,
+      owner: old.owner,
+      submitter: old.submitter,
+      at: old.created_at,
+    }] },
+    reviewer: { schema_version: 1, open: [old.id] },
+    files: {
+      [pendingPath]: PENDING,
+      [statePath(old.id, "state.json")]: old,
+      [`index/tokens/${old.token_sha256}.json`]: { id: old.id },
+    },
+  });
+  assert.equal((await callback(nonce)).status, 200);
+
+  const response = await chooseSubmission(nonce, old.id);
+  assert.equal(response.status, 303);
+  assert.match(response.headers.get("location"), /^https:\/\/submit\.palomar-registry\.org\/s#[0-9a-f]{64}$/);
+  const oldAfter = stub.store.get(statePath(old.id, "state.json"));
+  assert.equal(oldAfter.status, "withdrawn");
+  assert.match(oldAfter.events.at(-1).note, /Replaced by submission/);
+  const inflight = stub.store.get("index/inflight.json").open;
+  assert.equal(inflight.length, 1);
+  assert.notEqual(inflight[0].id, old.id);
+  assert.ok(stub.store.has(statePath(inflight[0].id, "state.json")));
+  assert.deepEqual(stub.store.get("index/open.json").open, [old.id, inflight[0].id]);
+  assert.ok(!stub.store.has(pendingPath));
+  assert.equal(stub.dispatched.length, 1);
+  assert.ok(stub.store.has(`index/tokens/${old.token_sha256}.json`));
+});
+
+test("a refused replacement leaves the old submission and its slot intact", async () => {
+  const nonce = "3".repeat(64);
+  const pendingPath = `pending/${await digest(nonce)}.json`;
+  const old = currentSubmission();
+  const ratePathName = await agentRatePath();
+  const stub = stubOAuth({
+    push: true,
+    inflight: { open: [{
+      id: old.id,
+      owner: old.owner,
+      submitter: old.submitter,
+      at: old.created_at,
+    }] },
+    reviewer: { schema_version: 1, open: [old.id] },
+    files: {
+      [pendingPath]: PENDING,
+      [statePath(old.id, "state.json")]: old,
+      [`index/tokens/${old.token_sha256}.json`]: { id: old.id },
+      [ratePathName]: {
+        schema_version: 1,
+        login: "someone",
+        starts: 1,
+        interval_seconds: 60,
+        last_start_at: "2026-08-12T00:00:00Z",
+        next_allowed_at: "2099-01-01T00:00:00Z",
+      },
+    },
+  });
+  assert.equal((await callback(nonce)).status, 200);
+  const recoveryBefore = stub.store.get(
+    statePath(old.id, "state.json"),
+  ).recovery_token_sha256;
+
+  const response = await chooseSubmission(nonce, old.id);
+  assert.equal(response.status, 429);
+  assert.match(await response.text(), /earlier submission and its recovery link were not changed/);
+  assert.equal(stub.store.get(statePath(old.id, "state.json")).status, "verifying");
+  assert.deepEqual(stub.store.get("index/inflight.json").open.map((item) => item.id), [old.id]);
+  assert.ok(stub.store.has(pendingPath));
+  assert.equal(stub.dispatched.length, 0);
+  const oldAfter = stub.store.get(statePath(old.id, "state.json"));
+  assert.equal(oldAfter.recovery_token_sha256, recoveryBefore);
+  assert.ok(stub.store.has(`index/tokens/${oldAfter.recovery_token_sha256}.json`));
+});
+
+test("selecting the test exception does not trust a nonmember", async () => {
+  const nonce = "8".repeat(64);
+  const pending = { ...PENDING, authorization_relationship: "technical-test" };
+  const stub = stubOAuth({
+    push: false,
+    membership: null,
+    files: { [`pending/${await digest(nonce)}.json`]: pending },
+  });
+  const response = await callback(nonce);
+
+  assert.equal(response.status, 403);
+  assert.match(await response.text(), /limited to Technical Maintainers/);
+  assert.equal(stub.written.filter((item) => item.path.endsWith("state.json")).length, 0);
+  assert.ok(!stub.store.has(`pending/${await digest(nonce)}.json`));
+});
+
+test("pending membership and provider failure both refuse and consume a technical test", async () => {
+  for (const [name, options, status] of [
+    ["pending invitation", { membership: "pending" }, 403],
+    ["provider failure", { membershipStatus: 503 }, 503],
+  ]) {
+    const nonce = name === "pending invitation" ? "6".repeat(64) : "5".repeat(64);
+    const pendingPath = `pending/${await digest(nonce)}.json`;
+    const stub = stubOAuth({
+      push: false,
+      ...options,
+      files: {
+        [pendingPath]: { ...PENDING, authorization_relationship: "technical-test" },
+      },
+    });
+    const originalError = console.error;
+    console.error = () => {};
+    let response;
+    try {
+      response = await callback(nonce);
+    } finally {
+      console.error = originalError;
+    }
+    assert.equal(response.status, status, name);
+    assert.ok(!stub.store.has(pendingPath), `${name} retained an unusable pending proof`);
+    assert.equal(
+      stub.written.filter((item) => item.path.endsWith("state.json")).length,
+      0,
+      name,
+    );
+  }
+});
+
+test("a technical test refuses a repository that disappeared after intake", async () => {
+  const nonce = "4".repeat(64);
+  const pendingPath = `pending/${await digest(nonce)}.json`;
+  const stub = stubOAuth({
+    push: false,
+    repository: null,
+    files: {
+      [pendingPath]: { ...PENDING, authorization_relationship: "technical-test" },
+    },
+  });
+  const response = await callback(nonce);
+
+  assert.equal(response.status, 409);
+  assert.match(await response.text(), /not the one this test began for/);
+  assert.ok(!stub.store.has(pendingPath));
+  assert.equal(stub.written.filter((item) => item.path.endsWith("state.json")).length, 0);
 });
 
 test("browser intake fails closed and visibly when inflight state is unusable", async () => {
@@ -1775,6 +2222,10 @@ async function agentRatePath() {
   return `index/rate/${await digest(`${ENV.TOKEN_PEPPER}:4242`)}.json`;
 }
 
+async function agentPrincipalPath() {
+  return `index/principals/${await digest(`${ENV.TOKEN_PEPPER}:4242`)}.json`;
+}
+
 test("an agent is told what to create, and the challenge is not the key", async () => {
   stubAgent();
   const begun = await agentSubmit();
@@ -1838,6 +2289,7 @@ test("a tag and a gist together admit a submission", async () => {
       "index/inflight.json",
       "index/open.json",
       `index/tokens/${record.value.token_sha256}.json`,
+      await agentPrincipalPath(),
       await agentRatePath(),
     ]),
   );
@@ -1991,6 +2443,38 @@ test("a repair request is capability-bound, allowlisted, and queued atomically",
   assert.deepEqual(stub.store.get("index/repairs.json").open, [record.id]);
   assert.equal(stub.store.get(statePath(record.id, "state.json")).repair.status, "queued");
   assert.ok(stub.dispatched.some((item) => item.path.includes("repairer.yml")));
+});
+
+test("a technical-team test cannot open a metadata repair pull request", async () => {
+  const record = {
+    id: "a1b2c3d4e5f6",
+    status: "changes-required",
+    repository: "example/project",
+    commit: "1".repeat(40),
+    test_submission: true,
+    authorization: { relationship: "technical-test" },
+    failure: { schema_version: 1, mode: "preflight", profile_version: 1 },
+    events: [],
+  };
+  const stub = stubAgent();
+  stub.store.set(`index/tokens/${await tokenDigest(ENV, TOKEN)}.json`, { id: record.id });
+  stub.store.set(statePath(record.id, "state.json"), record);
+  const response = await worker.fetch(
+    new Request("https://submit.palomar-registry.org/api/repair", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "sec-fetch-site": "same-origin",
+        cookie: `__Host-palomar_session=${TOKEN}`,
+      },
+      body: "{}",
+    }),
+    ENV,
+  );
+
+  assert.equal(response.status, 409);
+  assert.match((await response.json()).error, /does not open repair pull requests/);
+  assert.equal(stub.store.has(statePath(record.id, "repair.json")), false);
 });
 
 test("a non-repairable diagnostic cannot be turned into an automated edit", async () => {
@@ -2285,7 +2769,7 @@ test("a browser sign-in cannot be completed as an agent submission", async () =>
   // The two intakes prove different things and record different bindings.
   // A pending record must be redeemed by the path that created it.
   const stub = stubAgent();
-  await worker.fetch(
+  const response = await worker.fetch(
     new Request("https://submit.palomar-registry.org/submit", {
       method: "POST",
       headers: { "sec-fetch-site": "same-origin" },
@@ -2295,6 +2779,44 @@ test("a browser sign-in cannot be completed as an agent submission", async () =>
   );
   const pending = stub.written.find((item) => item.path.startsWith("pending/"));
   assert.equal(pending.value.method, "oauth");
+  assert.equal(new URL(response.headers.get("location")).searchParams.get("scope"), "read:user");
+});
+
+test("a browser technical test requests team visibility and the agent path refuses it", async () => {
+  const stub = stubAgent();
+  const testSubmission = {
+    ...AGENT_SUBMISSION,
+    authorization_relationship: "technical-test",
+  };
+  const browser = await worker.fetch(
+    new Request("https://submit.palomar-registry.org/submit", {
+      method: "POST",
+      headers: { "sec-fetch-site": "same-origin" },
+      body: new URLSearchParams(testSubmission),
+    }),
+    ENV,
+  );
+  assert.equal(browser.status, 303);
+  assert.equal(
+    new URL(browser.headers.get("location")).searchParams.get("scope"),
+    "read:user read:org",
+  );
+
+  const agent = await worker.fetch(
+    new Request("https://submit.palomar-registry.org/api/submit", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(testSubmission),
+    }),
+    ENV,
+  );
+  assert.equal(agent.status, 400);
+  assert.match((await agent.json()).problems[0], /require browser GitHub sign-in/);
+  assert.equal(
+    stub.written.filter((item) => item.path.startsWith("pending/")).length,
+    1,
+    "the refused agent request wrote another pending record",
+  );
 });
 
 test("starting a submission doubles the wait, and only registering clears it", async () => {
