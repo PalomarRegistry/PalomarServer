@@ -256,18 +256,22 @@ test("the script never sends what the submitter typed anywhere but those origins
   assert.ok(destinations.length >= 2);
 });
 
-test("the registration target is inferred after the file layout with an honest fallback", async () => {
+test("the registration target appears only for a complete source and states its outcome", async () => {
   const script = await readFile(new URL("../public/intake.js", import.meta.url), "utf8");
+  const style = await readFile(new URL("../public/style.css", import.meta.url), "utf8");
   assert.ok(form.indexOf('id="layout"') < form.indexOf('id="registration-target"'));
   assert.match(form, /<h2 id="registration-target-heading">Registration target<\/h2>/);
   assert.match(form, /Enter an existing Palomar ID manually/);
-  assert.match(script, /We found the previous registrations using different Comparator paths/);
-  assert.match(script, /We found the previous registration \$\{identifier\}, so this submission will create a new version/);
-  assert.match(script, /path to an alternative Comparator configuration file/);
-  assert.match(script, /repositoryDocument\.truncated/);
-  assert.match(script, /registrationManual\.open = true/);
+  assert.doesNotMatch(form, /Enter the repository and Comparator configuration/);
+  assert.match(style, /:has\(#repository:valid\):has\(#commit:valid\):has\(#comparator_config_path:valid\)/);
+  assert.match(script, /identityDocument\.commits\.includes\(commitSha\)/);
+  assert.match(script, /has already been registered at this commit and cannot be registered again/);
+  assert.match(script, /different commit to create a new version with the same Palomar identifier/);
+  assert.match(script, /different Comparator configuration path to register a different theorem/);
+  assert.match(script, /This submission will create a new version with the same Palomar identifier/);
+  assert.match(script, /This looks like a new submission\. If you are trying to replace an existing submission, expand this box\./);
+  assert.match(script, /manualRegistration\(\{ hidden: false, open: true \}\)/);
   assert.match(script, /mine === registrationToken/);
-  assert.match(script, /dataset\.registrationSelected !== undefined/);
   assert.doesNotMatch(script, /preventDefault|setCustomValidity/);
 });
 
@@ -379,14 +383,24 @@ test("registration lookup helpers bind public data to the requested repository a
   assert.equal(repositoryRegistrations({ ...repository, registrations_total: 3 }, "owner/repository"), null);
 
   const exact = {
-    schema_version: 1,
+    schema_version: 2,
     identity,
     registration_id: "PALOMAR-2026-08-12-000002",
     ambiguous: false,
+    commits: ["a".repeat(40), "b".repeat(40)],
   };
   assert.deepEqual(exactRegistration(exact, identity), exact);
   assert.equal(exactRegistration({ ...exact, ambiguous: true }, identity), null);
   assert.equal(exactRegistration(exact, { ...identity, project_path: null }), null);
+  const versionOne = {
+    schema_version: 1,
+    identity,
+    registration_id: exact.registration_id,
+    ambiguous: false,
+  };
+  assert.deepEqual(exactRegistration(versionOne, identity), { ...versionOne, commits: [] });
+  assert.equal(exactRegistration({ ...exact, commits: ["b".repeat(40), "a".repeat(40)] }, identity), null);
+  assert.equal(exactRegistration({ ...exact, commits: ["A".repeat(40)] }, identity), null);
   assert.deepEqual(exactRegistration({
     ...exact,
     registration_id: null,

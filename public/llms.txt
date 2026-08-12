@@ -204,5 +204,8 @@ press it, that is fine; deciding for them is not.
   An exact registration identity is at `/registration-identities/<sha256>.json`,
   where the digest covers the UTF-8 bytes `lowercase_repository + NUL +
   project_path_or_empty + NUL + comparator_config_path`. If it names one
-  `registration_id`, pass that as `existing_id` to create a new version. A query
-  string is refused with 404 there, so do not add cache-busting parameters.
+  `registration_id`, its schema-version 2 `commits` array names every active
+  source commit already registered for that identity. Do not submit one of
+  those commits again. For a different commit, pass `registration_id` as
+  `existing_id` to create a new version. A query string is refused with 404
+  there, so do not add cache-busting parameters.

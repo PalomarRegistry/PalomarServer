@@ -158,18 +158,31 @@ export function repositoryRegistrations(value, expectedRepository) {
 
 /** Validate an exact-identity lookup and bind it to the requested identity. */
 export function exactRegistration(value, expectedIdentity) {
-  if (!exactKeys(value, ["schema_version", "identity", "registration_id", "ambiguous"]) ||
-      value.schema_version !== 1 || typeof value.ambiguous !== "boolean" ||
+  const versionOne = value?.schema_version === 1;
+  const keys = versionOne
+    ? ["schema_version", "identity", "registration_id", "ambiguous"]
+    : ["schema_version", "identity", "registration_id", "ambiguous", "commits"];
+  if (!exactKeys(value, keys) || ![1, 2].includes(value.schema_version) ||
+      typeof value.ambiguous !== "boolean" ||
       !exactKeys(value.identity, [
         "source_repository", "project_path", "comparator_config_path",
-      ]) || !sameIdentity(value.identity, expectedIdentity)) return null;
+      ]) || !sameIdentity(value.identity, expectedIdentity) ||
+      (!versionOne && (
+        !Array.isArray(value.commits) || !value.commits.length ||
+        value.commits.some((commit) => typeof commit !== "string" || !COMMIT_RE.test(commit)) ||
+        value.commits.some((commit, index) => index && commit <= value.commits[index - 1])
+      ))) return null;
   const registrationId = value.registration_id === null
     ? null
     : normalizePalomarId(value.registration_id);
   if (registrationId !== value.registration_id ||
       (value.ambiguous && registrationId !== null) ||
       (!value.ambiguous && registrationId === null)) return null;
-  return { ...value, registration_id: registrationId };
+  return {
+    ...value,
+    registration_id: registrationId,
+    commits: versionOne ? [] : [...value.commits],
+  };
 }
 
 /** An explicit repository-list choice that still describes the current identity. */
