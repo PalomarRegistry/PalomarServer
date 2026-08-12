@@ -323,26 +323,41 @@ export function comparatorPathSuggestions(paths, typed, limit = 100) {
 /**
  * Given a repository tree, work out which directory is the project.
  *
- * The Comparator configuration is the marker: it is required, and it sits in
- * the project directory. One of them means one project. Several means the
- * submitter has to choose, and none means detection failed, which is not the
- * same as saying the repository is unsubmittable: a project may perfectly well
- * name its configuration something else, and this only looks for the default.
+ * The chosen Comparator configuration is the marker when one was supplied.
+ * It may be below the project directory, so the nearest Lakefile in one of its
+ * containing directories identifies the project. Before a configuration has
+ * been supplied, a literal comparator.json beside a Lakefile remains the safe
+ * default convention to detect automatically.
  *
  * Entries are `{path, type, mode}`, as GitHub's tree API gives them. The mode
  * matters: a symlinked configuration is detectable here and refused by the
  * verifier, so suggesting it would send somebody to a failed run.
  */
-export function locateProject(entries) {
+export function locateProject(entries, comparatorConfigPath = "") {
   const files = repositoryFiles(entries);
   const paths = files.map((entry) => entry.path);
   const named = (name) => paths.filter((path) => basenameOf(path) === name);
+  const selected = normalizeRepositoryPath(comparatorConfigPath);
+  const selectedFile = selected ? paths.includes(selected) : false;
 
   const metadata = named("formalization.yaml");
-  const candidates = [...new Set(named("comparator.json").map(directoryOf))]
-    // A configuration with no Lakefile beside it is a fixture, not a project.
-    .filter((project) =>
-      LAKEFILES.some((name) => paths.includes(project ? `${project}/${name}` : name)));
+  let candidates;
+  if (selected) {
+    const parts = directoryOf(selected).split("/").filter(Boolean);
+    const containers = Array.from({ length: parts.length + 1 }, (_, index) =>
+      parts.slice(0, parts.length - index).join("/"));
+    candidates = selectedFile
+      ? containers.filter((project) =>
+          LAKEFILES.some((name) => paths.includes(project ? `${project}/${name}` : name)))
+        .slice(0, 1)
+      : [];
+  } else {
+    candidates = [...new Set(named("comparator.json").map(directoryOf))]
+      // A default configuration with no Lakefile beside it is a fixture, not
+      // a project. A chosen configuration may instead be below the Lakefile.
+      .filter((project) =>
+        LAKEFILES.some((name) => paths.includes(project ? `${project}/${name}` : name)));
+  }
 
   if (candidates.length === 1) {
     const project = candidates[0];
@@ -350,12 +365,14 @@ export function locateProject(entries) {
     return {
       found: true,
       project,
-      config: project ? `${project}/comparator.json` : "comparator.json",
+      config: selected || (project ? `${project}/comparator.json` : "comparator.json"),
       // Metadata may sit outside a nested project, but only one candidate is
       // an answer; several is a guess, and a guess here is silently wrong.
       metadata: metadata.includes(beside) ? "" : (metadata.length === 1 ? metadata[0] : ""),
       ambiguous: false,
       candidates,
+      selected,
+      configFound: selected ? selectedFile : undefined,
     };
   }
   return {
@@ -365,5 +382,7 @@ export function locateProject(entries) {
     metadata: "",
     ambiguous: candidates.length > 1,
     candidates,
+    selected,
+    configFound: selected ? selectedFile : undefined,
   };
 }
