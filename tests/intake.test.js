@@ -99,6 +99,14 @@ test("the approval note is a field of its own, so it can be turned off", () => {
   assert.match(form, /maxlength="4000"/);
 });
 
+test("private notes are described as input to AI checks, not a reviewer", () => {
+  const normalized = form.replace(/\s+/g, " ");
+  assert.match(normalized, /<label for="context">Notes <span class="optional">optional<\/span><\/label>/);
+  assert.match(normalized, /This field is not public, but is provided to the AI checks/);
+  assert.match(normalized, /validate <code>formalization\.yaml<\/code> and the correspondence between the informal and formal statements/);
+  assert.doesNotMatch(normalized, /Notes for the reviewer|Read by the reviewer/);
+});
+
 test("approval evidence cannot be attached to the server-owned test relationship", () => {
   for (const [relationship, expected] of [
     ["approved", "Approved by the maintainer"],

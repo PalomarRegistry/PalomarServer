@@ -221,11 +221,12 @@ Identify every missing, malformed, or inconsistent field. For each problem, name
         </p>
       </div>
 
-      <label for="context">Notes for the reviewer <span class="optional">optional</span></label>
+      <label for="context">Notes <span class="optional">optional</span></label>
       <textarea id="context" name="context" rows="4" aria-describedby="context-hint">${escape(values.context)}</textarea>
       <p class="hint" id="context-hint">
-        Read by the reviewer and kept with the private record. Do not put
-        anything sensitive here.
+        This field is not public, but is provided to the AI checks that validate
+        <code>formalization.yaml</code> and the correspondence between the
+        informal and formal statements.
       </p>
 
       <button type="submit">Authenticate via GitHub</button>
