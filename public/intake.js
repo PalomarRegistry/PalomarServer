@@ -760,18 +760,14 @@ for (const [parts, check, normalize] of [
   });
 }
 
-/**
- * The approval note only means anything for one of the three answers, so it is
- * disabled until that answer is given. Disabled rather than hidden: a control
- * that appears from nowhere is harder to follow than one that was always there.
- */
+/** The approval note only applies when the submitter has approval. */
 const approval = document.getElementById("approval-evidence");
 const evidence = document.getElementById("authorization_evidence");
 
 function syncApproval() {
   const chosen = document.querySelector('input[name="authorization_relationship"]:checked');
   const applies = chosen?.value === "approved";
-  approval?.setAttribute("aria-disabled", String(!applies));
+  if (approval) approval.hidden = !applies;
   if (evidence) {
     evidence.disabled = !applies;
     if (!applies) evidence.value = "";

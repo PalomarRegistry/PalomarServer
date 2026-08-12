@@ -93,10 +93,17 @@ test("the disclosure says what is recorded and when it becomes public", () => {
   assert.doesNotMatch(form, /Never public unless you publish/);
 });
 
-test("the approval note is a field of its own, so it can be turned off", () => {
-  assert.match(form, /<div class="dependent" id="approval-evidence">/);
+test("the approval note appears only when approval is selected", async () => {
+  assert.match(form, /<div class="dependent" id="approval-evidence" hidden>/);
   assert.match(form, /Included in the public mechanical report during verification/);
   assert.match(form, /maxlength="4000"/);
+
+  const approved = intakeForm(ENV, { authorization_relationship: "approved" });
+  assert.match(approved, /<div class="dependent" id="approval-evidence">/);
+
+  const script = await readFile(new URL("../public/intake.js", import.meta.url), "utf8");
+  assert.match(script, /approval\.hidden = !applies/);
+  assert.doesNotMatch(script, /approval\?\.setAttribute\("aria-disabled"/);
 });
 
 test("private notes are described as input to AI checks, not a reviewer", () => {
