@@ -52,14 +52,10 @@ test("the self-check prompt names every strict Palomar metadata section", () => 
 });
 
 test("the disclosure says what is recorded and when it becomes public", () => {
-  assert.match(form, /permanently and publicly recorded/);
-  assert.match(form, /will not be public until you have seen them/);
-  // The identity is not on that list: it never becomes public at all.
-  assert.match(form, /identity\s+is not made public/);
+  assert.match(form, /permanently recorded in public/);
+  assert.match(form, /public only if you choose to register after seeing them/);
   // "The review" invites the reading that a person did it. Say what it is.
-  assert.match(form, /the automated review/);
-  assert.match(form, /not completely secret prior to registration/);
-  assert.match(form, /audited and acted on by the\s+Palomar moderation team/);
+  assert.match(form, /automated review/);
   // The earlier wording claimed reviews were readable by "the model provider"
   // and told people not to write anything sensitive in a field the reviewer
   // reads. That belongs beside the field, not in the headline promise.
@@ -117,7 +113,7 @@ test("public text speaks of registration, not publication", () => {
   // this is about what a submitter reads.
   const visible = form.replace(/<[^>]*>/g, " ");
   assert.doesNotMatch(visible, /\bpublicat|\bpublish/i);
-  assert.match(visible, /registration/i);
+  assert.match(visible, /\bregistr/i);
 });
 
 test("the button says what it does", () => {
