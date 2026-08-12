@@ -399,7 +399,9 @@ test("the registration target appears only for a complete source and states its 
   assert.match(script, /has already been registered at this commit and cannot be registered again/);
   assert.match(script, /const blocked = state === "duplicate"/);
   assert.match(script, /submissionDetails\.disabled = blocked/);
+  assert.match(script, /submissionDetails\.hidden = blocked/);
   assert.match(script, /submissionDetails\.disabled = false/);
+  assert.match(script, /submissionDetails\.hidden = false/);
   assert.match(script, /submissionDetails\.contains\(document\.activeElement\)/);
   assert.match(script, /registrationMessage\.focus\(\)/);
   assert.match(script, /different commit to create a new version with the same Palomar identifier/);
@@ -411,7 +413,7 @@ test("the registration target appears only for a complete source and states its 
   assert.doesNotMatch(script, /preventDefault|setCustomValidity/);
 });
 
-test("only an exact duplicate can block the later submission controls", async () => {
+test("only an exact duplicate can hide and block the later submission controls", async () => {
   const script = await readFile(new URL("../public/intake.js", import.meta.url), "utf8");
   // A rate limit or an outage on somebody else's API is not a reason to refuse
   // someone's work. An exact registered commit is different: it cannot become
@@ -422,6 +424,8 @@ test("only an exact duplicate can block the later submission controls", async ()
   // region is the fieldset after the exact-duplicate message.
   const disabled = [...script.matchAll(/(\w+)\.disabled\s*=/g)].map((m) => m[1]);
   assert.deepEqual([...new Set(disabled)].sort(), ["evidence", "submissionDetails"]);
+  const hidden = [...script.matchAll(/(\w+)\.hidden\s*=/g)].map((m) => m[1]);
+  assert.ok(hidden.includes("submissionDetails"));
 });
 
 test("one word for one thing, in the code as well as the copy", async () => {
