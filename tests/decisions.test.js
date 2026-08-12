@@ -1521,7 +1521,7 @@ test("a submitter who can push is recorded as having proved it", async () => {
   assert.equal(response.headers.get("set-cookie"), await clearedIntakeCookie(nonce));
 });
 
-test("an active Technical Maintainer can run a marked test without push access", async () => {
+test("an active Technical Maintainer can run a marked test without push access or rate limits", async () => {
   const nonce = "7".repeat(64);
   const pending = {
     ...PENDING,
@@ -1530,6 +1530,20 @@ test("an active Technical Maintainer can run a marked test without push access",
   const stub = stubOAuth({
     push: false,
     membership: "active",
+    inflight: { open: [
+      {
+        id: "ownerslot001",
+        owner: "example",
+        submitter: "someone",
+        at: "2026-08-01T00:00:00Z",
+      },
+      {
+        id: "ownerslot002",
+        owner: "example",
+        submitter: "somebody-else",
+        at: "2026-08-01T00:00:00Z",
+      },
+    ] },
     files: { [`pending/${await digest(nonce)}.json`]: pending },
   });
   const response = await callback(nonce);
@@ -1542,6 +1556,11 @@ test("an active Technical Maintainer can run a marked test without push access",
   assert.equal(record.value.push_proof.method, "technical-team-test");
   assert.equal(record.value.push_proof.binding, "active-technical-team-membership");
   assert.deepEqual(stub.store.get(PRINCIPAL_INDEX_PATH).submissions, [record.value.id]);
+  assert.deepEqual(
+    stub.store.get("index/inflight.json").open.map((item) => item.id),
+    ["ownerslot001", "ownerslot002", record.value.id],
+    "ordinary owner and submitter caps refused a verified Technical Maintainer",
+  );
   assert.equal(
     [...stub.store.keys()].some((path) => path.startsWith("index/rate/")),
     false,
