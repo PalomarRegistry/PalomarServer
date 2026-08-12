@@ -1810,6 +1810,29 @@ test("automatic recovery returns owned metadata without rotating any capability"
   assert.equal(stub.store.get(statePath(old.id, "state.json")).recovery_token_sha256, undefined);
 });
 
+test("automatic recovery excludes a withdrawn submission left in the open index", async () => {
+  const withdrawn = currentSubmission({ status: "withdrawn" });
+  const stub = stubOAuth({
+    push: true,
+    reviewer: { schema_version: 1, open: [withdrawn.id] },
+    files: { [statePath(withdrawn.id, "state.json")]: withdrawn },
+  });
+  const response = await worker.fetch(
+    new Request("https://submit.palomar-registry.org/api/submissions", {
+      method: "POST",
+      headers: {
+        "sec-fetch-site": "same-origin",
+        cookie: await identityCookieHeader(),
+      },
+    }),
+    ENV,
+  );
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { submissions: [] });
+  assert.deepEqual(stub.written, [], "viewing the form changed a withdrawn submission");
+});
+
 test("automatic recovery requires both its identity cookie and this exact origin", async () => {
   stubOAuth({ push: true });
   const missing = await worker.fetch(

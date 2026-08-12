@@ -559,7 +559,15 @@ async function openSubmissionsForPrincipal(env, principal) {
         );
       }
     }
-    return { principalIndexPath, principalIndex, queue, entries };
+    // The reviewer queue is repaired asynchronously, so a terminal submission
+    // can briefly remain indexed. The record itself is authoritative about
+    // whether there is still anything for the submitter to recover.
+    return {
+      principalIndexPath,
+      principalIndex,
+      queue,
+      entries: entries.filter((item) => !CLOSED.has(item.entry.value.status)),
+    };
   } catch (error) {
     if (error instanceof StateContractError) throw error;
     if (error instanceof SyntaxError) {
