@@ -41,15 +41,17 @@ const dark = { ...light, ...palette(css, 1) };
 
 for (const [mode, colours] of [["light", light], ["dark", dark]]) {
   test(`${mode} text meets WCAG AA`, () => {
-    for (const token of ["--ink", "--dim", "--accent", "--caution"]) {
+    for (const token of ["--ink", "--dim", "--accent", "--caution", "--attention"]) {
       const ratio = contrast(colours[token], colours["--page"]);
       assert.ok(ratio >= 4.5, `${mode} ${token} is ${ratio.toFixed(2)}:1 on the page, needs 4.5`);
     }
   });
 
   test(`${mode} form controls meet WCAG AA for non-text contrast`, () => {
-    const ratio = contrast(colours["--field"], colours["--page"]);
-    assert.ok(ratio >= 3, `${mode} --field is ${ratio.toFixed(2)}:1, needs 3`);
+    for (const token of ["--field", "--attention"]) {
+      const ratio = contrast(colours[token], colours["--page"]);
+      assert.ok(ratio >= 3, `${mode} ${token} is ${ratio.toFixed(2)}:1, needs 3`);
+    }
   });
 
   test(`${mode} button text meets WCAG AA against the button`, () => {

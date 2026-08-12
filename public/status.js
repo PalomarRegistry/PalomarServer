@@ -10,6 +10,13 @@ import {
   SOURCE_RELATIONSHIPS,
   SOURCE_TYPES,
 } from "/formalization-profile.js";
+import { normalizedRepairEdits } from "/repair-contract.js";
+import {
+  canonicalClassification,
+  classificationProblem,
+  shouldShowDiagnostic,
+  taxonomyIndex,
+} from "/repair-form-contract.js";
 import {
   actionableVerificationErrors,
   decisionCopy,
@@ -329,42 +336,99 @@ function textControl(name, value = "", { required = false, placeholder = "" } = 
   return input;
 }
 
-const taxonomyLists = new Map();
+const taxonomies = new Map();
 
-function taxonomyList(field) {
+function taxonomy(field) {
   const name = field === "classification.arxiv" ? "arxiv-categories" : "msc2020-codes";
-  if (taxonomyLists.has(name)) return taxonomyLists.get(name);
+  if (taxonomies.has(name)) return taxonomies.get(name);
   const list = document.createElement("datalist");
   list.id = `repair-${name}`;
   document.body.append(list);
-  taxonomyLists.set(name, list);
-  void fetch(`/taxonomies/${name}.json`, { credentials: "same-origin" })
-    .then((response) => response.ok ? response.json() : [])
-    .then((codes) => {
-      if (!Array.isArray(codes)) return;
+  const result = { list, index: null, ready: false };
+  taxonomies.set(name, result);
+  result.loaded = fetch(`/taxonomies/${name}.json`, { credentials: "same-origin" })
+    .then((response) => {
+      if (!response.ok) throw new Error("taxonomy unavailable");
+      return response.json();
+    })
+    .then((data) => {
+      result.index = taxonomyIndex(data);
       const fragment = document.createDocumentFragment();
-      for (const code of codes) {
-        if (typeof code !== "string") continue;
+      for (const [code, summary] of result.index?.entries ?? []) {
         const item = document.createElement("option");
         item.value = code;
+        // Browsers match datalist labels as well as values, so an MSC code can
+        // be found by typing words from its standard summary.
+        if (summary) {
+          item.label = summary;
+          item.textContent = summary;
+        }
         fragment.append(item);
       }
       list.replaceChildren(fragment);
+      result.ready = true;
+      validateRepairForm();
     })
-    .catch(() => {});
-  return list;
+    .catch(() => {
+      // A taxonomy fetch failure must not falsely reject a code. The repair
+      // workflow validates the completed metadata before opening its PR.
+      result.ready = true;
+      validateRepairForm();
+    });
+  return result;
 }
+
+function removeRepeatableRow(row, replacement) {
+  const rows = row.parentElement;
+  row.remove();
+  if (rows && rows.children.length === 0) rows.append(replacement());
+  validateRepairForm();
+}
+
+let classificationRowSequence = 0;
 
 function classificationRow(field, value = "") {
   const row = document.createElement("div");
   row.className = "repair-classification";
   const input = textControl("code", value, { required: true });
-  input.setAttribute("list", taxonomyList(field).id);
+  const source = taxonomy(field);
+  input.setAttribute("list", source.list.id);
+  input.setAttribute(
+    "aria-label",
+    field === "classification.msc2020"
+      ? "MSC 2020 classification code"
+      : "arXiv classification code",
+  );
+  const summary = el("p", "");
+  summary.className = "hint classification-summary";
+  summary.id = `repair-classification-summary-${++classificationRowSequence}`;
+  summary.hidden = true;
+  input.setAttribute("aria-describedby", summary.id);
+  const showSummary = () => {
+    const canonical = canonicalClassification(input.value, source.index);
+    const description = field === "classification.msc2020" && canonical
+      ? source.index.summaries.get(canonical) ?? ""
+      : "";
+    summary.textContent = description;
+    summary.hidden = !description;
+  };
+  input.addEventListener("input", showSummary);
+  input.addEventListener("change", () => {
+    const canonical = canonicalClassification(input.value, source.index);
+    if (canonical) input.value = canonical;
+    showSummary();
+    validateRepairForm();
+  });
+  void source.loaded.then(() => {
+    showSummary();
+    validateRepairForm();
+  });
   const remove = el("button", "Remove");
   remove.type = "button";
   remove.className = "secondary compact";
-  remove.addEventListener("click", () => row.remove());
-  row.append(input, remove);
+  remove.addEventListener("click", () =>
+    removeRepeatableRow(row, () => classificationRow(field)));
+  row.append(input, remove, summary);
   return row;
 }
 
@@ -408,7 +472,7 @@ function sourceRow(value = {}) {
   const remove = el("button", "Remove source");
   remove.type = "button";
   remove.className = "secondary compact";
-  remove.addEventListener("click", () => row.remove());
+  remove.addEventListener("click", () => removeRepeatableRow(row, () => sourceRow()));
   row.append(remove);
   return row;
 }
@@ -442,7 +506,7 @@ function methodRow(value = {}) {
   const remove = el("button", "Remove method");
   remove.type = "button";
   remove.className = "secondary compact";
-  remove.addEventListener("click", () => row.remove());
+  remove.addEventListener("click", () => removeRepeatableRow(row, () => methodRow()));
   row.append(remove);
   return row;
 }
@@ -473,7 +537,10 @@ function appendRepairControl(wrapper, diagnostic, profile, failure) {
     add.type = "button";
     add.className = "secondary compact";
     add.addEventListener("click", () => {
-      if (rows.children.length < maximum) rows.append(classificationRow(field));
+      if (rows.children.length < maximum) {
+        rows.append(classificationRow(field));
+        validateRepairForm();
+      }
     });
     wrapper.append(rows, add);
     return;
@@ -485,7 +552,10 @@ function appendRepairControl(wrapper, diagnostic, profile, failure) {
     const add = el("button", "Add another source");
     add.type = "button";
     add.className = "secondary compact";
-    add.addEventListener("click", () => rows.append(sourceRow()));
+    add.addEventListener("click", () => {
+      rows.append(sourceRow());
+      validateRepairForm();
+    });
     wrapper.append(rows, add);
     return;
   }
@@ -498,7 +568,10 @@ function appendRepairControl(wrapper, diagnostic, profile, failure) {
     const add = el("button", "Add another method");
     add.type = "button";
     add.className = "secondary compact";
-    add.addEventListener("click", () => rows.append(methodRow()));
+    add.addEventListener("click", () => {
+      rows.append(methodRow());
+      validateRepairForm();
+    });
     wrapper.append(rows, add);
     return;
   }
@@ -553,6 +626,159 @@ function repairEdits() {
   });
 }
 
+let validationMessageSequence = 0;
+let repairValidationAttempted = false;
+
+function controlValidationMessage(control) {
+  const classification = control.closest(".repair-classification")
+    ?.querySelector(".classification-summary");
+  if (classification) return classification;
+  if (control.dataset.validationMessage) {
+    return document.getElementById(control.dataset.validationMessage);
+  }
+  const message = el("p", "");
+  message.id = `repair-validation-${++validationMessageSequence}`;
+  message.className = "hint warning repair-validation";
+  message.hidden = true;
+  control.dataset.validationMessage = message.id;
+  control.setAttribute(
+    "aria-describedby",
+    [control.getAttribute("aria-describedby"), message.id].filter(Boolean).join(" "),
+  );
+  control.insertAdjacentElement("afterend", message);
+  return message;
+}
+
+function setControlValidity(control, message = "") {
+  control.setCustomValidity(message);
+  const show = Boolean(message) &&
+    (repairValidationAttempted || control.dataset.touched === "true");
+  control.setAttribute("aria-invalid", String(show));
+  const visibleMessage = controlValidationMessage(control);
+  visibleMessage.textContent = show ? message : "";
+  visibleMessage.hidden = !show;
+  return !message;
+}
+
+function setGroupProblem(wrapper, message = "") {
+  let node = wrapper.querySelector(":scope > .repair-group-validation");
+  if (!node) {
+    node = el("p", "");
+    node.className = "hint warning repair-group-validation";
+    node.setAttribute("role", "status");
+    wrapper.append(node);
+  }
+  const show = Boolean(message) &&
+    (repairValidationAttempted || wrapper.querySelector('[data-touched="true"]'));
+  node.textContent = show ? message : "";
+  node.hidden = !show;
+}
+
+function validateClassification(wrapper, field) {
+  const inputs = [...wrapper.querySelectorAll('[data-part="code"]')];
+  const maximum = field === "classification.arxiv" ? 2 : 8;
+  const source = taxonomy(field);
+  const values = inputs.map((input) => input.value.trim());
+  let complete = inputs.length >= 1 && inputs.length <= maximum;
+  for (const [position, input] of inputs.entries()) {
+    const value = input.value.trim();
+    const message = classificationProblem(
+      value,
+      source.index,
+      source.ready,
+      values.filter((_, index) => index !== position),
+    );
+    complete = setControlValidity(input, message) && complete;
+    const summary = input.closest(".repair-classification")
+      ?.querySelector(".classification-summary");
+    if (summary) {
+      const canonical = canonicalClassification(value, source.index);
+      const description = field === "classification.msc2020" && canonical
+        ? source.index.summaries.get(canonical) ?? ""
+        : "";
+      const showMessage = Boolean(message) &&
+        (repairValidationAttempted || input.dataset.touched === "true");
+      summary.textContent = showMessage ? message : description;
+      summary.classList.toggle("warning", showMessage);
+      summary.hidden = !(showMessage || description);
+    }
+  }
+  return complete;
+}
+
+function validateRepairField(wrapper) {
+  const field = wrapper.dataset.field;
+  const profile = FORMALIZATION_FIELDS[field];
+  let complete = true;
+  if (profile.input === "text" || profile.input === "people") {
+    const input = wrapper.querySelector("[name]");
+    complete = setControlValidity(input, input.value.trim() ? "" : "Complete this field.");
+  } else if (profile.input === "text-list") {
+    complete = validateClassification(wrapper, field);
+  } else if (profile.input === "sources") {
+    const rows = [...wrapper.querySelectorAll('[data-kind="source"]')];
+    complete = rows.length > 0;
+    for (const row of rows) {
+      for (const control of row.querySelectorAll("[required]")) {
+        const valid = control.value.trim()
+          ? ""
+          : `Enter ${control.dataset.part === "title" ? "a source title" : "the relationship"}.`;
+        complete = setControlValidity(control, valid) && complete;
+      }
+    }
+    let groupProblem = "";
+    if (complete) {
+      try {
+        normalizedRepairEdits([{ field, value: rows.map(rowValue) }], 2);
+      } catch (error) {
+        groupProblem = error instanceof Error ? error.message : "Check these sources.";
+        complete = false;
+      }
+    }
+    setGroupProblem(wrapper, groupProblem);
+  } else if (profile.input === "methods") {
+    const rows = [...wrapper.querySelectorAll('[data-kind="method"]')];
+    complete = rows.length > 0;
+    for (const control of wrapper.querySelectorAll("[required]")) {
+      complete = setControlValidity(control, control.value ? "" : "Choose a method.") && complete;
+    }
+  } else {
+    const repository = wrapper.querySelector('[data-part="id"]');
+    const revision = wrapper.querySelector('[data-part="revision"]');
+    const repositoryValid = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository.value.trim());
+    const revisionValid = /^[0-9a-f]{40}$/i.test(revision.value.trim());
+    complete = setControlValidity(
+      repository,
+      repositoryValid ? "" : "Enter the repository as owner/name.",
+    ) && complete;
+    complete = setControlValidity(
+      revision,
+      revisionValid ? "" : "Enter a full 40-character commit.",
+    ) && complete;
+  }
+  wrapper.dataset.needsAction = String(!complete);
+  return complete;
+}
+
+function validateRepairForm() {
+  if (!repairForm || repairForm.hidden) return false;
+  const fields = [...repairFields.querySelectorAll(".repair-field")];
+  let complete = fields.length > 0;
+  for (const field of fields) complete = validateRepairField(field) && complete;
+  return complete;
+}
+
+repairFields?.addEventListener("input", validateRepairForm);
+repairFields?.addEventListener("change", validateRepairForm);
+repairFields?.addEventListener("focusout", (event) => {
+  if (event.target instanceof HTMLInputElement ||
+      event.target instanceof HTMLTextAreaElement ||
+      event.target instanceof HTMLSelectElement) {
+    event.target.dataset.touched = "true";
+    validateRepairForm();
+  }
+});
+
 function showStructuredFailure(data) {
   const failure = data.failure;
   const diagnostics = Array.isArray(failure?.diagnostics) ? failure.diagnostics : [];
@@ -563,12 +789,23 @@ function showStructuredFailure(data) {
   failureHeading.textContent = failure.mode === "preflight"
     ? "Preflight found these problems"
     : "Verification needs attention";
-  failureIntro.textContent = diagnostics.every((item) => item.owner === "submitter")
-    ? "Each item below says what needs changing and what to do next. Update the repository and submit the corrected commit."
-    : "The owner shown on each item tells you whether to change the repository or wait for Palomar.";
-
-  const repairable = [];
+  const repairable = new Map();
   for (const diagnostic of diagnostics) {
+    const profile = FORMALIZATION_FIELDS[diagnostic.field];
+    if (
+      diagnostic.repairable === true && profile &&
+      (failure.profile_version === FORMALIZATION_PROFILE_VERSION ||
+        (failure.profile_version === 1 && LEGACY_REPAIR_FIELDS.has(diagnostic.field)))
+    ) repairable.set(diagnostic.field, { diagnostic, profile });
+  }
+  const canRequestRepair = data.status === "changes-required" && !data.repair &&
+    [1, FORMALIZATION_PROFILE_VERSION].includes(failure.profile_version) && repairable.size > 0 &&
+    diagnostics.every((item) =>
+      item.owner === "submitter" && item.repairable === true && FORMALIZATION_FIELDS[item.field]);
+  const repairedFields = new Set(repairable.keys());
+  const shown = diagnostics.filter((diagnostic) =>
+    shouldShowDiagnostic(diagnostic, canRequestRepair, repairedFields));
+  for (const diagnostic of shown) {
     const article = document.createElement("article");
     article.className = "diagnostic";
     article.append(el("h3", diagnostic.summary ?? "A check did not pass"));
@@ -584,24 +821,22 @@ function showStructuredFailure(data) {
     article.append(el("p", `Who can fix this: ${diagnostic.owner === "submitter" ? "you" : "Palomar"}.`));
     if (diagnostic.next_action) article.append(el("p", `Next: ${diagnostic.next_action}`));
     failureDiagnostics.append(article);
-    const profile = FORMALIZATION_FIELDS[diagnostic.field];
-    if (
-      diagnostic.repairable === true && profile &&
-      (failure.profile_version === FORMALIZATION_PROFILE_VERSION ||
-        (failure.profile_version === 1 && LEGACY_REPAIR_FIELDS.has(diagnostic.field)))
-    ) repairable.push({ diagnostic, profile });
+  }
+  failureIntro.textContent = shown.length
+    ? diagnostics.every((item) => item.owner === "submitter")
+      ? "Each item below says what needs changing and what to do next. Update the repository and submit the corrected commit."
+      : "The owner shown on each item tells you whether to change the repository or wait for Palomar."
+    : "Complete the highlighted metadata fields below.";
+  if (!shown.length && failure.mode === "preflight") {
+    failureHeading.textContent = "Complete the metadata form";
   }
 
   repairFields.replaceChildren();
-  const canRequestRepair = data.status === "changes-required" && !data.repair &&
-    [1, FORMALIZATION_PROFILE_VERSION].includes(failure.profile_version) && repairable.length &&
-    diagnostics.every((item) =>
-      item.owner === "submitter" && item.repairable === true && FORMALIZATION_FIELDS[item.field]);
   repairForm.hidden = !canRequestRepair;
   repairExplanation.hidden = !canRequestRepair;
   repairSubmit.hidden = !canRequestRepair;
   if (canRequestRepair) {
-    for (const { diagnostic, profile } of repairable) {
+    for (const { diagnostic, profile } of repairable.values()) {
       const wrapper = document.createElement("div");
       wrapper.className = "repair-field";
       const id = `repair-${diagnostic.field.replaceAll(".", "-")}`;
@@ -618,6 +853,7 @@ function showStructuredFailure(data) {
       wrapper.append(hint);
       repairFields.append(wrapper);
     }
+    validateRepairForm();
   }
   if (data.repair) {
     repairForm.hidden = false;
@@ -649,6 +885,13 @@ function showStructuredFailure(data) {
 
 repairForm?.addEventListener("submit", async (event) => {
   event.preventDefault();
+  repairValidationAttempted = true;
+  if (!validateRepairForm() || !repairForm.checkValidity()) {
+    repairStatus.textContent =
+      "Complete the highlighted fields before preparing the pull request.";
+    repairForm.reportValidity();
+    return;
+  }
   const edits = repairEdits();
   repairStatus.textContent = "Submitting the repair request…";
   const response = await submissionRequest(token, "/api/repair", {

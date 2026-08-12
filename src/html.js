@@ -362,7 +362,7 @@ export function statusPage(env) {
       <p id="failure-intro"></p>
       <div id="failure-diagnostics"></div>
       <form id="repair-form" hidden>
-        <h3>Let Palomar prepare the metadata changes</h3>
+        <h3>Palomar can help prepare a pull request for <code>formalization.yaml</code></h3>
         <p id="repair-explanation">
           Fill in only the values you want Palomar to change. Palomar will
           validate the result and open a pull request from its repair account;
