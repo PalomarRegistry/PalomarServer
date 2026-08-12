@@ -1561,7 +1561,9 @@ test("a submitter who cannot push writes no submission", async () => {
   const response = await callback(nonce);
 
   assert.equal(response.status, 403);
-  assert.match(await response.text(), /cannot push to that repository/);
+  const body = await response.text();
+  assert.match(body, /cannot push to that repository/);
+  assert.doesNotMatch(body, /Technical Maintainer|technical test|continue anyway/i);
   await assertIdentityResponse(response);
   assert.doesNotMatch(
     responseCookies(response).join("\n"),
@@ -1570,6 +1572,38 @@ test("a submitter who cannot push writes no submission", async () => {
   );
   // Nothing may be admitted, indexed, or dispatched on a failed proof.
   assert.deepEqual(written.map((item) => item.path), []);
+});
+
+test("an active Technical Maintainer without push access is admitted only as a test", async () => {
+  const nonce = "e".repeat(64);
+  const stub = stubOAuth({
+    push: false,
+    membership: "active",
+    files: { [`pending/${await digest(nonce)}.json`]: PENDING },
+  });
+  const response = await callback(nonce);
+
+  assert.equal(response.status, 303);
+  const record = stub.written.find((item) => item.path.endsWith("state.json"));
+  assert.ok(record, "no test submission record was written");
+  assert.equal(record.value.test_submission, true);
+  assert.equal(record.value.push_verified, false);
+  assert.equal(record.value.authorization.relationship, "technical-test");
+  assert.equal(record.value.authorization.evidence, undefined);
+  assert.equal(record.value.push_proof.method, "technical-team-test");
+  assert.equal(record.value.push_proof.binding, "active-technical-team-membership");
+
+  const token = new URL(response.headers.get("location")).hash.slice(1);
+  const consent = await worker.fetch(
+    new Request("https://submit.palomar-registry.org/register", {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}` },
+      body: JSON.stringify({ review_sha256: "f".repeat(64) }),
+    }),
+    ENV,
+  );
+  assert.equal(consent.status, 409);
+  assert.match((await consent.json()).error, /if this were not a test submission/);
 });
 
 test("a submitter who can push is recorded as having proved it", async () => {
@@ -2017,6 +2051,35 @@ test("a new repository still pauses to list the submitter's other current work",
   assert.equal(stub.dispatched.length, 0);
 });
 
+test("a Technical Maintainer fallback stays non-registerable after the submission choice", async () => {
+  const nonce = "f".repeat(64);
+  const pendingPath = `pending/${await digest(nonce)}.json`;
+  const old = currentSubmission({ repository: "other/project" });
+  const stub = stubOAuth({
+    push: false,
+    membership: "active",
+    reviewer: { schema_version: 1, open: [old.id] },
+    files: {
+      [pendingPath]: PENDING,
+      [statePath(old.id, "state.json")]: old,
+      [`index/tokens/${old.token_sha256}.json`]: { id: old.id },
+    },
+  });
+
+  assert.equal((await callback(nonce)).status, 200);
+  const verification = stub.store.get(pendingPath).oauth_verification;
+  assert.equal(verification.proof.method, "technical-team-test");
+
+  const response = await chooseSubmission(nonce);
+  assert.equal(response.status, 303);
+  const record = stub.written
+    .filter((item) => item.path.endsWith("state.json") && item.value.id !== old.id)
+    .at(-1).value;
+  assert.equal(record.test_submission, true);
+  assert.equal(record.authorization.relationship, "technical-test");
+  assert.equal(record.push_verified, false);
+});
+
 test("starting the new submission shows progress while the choice is submitted", async () => {
   const script = await readFile(new URL("../public/submissions.js", import.meta.url), "utf8");
   const css = await readFile(new URL("../public/style.css", import.meta.url), "utf8");
@@ -2141,7 +2204,7 @@ test("selecting the test exception does not trust a nonmember", async () => {
   assert.ok(!stub.store.has(`pending/${await digest(nonce)}.json`));
 });
 
-test("a membership-provider failure does not silently throttle an ordinary maintainer", async () => {
+test("a membership-provider failure does not reveal the maintainer exception", async () => {
   const nonce = "d".repeat(64);
   const pendingPath = `pending/${await digest(nonce)}.json`;
   const stub = stubOAuth({
@@ -2158,10 +2221,13 @@ test("a membership-provider failure does not silently throttle an ordinary maint
     console.error = originalError;
   }
 
-  assert.equal(response.status, 503);
-  assert.match(await response.text(), /could not check Technical Maintainer membership/);
+  assert.equal(response.status, 303);
+  assert.doesNotMatch(await response.text(), /Technical Maintainer|technical test/i);
   assert.ok(!stub.store.has(pendingPath));
-  assert.equal(stub.written.filter((item) => item.path.endsWith("state.json")).length, 0);
+  const record = stub.written.find((item) => item.path.endsWith("state.json"));
+  assert.equal(record.value.authorization.relationship, "maintainer");
+  assert.equal(record.value.push_proof.method, "oauth");
+  assert.equal(record.value.push_proof.technical_maintainer, undefined);
 });
 
 test("pending membership and provider failure both refuse and consume a technical test", async () => {

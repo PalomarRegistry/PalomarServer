@@ -1453,8 +1453,9 @@ async function completeSubmission(request, env) {
 
   const viewer = await fetchRepository(granted.access_token, pending.value.repository);
 
-  const technicalTest = pending.value.authorization_relationship === "technical-test";
-  if (technicalTest && (
+  const requestedTechnicalTest =
+    pending.value.authorization_relationship === "technical-test";
+  if (requestedTechnicalTest && (
     !viewer ||
     viewer.private === true ||
     (pending.value.repository_id != null && viewer.id !== pending.value.repository_id)
@@ -1480,20 +1481,22 @@ async function completeSubmission(request, env) {
   const membership = await technicalTeamMembership(granted.access_token, submitter);
   if (membership.unavailable) {
     console.error("submission-oauth-membership", membership.status);
-    if (!(await deleteState(env, pendingPath, pending.sha,
-                            "Discard an intake whose membership could not be verified"))) {
-      console.error("pending", `could not discard ${pendingPath}`);
+    if (requestedTechnicalTest) {
+      if (!(await deleteState(env, pendingPath, pending.sha,
+                              "Discard a test whose membership could not be verified"))) {
+        console.error("pending", `could not discard ${pendingPath}`);
+      }
+      return identified(html(
+        errorPage(env, "Submission authorization is temporarily unavailable", spentSignInProblems([
+          "Palomar could not confirm that authorization just now.",
+        ])),
+        503,
+        { "set-cookie": await intakeCookie(nonce, null, { clear: true }) },
+      ));
     }
-    return identified(html(
-      errorPage(env, "Submission authorization is temporarily unavailable", spentSignInProblems([
-        "Palomar could not check Technical Maintainer membership just now.",
-      ])),
-      503,
-      { "set-cookie": await intakeCookie(nonce, null, { clear: true }) },
-    ));
   }
-  const technicalMaintainer = membership.active;
-  if (technicalTest && !technicalMaintainer) {
+  const technicalMaintainer = !membership.unavailable && membership.active;
+  if (requestedTechnicalTest && !technicalMaintainer) {
     if (!(await deleteState(env, pendingPath, pending.sha,
                             "Discard a test requested by a nonmember"))) {
       console.error("pending", `could not discard ${pendingPath}`);
@@ -1507,6 +1510,12 @@ async function completeSubmission(request, env) {
     ));
   }
 
+  const technicalTest = requestedTechnicalTest || (
+    !viewer?.permissions?.push &&
+    technicalMaintainer &&
+    viewer.private !== true &&
+    (pending.value.repository_id == null || viewer.id === pending.value.repository_id)
+  );
   if (!viewer?.permissions?.push && !technicalTest) {
     // Deliberately before the pending record is consumed. Consuming first
     // meant a refused submitter lost everything they had typed, undoing the
@@ -1517,12 +1526,19 @@ async function completeSubmission(request, env) {
     ]), 403));
   }
 
-  // Anyone with ordinary push access, and each explicitly verified Technical
+  // Anyone with ordinary push access, and each verified Technical
   // Maintainer test, can reach this point. `admitSubmission` exempts every
   // active Technical Maintainer account from the per-principal backoff and
   // owner/submitter caps. The unauthenticated edge throttle remains in front of
   // this flow because identity is not known until OAuth completes.
   const owner = viewer.owner?.login ?? null;
+  const admittedPending = technicalTest && !requestedTechnicalTest
+    ? {
+        ...pending.value,
+        authorization_relationship: "technical-test",
+        authorization_evidence: null,
+      }
+    : pending.value;
   const proof = {
     schema_version: 1,
     method: technicalTest ? "technical-team-test" : "oauth",
@@ -1553,7 +1569,7 @@ async function completeSubmission(request, env) {
     admitted = await admitSubmission(env, {
       pendingPath,
       pendingSha: pending.sha,
-      pending: pending.value,
+      pending: admittedPending,
       owner,
       submitter,
       proof,
@@ -1653,12 +1669,19 @@ async function completeSubmissionChoice(request, env) {
     ]), 409);
   }
 
+  const admittedPending = proof.method === "technical-team-test"
+    ? {
+        ...pending.value,
+        authorization_relationship: "technical-test",
+        authorization_evidence: null,
+      }
+    : pending.value;
   let admitted;
   try {
     admitted = await admitSubmission(env, {
       pendingPath,
       pendingSha: pending.sha,
-      pending: pending.value,
+      pending: admittedPending,
       owner: verification.owner ?? null,
       submitter: verification.submitter,
       proof,
