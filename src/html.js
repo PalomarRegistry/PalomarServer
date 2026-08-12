@@ -41,6 +41,7 @@ export function intakeForm(env, values = {}, problems = []) {
   const layoutOpen = ["project_path", "formalization_metadata_path"]
     .some((name) => String(values[name] ?? "") !== "");
   const manualRegistrationOpen = String(values.existing_id ?? "") !== "";
+  const approvalApplies = values.authorization_relationship === "approved";
   return page(env, "Submit a result", `
     <h1>Submit a Lean-verified result</h1>
     ${trouble}
@@ -207,12 +208,13 @@ Identify every missing, malformed, or inconsistent field. For each problem, name
         </p>
       </fieldset>
 
-      <div class="dependent" id="approval-evidence">
+      <div class="dependent" id="approval-evidence"${approvalApplies ? "" : " hidden"}>
         <label for="authorization_evidence">
           How that approval was given <span class="optional">optional</span>
         </label>
         <textarea id="authorization_evidence" name="authorization_evidence" rows="3"
                   maxlength="4000"
+                  ${approvalApplies ? "" : "disabled "}
                   aria-describedby="authorization_evidence-hint">${escape(values.authorization_evidence)}</textarea>
         <p class="hint warning" id="authorization_evidence-hint">
           Included in the public mechanical report during verification and

@@ -72,12 +72,6 @@ button[disabled] { opacity: .5; cursor: default; }
 #review-body ul { padding-left: 1.1rem; }
 #review-body li { margin: .4rem 0; }
 
-/* A field that only applies to one answer is disabled until that answer is
-   given, rather than hidden: a control that appears from nowhere is worse for
-   a screen reader than one that was always there and became available. */
-.dependent[aria-disabled="true"] { opacity: .55; }
-.dependent[aria-disabled="true"] textarea { cursor: not-allowed; }
-
 /* Live checks on what the submitter typed. Never the only signal: the text
    beside the field says the same thing. */
 .field-status { display: inline-block; width: 1.2em; text-align: center; }
