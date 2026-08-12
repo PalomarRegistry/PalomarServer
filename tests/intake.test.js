@@ -701,9 +701,8 @@ test("the status page keeps the key it tells the submitter to bookmark", async (
   assert.match(page, /id="submission-link"/);
   assert.match(page, /Treat it like a password/);
   assert.match(page, /authenticate you with GitHub and issue a fresh link/);
-  // The page used to claim the fragment was never sent to any server, while
-  // the same page posts it to /session to start the session. Browsers keep it
-  // out of the requests they make; that is not the same claim.
+  // A fragment is not sent automatically, but the page presents it explicitly
+  // on private calls. Do not turn that transport fact into a false promise.
   assert.doesNotMatch(page, /never sent to any server/);
 });
 

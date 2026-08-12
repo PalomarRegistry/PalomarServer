@@ -1700,9 +1700,10 @@ async function completeSubmissionChoice(request, env) {
 /**
  * Who is asking, and whether they were allowed to ask this way.
  *
- * Returns the submission entry, or a Response to send instead. Mutating
- * endpoints pass `mutating`, because the same-origin requirement is about a
- * credential being spent without its holder meaning to, and reading a review
+ * Returns the submission entry, or a Response to send instead. Current status
+ * pages and agents present a non-ambient bearer token. Legacy clients may
+ * still carry a session cookie; mutating endpoints pass `mutating` so those
+ * ambient credentials are accepted only from this origin. Reading a review
  * cross-origin is already stopped by the browser refusing to hand over the
  * response.
  */
@@ -2055,14 +2056,15 @@ export default {
       }
       if (request.method === "GET" && url.pathname === "/s") {
         // The token is in the fragment, which browsers never send. The page
-        // posts it once to /session and thereafter holds only a cookie.
+        // presents its own token on every private request, so another status
+        // tab cannot replace the credential it uses.
         return html(statusPage(env));
       }
       if (request.method === "POST" && url.pathname === "/session") {
         // The same fault as /submit, and the same answer. A JSON body makes
         // `formData()` throw, and the throw used to be answered with the 500
-        // page that blames Palomar and invites a retry that cannot work. The
-        // status page posts a form here; a body this cannot read came from
+        // page that blames Palomar and invites a retry that cannot work. This
+        // legacy endpoint accepts a form; a body it cannot read came from
         // something that guessed,
         // and 400 with a reason is what stops it guessing again.
         //

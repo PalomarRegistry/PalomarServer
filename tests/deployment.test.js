@@ -36,3 +36,13 @@ test("deployment applies the hostname policy before uploading a version", async 
   assert.equal(workflow.match(/enabled: false, previews_enabled: false/g)?.length, 1);
   assert.doesNotMatch(workflow, /wrangler triggers deploy/);
 });
+
+test("the tab-local credential module is included in the deployed asset directory", async () => {
+  assert.match(mainConfig, /"assets"\s*:\s*\{[^}]*"directory"\s*:\s*"\.\/public"/);
+  const source = await readFile(
+    new URL("../public/submission-request.js", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /credentials: "omit"/);
+  assert.match(source, /redirect: "error"/);
+});

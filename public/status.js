@@ -17,11 +17,14 @@ import {
   verificationRunLocation,
   waitingMessage as waitingStatusMessage,
 } from "/statuses.js";
+import { submissionRequest, validSubmissionToken } from "/submission-request.js";
 
 // The access token lives in the URL fragment, which browsers never send to a
-// server. It is posted once in exchange for a short-lived cookie, then removed
-// from the address bar, so it never appears in a request path or a log.
+// server automatically. Every private call presents this tab's token in a
+// header and omits cookies, so two open submissions cannot replace one
+// another's browser credential.
 const token = location.hash.replace(/^#/, "");
+const validToken = validSubmissionToken(token);
 const summary = document.getElementById("summary");
 const details = document.getElementById("details");
 const events = document.getElementById("events");
@@ -155,7 +158,7 @@ async function showReview({ registered = false, expectedDigest = null } = {}) {
     reviewSection.hidden = false;
     return true;
   }
-  const response = await fetch("/api/review", { credentials: "same-origin" });
+  const response = await submissionRequest(token, "/api/review");
   if (response.status === 409) {
     // A frozen registered result cannot be rerun. Older pre-launch records may
     // no longer satisfy the current private-review contract; leave that panel
@@ -217,9 +220,8 @@ async function decide(button, path, confirmation, body = null) {
   registerButton.disabled = true;
   withdrawButton.disabled = true;
   decisionStatus.textContent = "Working…";
-  const response = await fetch(path, {
+  const response = await submissionRequest(token, path, {
     method: "POST",
-    credentials: "same-origin",
     ...(body
       ? { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }
       : {}),
@@ -649,9 +651,8 @@ repairForm?.addEventListener("submit", async (event) => {
   event.preventDefault();
   const edits = repairEdits();
   repairStatus.textContent = "Submitting the repair request…";
-  const response = await fetch("/api/repair", {
+  const response = await submissionRequest(token, "/api/repair", {
     method: "POST",
-    credentials: "same-origin",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       failure_digest: lastFailureDigest,
@@ -733,19 +734,6 @@ async function showVerificationFailure(run) {
   shownFailureRun = location.runId;
 }
 
-async function establishSession() {
-  if (!token) return false;
-  const body = new FormData();
-  body.set("token", token);
-  const response = await fetch("/session", { method: "POST", body, credentials: "same-origin" });
-  // The fragment stays in the address bar. It is the only key to this
-  // submission, the cookie it buys lasts half a day, and the page tells the
-  // submitter to bookmark this link: removing the key would make that advice
-  // false and lose the submission the moment the cookie expired. A fragment is
-  // never sent to a server, which is why the key is carried in one.
-  return response.ok;
-}
-
 let pollTimer = null;
 let pollDelay = 0;
 let lastStatus = null;
@@ -784,6 +772,7 @@ function askAgain(status, waitingOnAPerson = false, repairMoving = false) {
 // current answer rather than the one it stopped on. A page left open in a
 // background tab for a week is the whole of why this page had a budget problem.
 document.addEventListener("visibilitychange", () => {
+  if (!validToken) return;
   if (document.visibilityState !== "visible") {
     clearTimeout(pollTimer);
     pollTimer = null;
@@ -795,9 +784,10 @@ document.addEventListener("visibilitychange", () => {
 });
 
 async function poll() {
+  if (!validToken) return;
   let data;
   try {
-    const response = await fetch("/api/submission", { credentials: "same-origin" });
+    const response = await submissionRequest(token, "/api/submission");
     if (!response.ok) {
       const failure = pollFailureAction(response.status);
       if (failure === "missing") {
@@ -807,7 +797,7 @@ async function poll() {
       }
       if (failure === "unauthorized") {
         summary.textContent =
-          "This session has expired or is not authorized. Open the original submission link again.";
+          "This submission link is not authorized. Open the original submission link again.";
         hideTransientSections();
         return;
       }
@@ -988,10 +978,8 @@ copyButton?.addEventListener("click", async () => {
   }
 });
 
-(async () => {
-  if (token && !(await establishSession())) {
-    summary.textContent = "This submission could not be found.";
-    return;
-  }
+if (validToken) {
   poll();
-})();
+} else {
+  summary.textContent = "This submission could not be found.";
+}
