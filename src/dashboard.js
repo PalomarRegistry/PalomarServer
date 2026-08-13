@@ -48,39 +48,58 @@ function escapeHtml(value) {
 }
 
 
-function fail() {
-  throw new TypeError("private operational report has an invalid aggregate contract");
+export class DashboardContractError extends TypeError {
+  constructor(path, problem) {
+    super(`private operational report has an invalid aggregate contract at ${path}: ${problem}`);
+    this.name = "DashboardContractError";
+  }
 }
 
 
-function object(value) {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) fail();
+function fail(path, problem) {
+  throw new DashboardContractError(path, problem);
+}
+
+
+function object(value, path) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    fail(path, "expected an object");
+  }
   return value;
 }
 
 
-function exactKeys(value, expected) {
-  object(value);
+function exactKeys(value, expected, path) {
+  object(value, path);
   const actual = Object.keys(value).sort();
   const wanted = [...expected].sort();
-  if (actual.length !== wanted.length || actual.some((key, index) => key !== wanted[index])) fail();
+  const missing = wanted.filter((key) => !actual.includes(key));
+  const unexpected = actual.filter((key) => !wanted.includes(key));
+  const problems = [];
+  if (missing.length) problems.push(`missing ${missing.join(", ")}`);
+  if (unexpected.length) problems.push(`unexpected ${unexpected.join(", ")}`);
+  if (problems.length) fail(path, problems.join("; "));
 }
 
 
-function exactText(value, expected) {
-  if (value !== expected) fail();
+function exactText(value, expected, path) {
+  if (value !== expected) fail(path, "unexpected value");
 }
 
 
-function timestamp(value, nullable = false) {
+function timestamp(value, path, nullable = false) {
   if (nullable && value === null) return;
-  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(value)) fail();
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(value)) {
+    fail(path, "expected a UTC timestamp without fractional seconds");
+  }
   const parsed = new Date(value);
-  if (!Number.isFinite(parsed.valueOf()) || parsed.toISOString().replace(".000Z", "Z") !== value) fail();
+  if (!Number.isFinite(parsed.valueOf()) || parsed.toISOString().replace(".000Z", "Z") !== value) {
+    fail(path, "expected a valid UTC timestamp");
+  }
 }
 
 
-function number(value, { integer = false, nullable = false, maximum = Infinity } = {}) {
+function number(value, path, { integer = false, nullable = false, maximum = Infinity } = {}) {
   if (nullable && value === null) return;
   if (
     typeof value !== "number" ||
@@ -88,36 +107,49 @@ function number(value, { integer = false, nullable = false, maximum = Infinity }
     value < 0 ||
     value > maximum ||
     (integer && !Number.isInteger(value))
-  ) fail();
+  ) fail(path, integer ? "expected a nonnegative integer" : "expected a nonnegative number");
 }
 
 
-function stats(value) {
-  exactKeys(value, ["count", "min", "mean", "median", "max"]);
-  number(value.count, { integer: true });
-  for (const key of ["min", "mean", "median", "max"]) number(value[key], { nullable: true });
-  if (value.count === 0 && [value.min, value.mean, value.median, value.max].some((item) => item !== null)) fail();
-  if (value.count > 0 && [value.min, value.mean, value.median, value.max].some((item) => item === null)) fail();
-  if (value.count > 0 && !(value.min <= value.mean && value.mean <= value.max && value.min <= value.median && value.median <= value.max)) fail();
-}
-
-
-function costHistogram(value) {
-  if (!Array.isArray(value) || value.length !== COST_BINS.length) fail();
-  for (const [index, row] of value.entries()) {
-    exactKeys(row, ["label", "lower_usd", "upper_usd", "definite_count", "possible_count"]);
-    const [label, lower, upper] = COST_BINS[index];
-    exactText(row.label, label);
-    number(row.lower_usd);
-    number(row.upper_usd, { nullable: true });
-    if (row.lower_usd !== lower || row.upper_usd !== upper) fail();
-    number(row.definite_count, { integer: true });
-    number(row.possible_count, { integer: true });
+function stats(value, path) {
+  exactKeys(value, ["count", "min", "mean", "median", "max"], path);
+  number(value.count, `${path}.count`, { integer: true });
+  for (const key of ["min", "mean", "median", "max"]) {
+    number(value[key], `${path}.${key}`, { nullable: true });
+  }
+  if (value.count === 0 && [value.min, value.mean, value.median, value.max].some((item) => item !== null)) {
+    fail(path, "empty statistics must use null extrema");
+  }
+  if (value.count > 0 && [value.min, value.mean, value.median, value.max].some((item) => item === null)) {
+    fail(path, "nonempty statistics require every extremum");
+  }
+  if (value.count > 0 && !(value.min <= value.mean && value.mean <= value.max && value.min <= value.median && value.median <= value.max)) {
+    fail(path, "statistics are not ordered");
   }
 }
 
 
-function spend(value) {
+function costHistogram(value, path) {
+  if (!Array.isArray(value) || value.length !== COST_BINS.length) {
+    fail(path, `expected exactly ${COST_BINS.length} cost bins`);
+  }
+  for (const [index, row] of value.entries()) {
+    const rowPath = `${path}[${index}]`;
+    exactKeys(row, ["label", "lower_usd", "upper_usd", "definite_count", "possible_count"], rowPath);
+    const [label, lower, upper] = COST_BINS[index];
+    exactText(row.label, label, `${rowPath}.label`);
+    number(row.lower_usd, `${rowPath}.lower_usd`);
+    number(row.upper_usd, `${rowPath}.upper_usd`, { nullable: true });
+    if (row.lower_usd !== lower || row.upper_usd !== upper) {
+      fail(rowPath, "cost-bin boundaries do not match the schema");
+    }
+    number(row.definite_count, `${rowPath}.definite_count`, { integer: true });
+    number(row.possible_count, `${rowPath}.possible_count`, { integer: true });
+  }
+}
+
+
+function spend(value, path) {
   exactKeys(value, [
     "count",
     "ambiguous_count",
@@ -127,30 +159,33 @@ function spend(value) {
     "total_lower_usd",
     "total_upper_usd",
     "histogram",
-  ]);
-  number(value.count, { integer: true });
-  number(value.ambiguous_count, { integer: true });
-  number(value.partial_count, { integer: true });
-  if (value.ambiguous_count > value.count) fail();
-  if (value.partial_count > value.count) fail();
-  stats(value.lower);
-  stats(value.upper);
-  if (value.lower.count !== value.count || value.upper.count !== value.count) fail();
-  number(value.total_lower_usd);
-  number(value.total_upper_usd);
-  if (value.total_lower_usd > value.total_upper_usd) fail();
-  if (value.count > 0 && value.lower.mean > value.upper.mean) fail();
-  costHistogram(value.histogram);
+  ], path);
+  number(value.count, `${path}.count`, { integer: true });
+  number(value.ambiguous_count, `${path}.ambiguous_count`, { integer: true });
+  number(value.partial_count, `${path}.partial_count`, { integer: true });
+  if (value.ambiguous_count > value.count) fail(path, "ambiguous count exceeds total count");
+  if (value.partial_count > value.count) fail(path, "partial count exceeds total count");
+  stats(value.lower, `${path}.lower`);
+  stats(value.upper, `${path}.upper`);
+  if (value.lower.count !== value.count || value.upper.count !== value.count) {
+    fail(path, "range statistic counts do not match spend count");
+  }
+  number(value.total_lower_usd, `${path}.total_lower_usd`);
+  number(value.total_upper_usd, `${path}.total_upper_usd`);
+  if (value.total_lower_usd > value.total_upper_usd) fail(path, "lower total exceeds upper total");
+  if (value.count > 0 && value.lower.mean > value.upper.mean) fail(path, "lower mean exceeds upper mean");
+  costHistogram(value.histogram, `${path}.histogram`);
 }
 
 
-function discreteHistogram(value) {
-  if (!Array.isArray(value) || value.length > 100) fail();
-  for (const row of value) {
-    exactKeys(row, ["value", "count"]);
-    number(row.value, { integer: true });
-    number(row.count, { integer: true });
-    if (row.count === 0) fail();
+function discreteHistogram(value, path) {
+  if (!Array.isArray(value) || value.length > 100) fail(path, "expected at most 100 histogram rows");
+  for (const [index, row] of value.entries()) {
+    const rowPath = `${path}[${index}]`;
+    exactKeys(row, ["value", "count"], rowPath);
+    number(row.value, `${rowPath}.value`, { integer: true });
+    number(row.count, `${rowPath}.count`, { integer: true });
+    if (row.count === 0) fail(`${rowPath}.count`, "histogram rows cannot be empty");
   }
 }
 
@@ -249,19 +284,26 @@ ${totals.landed_targets_attempt_history_incomplete ? `<p><small>Retry history is
 }
 
 
-export function validateDashboardReport(report) {
-  exactKeys(report, TOP_LEVEL_KEYS);
-  if (report.schema_version !== 1) fail();
+export const SUPPORTED_DASHBOARD_SCHEMA_VERSIONS = Object.freeze([1]);
 
-  exactKeys(report.source, ["state_revision", "latest_event_at", "pricing_schedule"]);
-  if (!/^submissions-tree:[0-9a-f]{40}$/.test(report.source.state_revision)) fail();
-  timestamp(report.source.latest_event_at, true);
-  exactText(report.source.pricing_schedule, PRICE_SCHEDULE);
+
+function validateDashboardReportV1(report) {
+  exactKeys(report, TOP_LEVEL_KEYS, "$");
+  exactText(report.schema_version, 1, "$.schema_version");
+
+  exactKeys(report.source, ["state_revision", "latest_event_at", "pricing_schedule"], "$.source");
+  if (!/^submissions-tree:[0-9a-f]{40}$/.test(report.source.state_revision)) {
+    fail("$.source.state_revision", "expected submissions-tree followed by a 40-character lowercase commit hash");
+  }
+  timestamp(report.source.latest_event_at, "$.source.latest_event_at", true);
+  exactText(report.source.pricing_schedule, PRICE_SCHEDULE, "$.source.pricing_schedule");
 
   exactKeys(report.definitions, [
     "submission", "technical_test", "round", "target", "landed", "pricing",
-  ]);
-  for (const [key, value] of Object.entries(DEFINITIONS)) exactText(report.definitions[key], value);
+  ], "$.definitions");
+  for (const [key, value] of Object.entries(DEFINITIONS)) {
+    exactText(report.definitions[key], value, `$.definitions.${key}`);
+  }
 
   exactKeys(report.totals, [
     "submissions",
@@ -281,36 +323,46 @@ export function validateDashboardReport(report) {
     "review_rounds_completed",
     "review_rounds_priced",
     "review_rounds_unpriced",
-  ]);
-  for (const value of Object.values(report.totals)) number(value, { integer: true });
-
-  object(report.submission_statuses);
-  for (const [key, value] of Object.entries(report.submission_statuses)) {
-    if (!Object.hasOwn(STATUSES, key)) fail();
-    number(value, { integer: true });
+  ], "$.totals");
+  for (const [key, value] of Object.entries(report.totals)) {
+    number(value, `$.totals.${key}`, { integer: true });
   }
 
-  exactKeys(report.rates, ["landed_per_submission", "landed_per_terminal_submission", "landed_per_target"]);
-  for (const value of Object.values(report.rates)) number(value, { nullable: true, maximum: 1 });
+  object(report.submission_statuses, "$.submission_statuses");
+  for (const [key, value] of Object.entries(report.submission_statuses)) {
+    if (!Object.hasOwn(STATUSES, key)) fail(`$.submission_statuses.${key}`, "unknown submission status");
+    number(value, `$.submission_statuses.${key}`, { integer: true });
+  }
+
+  exactKeys(report.rates, ["landed_per_submission", "landed_per_terminal_submission", "landed_per_target"], "$.rates");
+  for (const [key, value] of Object.entries(report.rates)) {
+    number(value, `$.rates.${key}`, { nullable: true, maximum: 1 });
+  }
 
   exactKeys(report.latency_seconds, [
     "creation_to_verification_success",
     "creation_to_review_ready",
     "creation_to_first_land",
     "creation_to_terminal",
-  ]);
-  for (const value of Object.values(report.latency_seconds)) stats(value);
+  ], "$.latency_seconds");
+  for (const [key, value] of Object.entries(report.latency_seconds)) {
+    stats(value, `$.latency_seconds.${key}`);
+  }
 
   exactKeys(report.distributions, [
     "review_rounds_completed_per_submission",
     "submission_attempts_to_first_land_per_landed_target",
     "failed_or_abandoned_attempts_before_first_land_per_landed_target",
     "review_rounds_to_first_land_per_landed_target",
-  ]);
-  for (const value of Object.values(report.distributions)) discreteHistogram(value);
+  ], "$.distributions");
+  for (const [key, value] of Object.entries(report.distributions)) {
+    discreteHistogram(value, `$.distributions.${key}`);
+  }
 
-  exactKeys(report.model_spend, ["per_round", "per_submission_with_review", "per_target_with_review"]);
-  for (const value of Object.values(report.model_spend)) spend(value);
+  exactKeys(report.model_spend, ["per_round", "per_submission_with_review", "per_target_with_review"], "$.model_spend");
+  for (const [key, value] of Object.entries(report.model_spend)) {
+    spend(value, `$.model_spend.${key}`);
+  }
 
   exactKeys(report.cost_model, [
     "schema_version",
@@ -320,13 +372,22 @@ export function validateDashboardReport(report) {
     "priced_review_rounds",
     "mean_model_usd_per_review_round_lower",
     "mean_model_usd_per_review_round_upper",
-  ]);
-  if (report.cost_model.schema_version !== 1) fail();
-  exactText(report.cost_model.state_revision, report.source.state_revision);
-  exactText(report.cost_model.pricing_schedule, PRICE_SCHEDULE);
-  number(report.cost_model.completed_review_rounds, { integer: true });
-  number(report.cost_model.priced_review_rounds, { integer: true });
-  number(report.cost_model.mean_model_usd_per_review_round_lower, { nullable: true });
-  number(report.cost_model.mean_model_usd_per_review_round_upper, { nullable: true });
+  ], "$.cost_model");
+  exactText(report.cost_model.schema_version, 1, "$.cost_model.schema_version");
+  exactText(report.cost_model.state_revision, report.source.state_revision, "$.cost_model.state_revision");
+  exactText(report.cost_model.pricing_schedule, PRICE_SCHEDULE, "$.cost_model.pricing_schedule");
+  number(report.cost_model.completed_review_rounds, "$.cost_model.completed_review_rounds", { integer: true });
+  number(report.cost_model.priced_review_rounds, "$.cost_model.priced_review_rounds", { integer: true });
+  number(report.cost_model.mean_model_usd_per_review_round_lower, "$.cost_model.mean_model_usd_per_review_round_lower", { nullable: true });
+  number(report.cost_model.mean_model_usd_per_review_round_upper, "$.cost_model.mean_model_usd_per_review_round_upper", { nullable: true });
   return report;
+}
+
+
+export function validateDashboardReport(report) {
+  object(report, "$");
+  if (!SUPPORTED_DASHBOARD_SCHEMA_VERSIONS.includes(report.schema_version)) {
+    fail("$.schema_version", `unsupported schema version ${String(report.schema_version)}`);
+  }
+  return validateDashboardReportV1(report);
 }

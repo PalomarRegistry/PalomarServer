@@ -129,7 +129,10 @@ async function operationalDashboard(env) {
       console.error("dashboard-provider", error.message);
       return { kind: "unavailable" };
     }
-    console.error("dashboard-contract", error instanceof Error ? error.message : String(error));
+    console.error(JSON.stringify({
+      event: "dashboard-contract",
+      error: error instanceof Error ? error.message : String(error),
+    }));
     return { kind: "invalid" };
   }
 }

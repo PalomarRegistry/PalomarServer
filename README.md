@@ -148,11 +148,24 @@ The machine-readable aggregate is available at `/api/dashboard` under the same
 session. The Server validates that the stored document has the identity-free
 dashboard contract with an exact field-name allowlist and deep value shapes,
 instead of trying to spot a few forbidden identity fields. The contract is
-tested against an aggregate fixture emitted by the State producer, so a
-producer/consumer contract change cannot be represented only by hand-written
-Server test data. The page and API link directly to the private Database's
-one-person Moderator forms for takedown and restoration. Those links are
-operator conveniences, not State data.
+represented by versioned aggregate fixtures retained as backward-compatibility
+examples, not as evidence about current producer output. Pull-request CI runs
+the current consumer against every dashboard fixture from the base commit, so
+editing a fixture cannot disguise a backward-incompatible change.
+State CI runs its real producer output through this repository's
+consumer, while Server CI proves that a candidate still accepts every schema
+version retained by its base commit. Together those two directions prevent
+either repository from crossing the contract boundary alone, without granting
+the public Server repository access to private State. The page and API link
+directly to the private Database's one-person Moderator forms for takedown and
+restoration. Those links are operator conveniences, not State data.
+
+Dashboard contracts are append-only by `schema_version`. A new required field,
+removed field, changed literal, or narrowed value shape requires a new schema
+version. Deploy the Server consumer accepting both versions first; only then
+change State to emit the new version. Keep the earlier consumer until no stored
+report uses it. Corrections that make a producer conform to its already-declared
+schema do not create a new version.
 
 ## Configuration
 
