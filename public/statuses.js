@@ -52,6 +52,7 @@ export const SETTLED = new Set([
   "preflight-failed",
   "verification-error",
   "review-failed",
+  "registration-paused",
   "dispatch-lost",
 ]);
 
@@ -66,6 +67,7 @@ const WITHDRAWABLE = new Set([
   "reviewing",
   "review-ready",
   "review-failed",
+  "registration-paused",
   "dispatch-lost",
 ]);
 
@@ -96,7 +98,7 @@ export function statusPresentation(
   status,
   { reviewPassed = false, registrationConsent = false } = {},
 ) {
-  const review = status === "review-ready"
+  const review = status === "review-ready" || status === "registration-paused"
     ? "interactive"
     : status === "registered" ? "read-only" : "hidden";
   return {
@@ -125,6 +127,15 @@ export function decisionCopy(
     };
   }
   if (!presentation.withdraw) return null;
+  if (status === "registration-paused") {
+    return {
+      heading: "Registration needs operator attention",
+      intro:
+        "Palomar could not complete registration. Its operators can see the problem; " +
+        "no repository change is currently requested. Withdraw only if you want to " +
+        "cancel this submission.",
+    };
+  }
   if (registrationConsent) {
     return {
       heading: "Stop this submission",

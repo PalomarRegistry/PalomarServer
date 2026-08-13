@@ -2193,6 +2193,9 @@ export default {
         if (CLOSED.has(entry.record.status)) {
           return json({ error: `already ${entry.record.status}` }, 409);
         }
+        if (entry.record.status === "registration-paused") {
+          return json({ error: "registration is paused for operator attention" }, 409);
+        }
         if (isTechnicalTest(entry.record)) {
           return json({
             error: "registration would be allowed if this were not a test submission",
@@ -2419,6 +2422,10 @@ export default {
           review_started_at: record.review_started_at ?? null,
           typical_review_seconds: await typicalReviewSeconds(env),
           registration_consent: record.registration_consent === true,
+          mathlib_cache_available:
+            typeof record.mathlib_cache_available === "boolean"
+              ? record.mathlib_cache_available
+              : null,
           test_submission: isTechnicalTest(record),
           // This lets a page that becomes visible again notice that the review
           // it rendered has been replaced before offering consent for it.

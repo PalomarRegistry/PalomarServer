@@ -62,6 +62,12 @@ const registerButton = document.getElementById("register");
 const withdrawButton = document.getElementById("withdraw");
 const registerWarning = document.getElementById("register-warning");
 const withdrawWarning = document.getElementById("withdraw-warning");
+const defaultRegisterWarning = registerWarning.textContent.trim().replace(/\s+/g, " ");
+const missingMathlibCacheWarning =
+  "This project depends on Mathlib, but we couldn't find a usable cache for the " +
+  "Mathlib commit you depend on. This will make your repository much harder for " +
+  "users to compile, because they will have to rebuild Mathlib themselves. Consider " +
+  "updating your Mathlib dependency to a version with a cache, and resubmitting.";
 
 const LABELS = {
   preflighting: "Checking your submission before full verification.",
@@ -77,6 +83,8 @@ const LABELS = {
   "awaiting-review": "Verification passed. Waiting for the automated review.",
   reviewing: "Running the automated review.",
   "review-ready": "Your automated review is ready.",
+  "registration-paused":
+    "Registration is paused while Palomar's operators address a problem.",
   "review-failed":
     "Palomar could not complete the automated review. This is a fault at our end, " +
     "not with your submission. Keep this link; the operators can see it and will " +
@@ -1234,8 +1242,9 @@ async function poll() {
       registrationConsent: effectiveConsent,
     });
     if (effectiveConsent) {
-      decisionStatus.textContent =
-        "Registration is under way. The record appears once the change is merged.";
+      decisionStatus.textContent = data.status === "registration-paused"
+        ? "Registration is paused while Palomar's operators address a problem."
+        : "Registration is under way. The record appears once the change is merged.";
       withdrawWarning.textContent =
         "Withdrawing asks Palomar to stop registration. The registry record will not be " +
         "merged, but source-preservation or rendering work that already started may remain public.";
@@ -1261,6 +1270,9 @@ async function poll() {
   withdrawButton.disabled = decisionInFlight || !presentation.withdraw;
   registerWarning.hidden = !presentation.register;
   withdrawWarning.hidden = !presentation.withdraw;
+  registerWarning.textContent = data.mathlib_cache_available === false
+    ? `${missingMathlibCacheWarning} ${defaultRegisterWarning}`
+    : defaultRegisterWarning;
   if (presentation.register && testSubmission) {
     decisionIntro.textContent =
       "This test has reached the point where an ordinary accepted submission could be registered.";
