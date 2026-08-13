@@ -251,6 +251,51 @@ test("a withdrawn submission cannot then be registered", async () => {
   assert.equal(written.length, 0);
 });
 
+test("a paused registration cannot receive fresh consent", async () => {
+  const { written } = stubState(await fixture({
+    status: "registration-paused",
+    registration_consent: true,
+  }));
+  const response = await worker.fetch(request("/register", "POST"), ENV);
+  assert.equal(response.status, 409);
+  assert.match((await response.json()).error, /paused for operator attention/);
+  assert.equal(written.length, 0);
+});
+
+test("registration diagnostics stay private while the safe paused state is visible", async () => {
+  stubState(await fixture({
+    status: "registration-paused",
+    registration_consent: true,
+    registration_error: "private provider response",
+    registration_failure: {
+      schema_version: 1,
+      category: "deterministic",
+      detail: "private provider response",
+    },
+  }));
+  const response = await worker.fetch(request("/api/submission"), ENV);
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.status, "registration-paused");
+  assert.equal(body.registration_consent, true);
+  assert.equal(Object.hasOwn(body, "registration_error"), false);
+  assert.equal(Object.hasOwn(body, "registration_failure"), false);
+});
+
+test("cache availability reaches the consent page without exposing registration diagnostics", async () => {
+  stubState(await fixture({ mathlib_cache_available: false }));
+  const response = await worker.fetch(request("/api/submission"), ENV);
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).mathlib_cache_available, false);
+
+  const script = await readFile(new URL("../public/status.js", import.meta.url), "utf8");
+  assert.match(script, /couldn't find a usable cache for the/);
+  assert.match(script, /Mathlib commit you depend on/);
+  assert.match(script, /they will have to rebuild Mathlib themselves/);
+  assert.match(script, /updating your Mathlib dependency to a version with a cache/);
+  assert.match(script, /data\.mathlib_cache_available === false/);
+});
+
 test("a submission whose review could not be completed is still the submitter's to withdraw", async () => {
   // `review-failed` is a fault at this end. The page stops asking about it,
   // because nothing moves it without an operator, and that is the whole reason
@@ -826,7 +871,7 @@ test("the page keeps asking while anything is still moving", async () => {
   }
   for (const done of [
     "registered", "withdrawn", "changes-required", "preflight-failed",
-    "verification-failed", "verification-error", "review-failed",
+    "verification-failed", "verification-error", "review-failed", "registration-paused",
   ]) {
     assert.equal(nextPollDelay({ status: done }), null, `${done} should stop the polling`);
   }
@@ -847,7 +892,7 @@ test("the page also stops asking about terminal Palomar-owned failures", async (
   }
   assert.deepEqual(
     [...SETTLED].filter((status) => !CLOSED.has(status)).sort(),
-    ["dispatch-lost", "preflight-failed", "review-failed", "verification-error"],
+    ["dispatch-lost", "preflight-failed", "registration-paused", "review-failed", "verification-error"],
   );
   // And the page's own list is that same set, not a copy of it.
   const { SETTLED: fromPolling } = await import("../public/polling.js");
@@ -912,6 +957,7 @@ test("every status gets exactly the review and decision controls the server perm
     reviewing: { review: "hidden", register: false, withdraw: true },
     "review-ready": { review: "interactive", register: false, withdraw: true },
     "review-failed": { review: "hidden", register: false, withdraw: true },
+    "registration-paused": { review: "interactive", register: false, withdraw: true },
     "dispatch-lost": { review: "hidden", register: false, withdraw: true },
     registered: { review: "read-only", register: false, withdraw: false },
     withdrawn: { review: "hidden", register: false, withdraw: false },
@@ -943,7 +989,7 @@ test("every status gets exactly the review and decision controls the server perm
   assert.match(waitingMessage("awaiting-review"), /review has been queued/);
   assert.match(waitingMessage("reviewing"), /review is running/);
   for (const status of ["verification-failed", "review-ready", "review-failed",
-    "dispatch-lost", "registered", "withdrawn", "unknown"]) {
+    "registration-paused", "dispatch-lost", "registered", "withdrawn", "unknown"]) {
     assert.equal(waitingMessage(status), null, status);
   }
 
@@ -957,6 +1003,10 @@ test("every status gets exactly the review and decision controls the server perm
   assert.match(decisionCopy("review-ready").intro, /keep trying/);
   assert.match(decisionCopy("review-failed").intro, /close this submission/);
   assert.match(decisionCopy("review-ready", { registrationConsent: true }).intro, /under way/);
+  assert.match(
+    decisionCopy("registration-paused", { registrationConsent: true }).intro,
+    /operators can see the problem/,
+  );
   assert.equal(decisionCopy("verification-failed"), null);
 
   const script = await readFile(new URL("../public/status.js", import.meta.url), "utf8");
