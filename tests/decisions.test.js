@@ -1058,12 +1058,19 @@ test("verification failures show actionable public annotations and repeat the ru
   assert.match(script, /\.slice\(0, 3\)/);
 });
 
-test("structured failures do not repeat an identical summary as its explanation", async () => {
+test("structured metadata failures are concise and identify fields as code", async () => {
   const script = await readFile(new URL("../public/status.js", import.meta.url), "utf8");
   assert.match(
     script,
-    /diagnostic\.explanation\s*&&\s*diagnostic\.explanation\s*!==\s*diagnostic\.summary/,
+    /heading\.append\(el\("code", diagnostic\.field\)\)/,
   );
+  assert.match(script, /diagnostic\.location\?\.path === "formalization\.yaml"/);
+  assert.match(script, /el\("code", "formalization\.yaml"\)/);
+  assert.match(script, /file in the repository, and resubmit using the updated commit/);
+  assert.doesNotMatch(script, /Update the repository and submit the corrected commit/);
+  assert.doesNotMatch(script, /Who can fix this:/);
+  assert.match(script, /View the pull request\./);
+  assert.doesNotMatch(script, /Open the pull request\./);
 });
 
 test("every status-script element is present in the status page", async () => {
