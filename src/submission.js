@@ -92,7 +92,7 @@ export function newRecord({
   return {
     schema_version: 1,
     id,
-    status: "preflighting",
+    status: "verifying",
     repository: repositoryName,
     commit,
     owner,

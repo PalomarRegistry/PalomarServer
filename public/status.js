@@ -66,7 +66,7 @@ const withdrawWarning = document.getElementById("withdraw-warning");
 const LABELS = {
   preflighting: "Checking your submission before full verification.",
   "preflight-reporting": "Preflight finished. Palomar is preparing the details.",
-  "changes-required": "Preflight found repository metadata that needs changing.",
+  "changes-required": "Palomar found repository metadata that needs changing.",
   "preflight-failed":
     "Palomar could not complete preflight. This is a fault at our end, not with your submission.",
   verifying: "Mechanically verifying your submission.",
@@ -837,8 +837,8 @@ function showStructuredFailure(data) {
   verificationFailureSection.hidden = false;
   legacyFailureDetails.hidden = true;
   failureDiagnostics.replaceChildren();
-  failureHeading.textContent = failure.mode === "preflight"
-    ? "Preflight found these problems"
+  failureHeading.textContent = failure.phase === "preparation" || failure.mode === "preflight"
+    ? "Preparation found these problems"
     : "Verification needs attention";
   const repairable = new Map();
   for (const diagnostic of diagnostics) {
@@ -904,7 +904,7 @@ function showStructuredFailure(data) {
   }
   if (data.repair) {
     failureHeading.textContent = shown.length ? "Metadata repair needs attention" : "Metadata repair";
-  } else if (!shown.length && failure.mode === "preflight") {
+  } else if (!shown.length && (failure.phase === "preparation" || failure.mode === "preflight")) {
     failureHeading.textContent = "Complete the metadata form";
   }
 

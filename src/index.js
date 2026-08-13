@@ -979,9 +979,11 @@ async function admitSubmission(
     // A durable outbox lease. This request owns the first dispatch; if it dies
     // before or after the ambiguous workflow_dispatch response, reconciliation
     // searches for the run and only claims another attempt after the lease.
-    preflight_dispatch_lease_at: createdAt,
-    preflight_dispatch_lease_count: 1,
-    events: [{ at: createdAt, status: "preflighting", note: "Submission preflight queued" }],
+    dispatch_lease_at: createdAt,
+    dispatch_lease_count: 1,
+    events: [{ at: createdAt, status: "verifying",
+      note: "Preparation and mechanical verification queued",
+    }],
   };
   let result;
   try {
@@ -1154,11 +1156,11 @@ async function admitSubmission(
     throw error;
   }
   if (result.refused) return result;
-  // `preflighting` with no pinned run is the durable dispatch outbox. A failed or
+  // `verifying` with no pinned run is the durable dispatch outbox. A failed or
   // ambiguous request does not undo admission: the scheduled lifecycle first
   // searches for a run, then safely retries one that still has none.
-  await dispatchSubmissionVerification(env, result.record, "preflight").catch((error) => {
-    console.error("preflight-dispatch", error?.stack ?? String(error));
+  await dispatchSubmissionVerification(env, result.record, "full").catch((error) => {
+    console.error("verification-dispatch", error?.stack ?? String(error));
   });
   return { refused: false, id, token };
 }

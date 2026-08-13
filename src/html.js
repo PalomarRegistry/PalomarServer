@@ -112,7 +112,7 @@ export function intakeForm(
           LLM, but you may need to also paste in your
           <code>formalization.yaml</code> and other context from your repository
           in order to get a useful response.) Treat its answer as advice:
-          Palomar's preflight remains the authoritative check.
+          Palomar's preparation step remains the authoritative check.
         </p>
         <!-- The bare URL must remain: the copy button uses textContent and drops href. -->
         <pre id="formalization-prompt">Check the formalization.yaml file for this project in the current repository for a Palomar Registry submission.
@@ -264,7 +264,18 @@ Identify every missing, malformed, or inconsistent field. For each problem, name
         informal and formal statements.
       </p>
 
-      <button type="submit">Authenticate via GitHub</button>
+      <section class="disclosure browser-preflight" id="browser-preflight"
+               data-state="checking" aria-labelledby="browser-preflight-heading" hidden>
+        <h2 id="browser-preflight-heading">Check this commit before authentication</h2>
+        <p id="browser-preflight-summary" tabindex="-1"></p>
+        <ul id="browser-preflight-diagnostics" class="problems"></ul>
+        <p id="browser-preflight-deferred" class="hint"></p>
+        <button type="button" class="secondary" id="browser-preflight-anyway" hidden>
+          Submit anyway
+        </button>
+      </section>
+
+      <button type="submit" id="submission-submit">Authenticate via GitHub</button>
       <p class="hint">
         You may be asked to sign in, so Palomar can confirm you have write
         access to the repository you are submitting. Even if you are already signed

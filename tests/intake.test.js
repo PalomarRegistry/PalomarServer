@@ -437,16 +437,23 @@ test("the registration target appears only for a complete source and states its 
   assert.match(script, /This looks like a new submission\. If you are trying to replace an existing submission, expand this box\./);
   assert.match(script, /manualRegistration\(\{ hidden: false, open: true \}\)/);
   assert.match(script, /mine === registrationToken/);
-  assert.doesNotMatch(script, /preventDefault|setCustomValidity/);
+  assert.doesNotMatch(script, /setCustomValidity/);
 });
 
-test("only an exact duplicate can hide and block the later submission controls", async () => {
+test("only exact duplicate and explicit preflight review can interrupt the ordinary controls", async () => {
   const script = await readFile(new URL("../public/intake.js", import.meta.url), "utf8");
   // A rate limit or an outage on somebody else's API is not a reason to refuse
   // someone's work. An exact registered commit is different: it cannot become
   // a submission, and changing any part of its identity enables the controls
   // immediately while the replacement lookup is debounced.
-  assert.doesNotMatch(script, /preventDefault|setCustomValidity/);
+  assert.match(script, /browserPreflightResult\.guard/);
+  assert.match(script, /browserPreflightOverride !== fingerprint/);
+  assert.match(script, /event\.preventDefault\(\)/);
+  assert.match(script, /browser-preflight-anyway/);
+  assert.match(script, /import\("\/preflight\.js"\)/);
+  assert.doesNotMatch(script, /from "\/preflight\.js"/);
+  assert.match(script, /remainingHeader === null \? NaN/);
+  assert.doesNotMatch(script, /setCustomValidity/);
   // The approval note applies to only one answer. The only other disabled
   // region is the fieldset after the exact-duplicate message.
   const disabled = [...script.matchAll(/(\w+)\.disabled\s*=/g)].map((m) => m[1]);

@@ -19,6 +19,7 @@ jobs:
         with:
           node-version: "22"
       - run: npm ci
+      - run: npm run build:preflight
       # The Worker imports no npm package at runtime, but Wrangler's development
       # and deploy graph still handles source and production credentials.
       # Keep low-or-higher advisories in that complete dev graph a hard gate.
@@ -89,6 +90,8 @@ jobs:
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      - name: Build browser preflight
+        run: npm run build:preflight
       - name: Upload Cloudflare version
         run: npx wrangler versions upload --tag "$GITHUB_SHA" --message "GitHub $GITHUB_SHA"
         env:

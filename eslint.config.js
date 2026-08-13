@@ -2,7 +2,7 @@ import js from "@eslint/js";
 import globals from "globals";
 
 export default [
-  { ignores: ["node_modules/**", ".wrangler/**"] },
+  { ignores: ["node_modules/**", ".wrangler/**", "public/preflight.js"] },
   {
     files: ["**/*.js"],
     linterOptions: { reportUnusedDisableDirectives: "error" },
@@ -17,7 +17,7 @@ export default [
     languageOptions: { globals: globals.worker },
   },
   {
-    files: ["public/**/*.js"],
+    files: ["public/**/*.js", "browser/**/*.js"],
     ignores: ["public/normalize.js", "public/statuses.js"],
     languageOptions: { globals: globals.browser },
   },

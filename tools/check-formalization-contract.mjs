@@ -6,10 +6,21 @@ import {
   FORMALIZATION_FIELDS,
   FORMALIZATION_PROFILE_VERSION,
 } from "../public/formalization-profile.js";
+import {
+  BROWSER_PREFLIGHT_POLICY,
+  validatePortable,
+} from "../browser/preflight.js";
 
 const upstream = resolve(process.argv[2] ?? "../PalomarSubmission");
 const load = async (path) => JSON.parse(await readFile(path, "utf8"));
 const profile = await load(resolve(upstream, "formalization-profile.json"));
+const browserPolicy = await load(resolve(upstream, "browser-preflight-policy.json"));
+
+assert.deepEqual(
+  BROWSER_PREFLIGHT_POLICY,
+  browserPolicy,
+  "the browser preflight policy drifted from PalomarSubmission",
+);
 
 assert.equal(FORMALIZATION_PROFILE_VERSION, profile.schema_version);
 assert.deepEqual(
@@ -37,4 +48,21 @@ for (const name of ["arxiv-categories.json", "msc2020-codes.json"]) {
   }
 }
 
-console.log("Formalization repair profile and taxonomy snapshots match PalomarSubmission.");
+const fixtureDocument = await load(resolve(upstream, "tests", "fixtures", "browser-preflight.json"));
+assert.equal(fixtureDocument.schema_version, 1);
+for (const fixture of fixtureDocument.cases) {
+  const input = {};
+  for (const name of ["formalization", "comparator", "toolchain"]) {
+    if (fixture[name] !== undefined) input[name] = fixture[name];
+  }
+  for (const [name, path] of Object.entries(fixture.files ?? {})) {
+    input[name] = await readFile(resolve(upstream, "tests", "fixtures", path), "utf8");
+  }
+  assert.deepEqual(
+    validatePortable(input).map((item) => item.code).sort(),
+    fixture.expected_codes,
+    `browser preflight fixture ${fixture.id} drifted from PalomarSubmission`,
+  );
+}
+
+console.log("Formalization repair and browser preflight contracts match PalomarSubmission.");
