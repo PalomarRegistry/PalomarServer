@@ -104,7 +104,8 @@ export function intakeForm(
         <!-- The bare URL must remain: the copy button uses textContent and drops href. -->
         <pre id="formalization-prompt">Check the formalization.yaml file for this project in the current repository for a Palomar Registry submission.
 
-Palomar uses <a href="https://github.com/mathlib-initiative/formalization.yaml">mathlib-initiative formalization.yaml</a> v0.3 (https://github.com/mathlib-initiative/formalization.yaml) as a base and requires these top-level sections: project, classification, sources, automation, and review. Check all of the following Palomar requirements:
+Palomar uses <a href="https://github.com/mathlib-initiative/formalization.yaml">mathlib-initiative formalization.yaml</a> v0.4 (https://github.com/mathlib-initiative/formalization.yaml) as a base and requires these top-level sections: project, classification, sources, automation, and review. Check all of the following Palomar requirements:
+- version is v0.4 (an omitted version also dispatches to v0.4, but current files should be explicit);
 - project has a nonempty name, authors, license, and responsible_maintainers;
 - omit repository for an ordinary project: the submitted repository is the substantive development by default. Only a thin wrapper needs repository.substantive_formalization with a GitHub repository id and full commit; an explicit repository.role of thin-wrapper remains accepted but is unnecessary;
 - classification.arxiv has one or two valid arXiv category codes and classification.msc2020 has one to eight valid MSC 2020 codes;
