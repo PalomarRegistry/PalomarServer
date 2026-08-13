@@ -229,7 +229,7 @@ export function intakeForm(
 
       <section class="disclosure browser-preflight" id="browser-preflight"
                data-state="checking" aria-labelledby="browser-preflight-heading" hidden>
-        <h2 id="browser-preflight-heading">Check this commit before authentication</h2>
+        <h2 id="browser-preflight-heading">Preliminary checks</h2>
         <p id="browser-preflight-summary" tabindex="-1"></p>
         <ul id="browser-preflight-diagnostics" class="problems"></ul>
         <p id="browser-preflight-deferred" class="hint"></p>
@@ -238,7 +238,7 @@ export function intakeForm(
         </button>
       </section>
 
-      <button type="submit" id="submission-submit">Authenticate via GitHub</button>
+      <button type="submit" id="submission-submit">Authenticate via GitHub and submit</button>
       <p class="hint">
         You may be asked to sign in, so Palomar can confirm you have write
         access to the repository you are submitting. Even if you are already signed

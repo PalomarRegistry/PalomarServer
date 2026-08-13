@@ -958,13 +958,24 @@ function renderBrowserPreflight(result) {
       browserPreflightDiagnostics.append(row);
     }
   } else if (result.outcome === "passed") {
-    browserPreflightSummary.textContent = "The portable preparation checks passed.";
+    browserPreflightSummary.textContent =
+      "We've completed preliminary checks on your repository layout and metadata, and everything looks good!";
   } else {
     browserPreflightSummary.textContent = "The complete browser check was not available.";
   }
-  browserPreflightDeferred.textContent = result.guard
-    ? "Full verification will repeat these checks and run Licensee, LFS, release, taxonomy, TOML, and thin-wrapper checks. You may review the findings or submit anyway."
-    : "Full verification will run every authoritative check after submission; you can still submit now.";
+  if (result.outcome === "passed") {
+    const comparator = document.createElement("code");
+    comparator.textContent = "comparator";
+    browserPreflightDeferred.replaceChildren(
+      "We'll run ",
+      comparator,
+      ' and the remaining checks after you click "Authenticate".',
+    );
+  } else {
+    browserPreflightDeferred.textContent = result.guard
+      ? "Full verification will repeat these checks and run Licensee, LFS, release, taxonomy, TOML, and thin-wrapper checks. You may review the findings or submit anyway."
+      : "Full verification will run every authoritative check after submission. This browser check does not block submission.";
+  }
 }
 
 function decodeGithubBlob(blob) {

@@ -128,12 +128,21 @@ test("public text speaks of registration, not publication", () => {
 });
 
 test("the button says what it does", () => {
-  assert.match(form, /Authenticate via GitHub/);
+  assert.match(form, /id="submission-submit">Authenticate via GitHub and submit<\/button>/);
   assert.match(form, /Authenticate and find my submissions/);
   assert.match(form, /class="disclosure recovery-prompt"/);
   assert.doesNotMatch(form, /fresh private links/);
   assert.doesNotMatch(form, /You do not need the original link/);
   assert.doesNotMatch(form, /Continue with GitHub/);
+});
+
+test("preliminary-check copy describes the browser and post-authentication work", async () => {
+  const script = await readFile(new URL("../public/intake.js", import.meta.url), "utf8");
+  assert.match(form, /id="browser-preflight-heading">Preliminary checks<\/h2>/);
+  assert.match(script, /We've completed preliminary checks on your repository layout and metadata, and everything looks good!/);
+  assert.match(script, /comparator\.textContent = "comparator"/);
+  assert.match(script, /the remaining checks after you click "Authenticate"/);
+  assert.doesNotMatch(script, /you can still submit now/);
 });
 
 test("finding submissions shows progress while GitHub authentication starts", async () => {
