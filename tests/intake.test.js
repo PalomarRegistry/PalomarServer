@@ -68,7 +68,7 @@ test("the self-check guidance sends the repository context to a coding agent", (
   );
   assert.match(
     form,
-    /<\/a> v0\.3 \(https:\/\/github\.com\/mathlib-initiative\/formalization\.yaml\) as a base/,
+    /<\/a> v0\.4 \(https:\/\/github\.com\/mathlib-initiative\/formalization\.yaml\) as a base/,
   );
   assert.match(form, /formalization\.yaml file for this project in the current repository/);
   assert.doesNotMatch(form, /attached formalization\.yaml/);
