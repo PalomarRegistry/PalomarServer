@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import worker from "../src/index.js";
@@ -274,12 +276,15 @@ test("authenticated dashboard reads only the aggregate report", async () => {
 
 
 test("aggregate contract rejects accidental target identities", () => {
-  assert.throws(() => validateDashboardReport({ ...REPORT, targets: [] }), /invalid aggregate/);
+  assert.throws(
+    () => validateDashboardReport({ ...REPORT, targets: [] }),
+    /at \$: unexpected targets/,
+  );
   assert.throws(() => validateDashboardReport({ ...REPORT, submissions: [] }), /invalid aggregate/);
   assert.throws(() => validateDashboardReport({ ...REPORT, owner_login: "maintainer" }), /invalid aggregate/);
   assert.throws(
     () => validateDashboardReport({ ...REPORT, totals: { ...REPORT.totals, submissions: "4" } }),
-    /invalid aggregate/,
+    /at \$\.totals\.submissions: expected a nonnegative integer/,
   );
   assert.throws(
     () => validateDashboardReport({
@@ -294,6 +299,20 @@ test("aggregate contract rejects accidental target identities", () => {
 });
 
 
+test("aggregate contract identifies missing fields and unsupported versions", () => {
+  const definitions = { ...REPORT.definitions };
+  delete definitions.technical_test;
+  assert.throws(
+    () => validateDashboardReport({ ...REPORT, definitions }),
+    /at \$\.definitions: missing technical_test/,
+  );
+  assert.throws(
+    () => validateDashboardReport({ ...REPORT, schema_version: 2 }),
+    /at \$\.schema_version: unsupported schema version 2/,
+  );
+});
+
+
 test("the exact State-produced aggregate fixture satisfies the consumer contract", async () => {
   const text = await readFile(
     new URL("fixtures/state-dashboard.json", import.meta.url),
@@ -304,6 +323,24 @@ test("the exact State-produced aggregate fixture satisfies the consumer contract
   assert.equal(Object.hasOwn(fixture, "targets"), false);
   assert.equal(Object.hasOwn(fixture, "submissions"), false);
   assert.equal(fixture.source.state_revision, `submissions-tree:${"3c13456937bf73c97fcf98c9952a96f2a048422d"}`);
+});
+
+
+test("the deployment validator accepts files and diagnoses invalid stdin", async () => {
+  const fixture = fileURLToPath(new URL("fixtures/state-dashboard.json", import.meta.url));
+  const command = fileURLToPath(new URL("../tools/validate-dashboard-report.js", import.meta.url));
+  const accepted = spawnSync(process.execPath, [command, fixture], { encoding: "utf8" });
+  assert.equal(accepted.status, 0, accepted.stderr);
+  assert.match(accepted.stdout, /dashboard schema 1 is compatible/);
+
+  const definitions = { ...REPORT.definitions };
+  delete definitions.technical_test;
+  const rejected = spawnSync(process.execPath, [command], {
+    encoding: "utf8",
+    input: JSON.stringify({ ...REPORT, definitions }),
+  });
+  assert.equal(rejected.status, 1);
+  assert.match(rejected.stderr, /at \$\.definitions: missing technical_test/);
 });
 
 

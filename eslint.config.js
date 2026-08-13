@@ -22,7 +22,7 @@ export default [
     languageOptions: { globals: globals.browser },
   },
   {
-    files: ["tests/**/*.js", "runtime-tests/config.js", "*.config.js"],
+    files: ["tests/**/*.js", "tools/**/*.js", "runtime-tests/config.js", "*.config.js"],
     languageOptions: { globals: globals.nodeBuiltin },
   },
   {

@@ -36,7 +36,15 @@ test("deployment applies the hostname policy before uploading a version", async 
   assert.ok(promoteAt > uploadAt);
   assert.equal(workflow.match(/\/workers\/scripts\/palomar-server\/subdomain/g)?.length, 1);
   assert.equal(workflow.match(/enabled: false, previews_enabled: false/g)?.length, 1);
+  assert.doesNotMatch(workflow, /STATE_REPO_DEPLOY_KEY/);
   assert.doesNotMatch(workflow, /wrangler triggers deploy/);
+});
+
+test("pull requests preserve every dashboard contract accepted by their base", async () => {
+  const workflow = await readFile(new URL("../.github/workflows/test.yml", import.meta.url), "utf8");
+  assert.match(workflow, /fetch-depth: 0/);
+  assert.match(workflow, /check-dashboard-backward-compatibility\.js "\$BASE_SHA"/);
+  assert.match(workflow, /BASE_SHA: \$\{\{ github\.event\.pull_request\.base\.sha \}\}/);
 });
 
 test("the tab-local credential module is included in the deployed asset directory", async () => {
