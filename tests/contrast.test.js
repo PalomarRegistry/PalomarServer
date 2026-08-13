@@ -41,7 +41,9 @@ const dark = { ...light, ...palette(css, 1) };
 
 for (const [mode, colours] of [["light", light], ["dark", dark]]) {
   test(`${mode} text meets WCAG AA`, () => {
-    for (const token of ["--ink", "--dim", "--accent", "--caution", "--attention"]) {
+    for (const token of [
+      "--ink", "--dim", "--accent", "--visited", "--hover", "--warning", "--attention",
+    ]) {
       const ratio = contrast(colours[token], colours["--page"]);
       assert.ok(ratio >= 4.5, `${mode} ${token} is ${ratio.toFixed(2)}:1 on the page, needs 4.5`);
     }
@@ -57,6 +59,11 @@ for (const [mode, colours] of [["light", light], ["dark", dark]]) {
   test(`${mode} button text meets WCAG AA against the button`, () => {
     const ratio = contrast(colours["--accent-ink"], colours["--accent"]);
     assert.ok(ratio >= 4.5, `${mode} button text is ${ratio.toFixed(2)}:1, needs 4.5`);
+  });
+
+  test(`${mode} diagnostic labels meet WCAG AA against their background`, () => {
+    const ratio = contrast(colours["--ink"], colours["--shade"]);
+    assert.ok(ratio >= 4.5, `${mode} diagnostic label is ${ratio.toFixed(2)}:1, needs 4.5`);
   });
 }
 

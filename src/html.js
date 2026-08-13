@@ -6,23 +6,36 @@ export function escape(value) {
   })[c]);
 }
 
-export function page(env, title, body) {
+export function page(env, title, body, { submitCurrent = false } = {}) {
   return `<!DOCTYPE html>
 <html lang="en">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+    <meta name="theme-color" content="#101216" media="(prefers-color-scheme: dark)">
     <title>${escape(title)} — Palomar</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml">
     <link rel="stylesheet" href="/style.css">
   </head>
   <body>
-    <header><a class="wordmark" href="${escape(env.SITE_URL)}">Palomar</a></header>
-    <main>${body}</main>
-    <footer>
-      <a href="${escape(env.SITE_URL)}">Registry</a>
-      <a href="${escape(env.SITE_URL)}/about.html">About</a>
-      <a href="https://github.com/PalomarRegistry/PalomarPolicy/blob/main/CONTRIBUTING.md">Policy</a>
+    <a class="skip-link" href="#content">Skip to content</a>
+    <header class="site-header">
+      <a class="wordmark" href="${escape(env.SITE_URL)}" aria-label="Palomar home">Palomar</a>
+      <nav aria-label="Main navigation">
+        <a href="${escape(env.SITE_URL)}">Registry</a>
+        <a href="${escape(env.SITE_URL)}/about.html">About</a>
+        <a${submitCurrent ? ' class="active" aria-current="page"' : ""} href="/">Submit</a>
+      </nav>
+    </header>
+    <main id="content" class="page-main">${body}</main>
+    <footer class="site-footer">
+      <div><span class="footer-brand">Palomar</span><span> — a registry of Lean-verified results</span></div>
+      <div class="footer-links">
+        <a href="${escape(env.SITE_URL)}">Registry</a>
+        <a href="${escape(env.SITE_URL)}/about.html">About</a>
+        <a href="https://github.com/PalomarRegistry/PalomarPolicy/blob/main/CONTRIBUTING.md">Policy</a>
+      </div>
     </footer>
   </body>
 </html>`;
@@ -264,7 +277,7 @@ Identify every missing, malformed, or inconsistent field. For each problem, name
       <p class="visually-hidden" role="status" id="live-status"></p>
     </form>
     <script type="module" src="/intake.js"></script>
-  `);
+  `, { submitCurrent: true });
 }
 
 export function submissionsPage(

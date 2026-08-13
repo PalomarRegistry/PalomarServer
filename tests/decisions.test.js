@@ -1065,7 +1065,7 @@ test("structured metadata failures are concise and identify fields as code", asy
     script,
     /field\.className = "diagnostic-field"/,
   );
-  assert.match(css, /\.diagnostic-field \{[^}]*font-family:[^}]*background: var\(--line\)/s);
+  assert.match(css, /\.diagnostic-field \{[^}]*font-family:[^}]*background: var\(--shade\)/s);
   assert.match(script, /diagnostic\.location\?\.path === "formalization\.yaml"/);
   assert.match(script, /el\("code", "formalization\.yaml"\)/);
   assert.match(script, /file in the repository, and resubmit using the updated commit/);

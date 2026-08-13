@@ -1,7 +1,11 @@
 body {
   max-width: 68rem;
   margin: 0 auto;
+  font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
 }
+
+h1 { font-size: 1.6rem; margin: 1rem 0 .5rem; }
+h2 { font-size: 1.05rem; margin: 1.75rem 0 .5rem; }
 
 header {
   align-items: baseline;
