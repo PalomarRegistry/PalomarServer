@@ -323,6 +323,27 @@ function diagnosticLocation(location) {
   return `${location.path}${location.line ? `:${location.line}` : ""}${location.column ? `:${location.column}` : ""}`;
 }
 
+function formalizationDiagnosticText(text, field) {
+  if (typeof text !== "string") return "";
+  const prefix = `formalization.yaml field ${field}`;
+  if (text.startsWith(prefix)) return text.slice(prefix.length).trimStart();
+  if (text.startsWith(field)) return text.slice(field.length).trimStart();
+  return text;
+}
+
+function diagnosticHeading(diagnostic) {
+  const heading = document.createElement("h3");
+  const summary = diagnostic.summary ?? "A check did not pass";
+  if (diagnostic.stage !== "formalization" || !diagnostic.field) {
+    heading.textContent = summary;
+    return heading;
+  }
+  heading.append(el("code", diagnostic.field));
+  const detail = formalizationDiagnosticText(summary, diagnostic.field);
+  if (detail) heading.append(` ${detail}`);
+  return heading;
+}
+
 function option(value, selected = false) {
   const node = document.createElement("option");
   node.value = value;
@@ -838,17 +859,27 @@ function showStructuredFailure(data) {
   for (const diagnostic of shown) {
     const article = document.createElement("article");
     article.className = "diagnostic";
-    article.append(el("h3", diagnostic.summary ?? "A check did not pass"));
-    const location = diagnosticLocation(diagnostic.location);
+    article.append(diagnosticHeading(diagnostic));
+    const location = diagnostic.stage === "formalization" && diagnostic.location?.path === "formalization.yaml"
+      ? ""
+      : diagnosticLocation(diagnostic.location);
     if (location) {
       const locationNode = el("p", location);
       locationNode.className = "location";
       article.append(locationNode);
     }
-    if (diagnostic.explanation && diagnostic.explanation !== diagnostic.summary) {
-      article.append(el("p", diagnostic.explanation));
+    const explanation = diagnostic.stage === "formalization" && diagnostic.field
+      ? formalizationDiagnosticText(diagnostic.explanation, diagnostic.field)
+      : diagnostic.explanation;
+    const summary = diagnostic.stage === "formalization" && diagnostic.field
+      ? formalizationDiagnosticText(diagnostic.summary, diagnostic.field)
+      : diagnostic.summary;
+    if (explanation && explanation !== summary) {
+      article.append(el("p", explanation));
     }
-    article.append(el("p", `Who can fix this: ${diagnostic.owner === "submitter" ? "you" : "Palomar"}.`));
+    if (diagnostic.owner !== "submitter") {
+      article.append(el("p", "Palomar must fix this."));
+    }
     if (
       diagnostic.next_action &&
       diagnostic.next_action !==
@@ -856,13 +887,19 @@ function showStructuredFailure(data) {
     ) article.append(el("p", `Next: ${diagnostic.next_action}`));
     failureDiagnostics.append(article);
   }
-  failureIntro.textContent = data.repair && !shown.length
-    ? "Palomar's metadata repair result is shown below."
-    : shown.length
-    ? diagnostics.every((item) => item.owner === "submitter")
-      ? "Each item below says what needs changing and what to do next. Update the repository and submit the corrected commit."
-      : "The owner shown on each item tells you whether to change the repository or wait for Palomar."
-    : "Complete the highlighted metadata fields below.";
+  if (data.repair && !shown.length) {
+    failureIntro.textContent = "Palomar's metadata repair result is shown below.";
+  } else if (shown.length && diagnostics.every((item) => item.owner === "submitter")) {
+    failureIntro.replaceChildren(
+      "Each item below says what needs changing and what to do next. Update the ",
+      el("code", "formalization.yaml"),
+      " file in the repository, and resubmit using the updated commit.",
+    );
+  } else if (shown.length) {
+    failureIntro.textContent = "Follow the action on each item. If an item says Palomar must fix it, no repository change is needed for that item.";
+  } else {
+    failureIntro.textContent = "Complete the highlighted metadata fields below.";
+  }
   if (data.repair) {
     failureHeading.textContent = shown.length ? "Metadata repair needs attention" : "Metadata repair";
   } else if (!shown.length && failure.mode === "preflight") {
@@ -908,17 +945,14 @@ function showStructuredFailure(data) {
       closed: "The repair pull request was closed without merging. Update the file manually or make a new submission after changing it.",
     };
     const preparing = ["queued", "preparing"].includes(data.repair.status);
-    setRepairStatus(
-      messages[data.repair.status] ?? `Repair status: ${data.repair.status}`,
-      { busy: preparing },
-    );
     const explanationIsStatus = ["queued", "preparing", "pr-open", "merged"].includes(
       data.repair.status,
     );
-    if (data.repair.explanation && !explanationIsStatus) {
-      repairStatus.append(` ${data.repair.explanation}`);
-    }
-    if (data.repair.pr_url) repairStatus.append(" ", link(data.repair.pr_url, "Open the pull request."));
+    const repairMessage = data.repair.explanation && !explanationIsStatus
+      ? data.repair.explanation
+      : messages[data.repair.status] ?? `Repair status: ${data.repair.status}`;
+    setRepairStatus(repairMessage, { busy: preparing });
+    if (data.repair.pr_url) repairStatus.append(" ", link(data.repair.pr_url, "View the pull request."));
     if (data.repair.patch && !data.repair.pr_url) {
       const disclosure = document.createElement("details");
       const summary = el("summary", "Apply the proposed patch manually");
