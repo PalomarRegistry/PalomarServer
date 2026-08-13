@@ -338,7 +338,9 @@ function diagnosticHeading(diagnostic) {
     heading.textContent = summary;
     return heading;
   }
-  heading.append(el("code", diagnostic.field));
+  const field = el("code", diagnostic.field);
+  field.className = "diagnostic-field";
+  heading.append(field);
   const detail = formalizationDiagnosticText(summary, diagnostic.field);
   if (detail) heading.append(` ${detail}`);
   return heading;
@@ -891,7 +893,7 @@ function showStructuredFailure(data) {
     failureIntro.textContent = "Palomar's metadata repair result is shown below.";
   } else if (shown.length && diagnostics.every((item) => item.owner === "submitter")) {
     failureIntro.replaceChildren(
-      "Each item below says what needs changing and what to do next. Update the ",
+      "Update the ",
       el("code", "formalization.yaml"),
       " file in the repository, and resubmit using the updated commit.",
     );
