@@ -121,6 +121,9 @@ button[data-busy="true"]::after {
 .metadata-warning pre { max-height: 24rem; overflow: auto; white-space: pre-wrap; }
 .diagnostic { border-left: .3rem solid var(--caution); padding: .15rem 0 .15rem 1rem; margin: 1.25rem 0; }
 .diagnostic h3 { margin-bottom: .35rem; }
+.diagnostic-field { display: inline-block; padding: .05em .35em; border-radius: 4px;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: .85em; font-weight: 600; letter-spacing: .01em; background: var(--line); }
 .diagnostic p { margin: .35rem 0; }
 .diagnostic .location { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 #repair-form { margin-top: 1.5rem; border-top: 1px solid var(--line); padding-top: .5rem; }

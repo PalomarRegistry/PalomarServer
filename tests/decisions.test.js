@@ -1060,13 +1060,16 @@ test("verification failures show actionable public annotations and repeat the ru
 
 test("structured metadata failures are concise and identify fields as code", async () => {
   const script = await readFile(new URL("../public/status.js", import.meta.url), "utf8");
+  const css = await readFile(new URL("../public/style.css", import.meta.url), "utf8");
   assert.match(
     script,
-    /heading\.append\(el\("code", diagnostic\.field\)\)/,
+    /field\.className = "diagnostic-field"/,
   );
+  assert.match(css, /\.diagnostic-field \{[^}]*font-family:[^}]*background: var\(--line\)/s);
   assert.match(script, /diagnostic\.location\?\.path === "formalization\.yaml"/);
   assert.match(script, /el\("code", "formalization\.yaml"\)/);
   assert.match(script, /file in the repository, and resubmit using the updated commit/);
+  assert.doesNotMatch(script, /Each item below says what needs changing/);
   assert.doesNotMatch(script, /Update the repository and submit the corrected commit/);
   assert.doesNotMatch(script, /Who can fix this:/);
   assert.match(script, /View the pull request\./);
