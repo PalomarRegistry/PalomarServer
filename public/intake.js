@@ -30,23 +30,6 @@ import {
   registrationIdentityDigest,
   repositoryQuery,
 } from "./normalize.js";
-const promptButton = document.getElementById("copy-formalization-prompt");
-const promptText = document.getElementById("formalization-prompt");
-const promptStatus = document.getElementById("formalization-prompt-status");
-promptButton?.addEventListener("click", async () => {
-  try {
-    await navigator.clipboard.writeText(promptText?.textContent ?? "");
-    promptStatus.textContent = "Prompt copied.";
-  } catch {
-    const selection = window.getSelection();
-    const range = document.createRange();
-    range.selectNodeContents(promptText);
-    selection.removeAllRanges();
-    selection.addRange(range);
-    promptStatus.textContent = "The prompt is selected; copy it with your browser's copy command.";
-  }
-});
-
 // The versions of one result, at a key named after it. The registry index
 // names every record ever accepted, so asking it which versions one identifier
 // has meant fetching all of them, and paying more for it every time anybody
@@ -975,13 +958,24 @@ function renderBrowserPreflight(result) {
       browserPreflightDiagnostics.append(row);
     }
   } else if (result.outcome === "passed") {
-    browserPreflightSummary.textContent = "The portable preparation checks passed.";
+    browserPreflightSummary.textContent =
+      "We've completed preliminary checks on your repository layout and metadata, and everything looks good!";
   } else {
     browserPreflightSummary.textContent = "The complete browser check was not available.";
   }
-  browserPreflightDeferred.textContent = result.guard
-    ? "Full verification will repeat these checks and run Licensee, LFS, release, taxonomy, TOML, and thin-wrapper checks. You may review the findings or submit anyway."
-    : "Full verification will run every authoritative check after submission; you can still submit now.";
+  if (result.outcome === "passed") {
+    const comparator = document.createElement("code");
+    comparator.textContent = "comparator";
+    browserPreflightDeferred.replaceChildren(
+      "We'll run ",
+      comparator,
+      ' and the remaining checks after you click "Authenticate".',
+    );
+  } else {
+    browserPreflightDeferred.textContent = result.guard
+      ? "Full verification will repeat these checks and run Licensee, LFS, release, taxonomy, TOML, and thin-wrapper checks. You may review the findings or submit anyway."
+      : "Full verification will run every authoritative check after submission. This browser check does not block submission.";
+  }
 }
 
 function decodeGithubBlob(blob) {

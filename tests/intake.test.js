@@ -44,47 +44,12 @@ test("the introduction summarizes the submission requirements", () => {
   assert.match(form, /Automated agents: read \/llms\.txt before submitting/);
 });
 
-test("the self-check prompt names every strict Palomar metadata section", () => {
-  for (const section of [
-    "project", "classification", "sources", "automation", "review",
-  ]) assert.match(form, new RegExp(`top-level sections:[\\s\\S]*${section}`));
-  for (const requirement of [
-    "responsible_maintainers", "substantive_formalization",
-    "classification.arxiv", "classification.msc2020", "automation.methods",
-    "review.status",
-  ]) assert.match(form, new RegExp(requirement.replace(".", "\\.")));
-  assert.match(form, /omit repository for an ordinary project/);
-  assert.match(form, /substantive development by default/);
-});
-
-test("the self-check guidance sends the repository context to a coding agent", () => {
-  const normalized = form.replace(/\s+/g, " ");
-  assert.match(normalized, /coding agent in a local clone of your repository/);
-  assert.match(normalized, /web interface for an LLM/);
-  assert.match(normalized, /other context from your repository/);
-  assert.match(
-    form,
-    /href="https:\/\/github\.com\/mathlib-initiative\/formalization\.yaml">mathlib-initiative formalization\.yaml<\/a>/,
-  );
-  assert.match(
-    form,
-    /<\/a> v0\.4 \(https:\/\/github\.com\/mathlib-initiative\/formalization\.yaml\) as a base/,
-  );
-  assert.match(form, /formalization\.yaml file for this project in the current repository/);
-  assert.doesNotMatch(form, /attached formalization\.yaml/);
-  assert.doesNotMatch(form, /obsolete singular author or provenance spellings/);
-  assert.doesNotMatch(form, /missing, malformed, obsolete, or inconsistent/);
-});
-
-test("the metadata warning prepares submitters for careful preflight", () => {
-  assert.match(form, /provides the essential metadata for your registration/);
-  assert.match(form, /submission process may request changes/);
-  assert.match(form, /submit with the new commit/);
-});
-
 test("the disclosure says what is recorded and when it becomes public", () => {
   assert.match(form, /permanently recorded in public/);
-  assert.match(form, /public only if you choose to register after seeing them/);
+  assert.match(
+    form,
+    /public only after you have seen them, and decided to complete the registration/,
+  );
   // "The review" invites the reading that a person did it. Say what it is.
   assert.match(form, /automated review/);
   // The earlier wording claimed reviews were readable by "the model provider"
@@ -163,12 +128,21 @@ test("public text speaks of registration, not publication", () => {
 });
 
 test("the button says what it does", () => {
-  assert.match(form, /Authenticate via GitHub/);
+  assert.match(form, /id="submission-submit">Authenticate via GitHub and submit<\/button>/);
   assert.match(form, /Authenticate and find my submissions/);
   assert.match(form, /class="disclosure recovery-prompt"/);
   assert.doesNotMatch(form, /fresh private links/);
   assert.doesNotMatch(form, /You do not need the original link/);
   assert.doesNotMatch(form, /Continue with GitHub/);
+});
+
+test("preliminary-check copy describes the browser and post-authentication work", async () => {
+  const script = await readFile(new URL("../public/intake.js", import.meta.url), "utf8");
+  assert.match(form, /id="browser-preflight-heading">Preliminary checks<\/h2>/);
+  assert.match(script, /We've completed preliminary checks on your repository layout and metadata, and everything looks good!/);
+  assert.match(script, /comparator\.textContent = "comparator"/);
+  assert.match(script, /the remaining checks after you click "Authenticate"/);
+  assert.doesNotMatch(script, /you can still submit now/);
 });
 
 test("finding submissions shows progress while GitHub authentication starts", async () => {

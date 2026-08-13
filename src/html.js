@@ -95,49 +95,12 @@ export function intakeForm(
       ${recoveryContent}
     </section>
 
-    <section class="disclosure metadata-warning">
-      <h2>Check <code>formalization.yaml</code> before you submit</h2>
-      <p>
-        Palomar checks your <code>formalization.yaml</code> file carefully, as
-        this provides the essential metadata for your registration. The
-        submission process may request changes, so please expect that you may
-        need to update <code>formalization.yaml</code> in your repository and
-        then submit with the new commit.
-      </p>
-      <details>
-        <summary>Prompt a coding agent to check the file now</summary>
-        <p class="hint">
-          Paste the prompt below into a coding agent in a local clone of your
-          repository. (You can also try this check in the web interface for an
-          LLM, but you may need to also paste in your
-          <code>formalization.yaml</code> and other context from your repository
-          in order to get a useful response.) Treat its answer as advice:
-          Palomar's preparation step remains the authoritative check.
-        </p>
-        <!-- The bare URL must remain: the copy button uses textContent and drops href. -->
-        <pre id="formalization-prompt">Check the formalization.yaml file for this project in the current repository for a Palomar Registry submission.
-
-Palomar uses <a href="https://github.com/mathlib-initiative/formalization.yaml">mathlib-initiative formalization.yaml</a> v0.4 (https://github.com/mathlib-initiative/formalization.yaml) as a base and requires these top-level sections: project, classification, sources, automation, and review. Check all of the following Palomar requirements:
-- version is v0.4 (an omitted version also dispatches to v0.4, but current files should be explicit);
-- project has a nonempty name, authors, license, and responsible_maintainers;
-- omit repository for an ordinary project: the submitted repository is the substantive development by default. Only a thin wrapper needs repository.substantive_formalization with a GitHub repository id and full commit; an explicit repository.role of thin-wrapper remains accepted but is unnecessary;
-- classification.arxiv has one or two valid arXiv category codes and classification.msc2020 has one to eight valid MSC 2020 codes;
-- sources is a nonempty list, and every source has a title and relationship;
-- automation.methods is a nonempty list and every entry has a nonempty method;
-- review.status is nonempty.
-
-Identify every missing, malformed, or inconsistent field. For each problem, name the exact dotted field, explain the expected value, and propose a concrete YAML change. Do not invent names, authorship, classifications, licences, source relationships, substantive repositories, commits, or review claims: mark values that I must supply myself. Return a corrected YAML draft and then a short checklist of assumptions I should verify.</pre>
-        <button type="button" class="secondary" id="copy-formalization-prompt">Copy prompt</button>
-        <span class="hint" id="formalization-prompt-status" role="status"></span>
-      </details>
-    </section>
-
     <section class="disclosure">
       <h2>What becomes public</h2>
       <p>
         The submitted repository, commit, and Comparator configuration path are
         permanently recorded in public. The automated review and decision become
-        public only if you choose to register after seeing them.
+        public only after you have seen them, and decided to complete the registration.
       </p>
     </section>
 
@@ -266,7 +229,7 @@ Identify every missing, malformed, or inconsistent field. For each problem, name
 
       <section class="disclosure browser-preflight" id="browser-preflight"
                data-state="checking" aria-labelledby="browser-preflight-heading" hidden>
-        <h2 id="browser-preflight-heading">Check this commit before authentication</h2>
+        <h2 id="browser-preflight-heading">Preliminary checks</h2>
         <p id="browser-preflight-summary" tabindex="-1"></p>
         <ul id="browser-preflight-diagnostics" class="problems"></ul>
         <p id="browser-preflight-deferred" class="hint"></p>
@@ -275,7 +238,7 @@ Identify every missing, malformed, or inconsistent field. For each problem, name
         </button>
       </section>
 
-      <button type="submit" id="submission-submit">Authenticate via GitHub</button>
+      <button type="submit" id="submission-submit">Authenticate via GitHub and submit</button>
       <p class="hint">
         You may be asked to sign in, so Palomar can confirm you have write
         access to the repository you are submitting. Even if you are already signed

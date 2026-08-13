@@ -149,12 +149,10 @@ button[data-busy="true"]::after {
   font-size: .8rem; width: 100%; }
 .details:has(> #submission-link) { display: flex; gap: .5rem; align-items: center; }
 .details:has(> #submission-link) button { margin-top: 0; white-space: nowrap; }
-.metadata-warning { border-left: .35rem solid var(--accent); }
 .browser-preflight[data-state="passed"] { border-left: .35rem solid var(--accent); }
 .browser-preflight[data-state="failed"],
 .browser-preflight[data-state="incomplete"] { border-left: .35rem solid var(--attention); }
 .browser-preflight code { font-weight: 600; }
-.metadata-warning pre { max-height: 24rem; overflow: auto; white-space: pre-wrap; }
 .diagnostic { border-left: .3rem solid var(--warning); padding: .15rem 0 .15rem 1rem; margin: 1.25rem 0; }
 .diagnostic h3 { margin-bottom: .35rem; }
 .diagnostic-field { display: inline-block; padding: .05em .35em; border-radius: 0;
