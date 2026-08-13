@@ -4,11 +4,11 @@
  * Everything here is convenience. The form works with this script blocked, and
  * nothing it says is trusted: the server checks the repository, the commit, the
  * submitter's push access, and the Palomar ID again, and its answers are the
- * ones that count. A check that fails here never prevents submission, because a
- * rate limit or an outage on someone else's API is not a reason to refuse
- * somebody's work. The exception is a validated exact-commit match: it cannot
- * become another registration, so the later controls are disabled until the
- * submitter changes the registration identity or commit.
+ * ones that count. A deterministic browser finding asks for one explicit
+ * “submit anyway” confirmation, while an incomplete check, rate limit, or API
+ * outage never blocks submission. A validated exact-commit match cannot become
+ * another registration, so the later controls are disabled until the submitter
+ * changes the registration identity or commit.
  *
  * The lookups go straight from the browser to GitHub and to the registry data.
  * That keeps the server out of it, and it tells GitHub the repository name a
@@ -30,7 +30,6 @@ import {
   registrationIdentityDigest,
   repositoryQuery,
 } from "./normalize.js";
-
 const promptButton = document.getElementById("copy-formalization-prompt");
 const promptText = document.getElementById("formalization-prompt");
 const promptStatus = document.getElementById("formalization-prompt-status");
@@ -130,6 +129,9 @@ function debounce(run, ms) {
 
 const githubJsonCache = new Map();
 let githubRetryAt = 0;
+const PREFLIGHT_REQUEST_LIMIT = 8;
+let preflightRequestCount = 0;
+let githubRequestsRemaining = null;
 
 function recordGithubRateLimit(response) {
   const retryAfter = Number(response.headers.get("retry-after"));
@@ -157,9 +159,17 @@ function githubRateLimitMessage(subject) {
  * cached too, so concurrent checks share their request. Once GitHub reports a
  * limit, no further request is sent until its Retry-After or reset time.
  */
-async function githubJson(path, { signal } = {}) {
+async function githubJson(path, { signal, preflight = false } = {}) {
   if (githubRetryAt > Date.now()) return "rate-limited";
   if (!signal && githubJsonCache.has(path)) return githubJsonCache.get(path);
+  if (preflight && (
+    preflightRequestCount >= PREFLIGHT_REQUEST_LIMIT ||
+    (githubRequestsRemaining !== null && githubRequestsRemaining <= 10)
+  )) return "budget-exhausted";
+  if (preflight) {
+    preflightRequestCount += 1;
+    if (githubRequestsRemaining !== null) githubRequestsRemaining -= 1;
+  }
 
   const request = (async () => {
     const response = await fetch(`https://api.github.com/${path}`, {
@@ -170,6 +180,9 @@ async function githubJson(path, { signal } = {}) {
       recordGithubRateLimit(response);
       return "rate-limited";
     }
+    const remainingHeader = response.headers.get("x-ratelimit-remaining");
+    const remaining = remainingHeader === null ? NaN : Number(remainingHeader);
+    if (Number.isFinite(remaining) && remaining >= 0) githubRequestsRemaining = remaining;
     return response.ok ? response.json() : null;
   })();
 
@@ -887,12 +900,225 @@ commit.input?.addEventListener("input", () => {
  */
 let layoutToken = 0;
 let describedLayout = null;
+let browserPreflightToken = 0;
+let browserPreflightTimer;
+let browserPreflightResult = null;
+let browserPreflightOverride = null;
+let browserPreflightModulePromise;
+
+const browserPreflight = document.getElementById("browser-preflight");
+const browserPreflightSummary = document.getElementById("browser-preflight-summary");
+const browserPreflightDiagnostics = document.getElementById("browser-preflight-diagnostics");
+const browserPreflightDeferred = document.getElementById("browser-preflight-deferred");
+const browserPreflightAnyway = document.getElementById("browser-preflight-anyway");
+
+function preflightFingerprint() {
+  const name = normalizeRepository(repository.input?.value);
+  const sha = normalizeCommit(commit.input?.value);
+  const project = normalizeRepositoryPath(projectPath?.value, { empty: true });
+  const comparator = normalizeRepositoryPath(configPath?.value);
+  const metadata = normalizeRepositoryPath(metadataPath?.value, { empty: true });
+  if (!name || !sha || project === null || !comparator || metadata === null) return null;
+  return JSON.stringify({
+    repository: name,
+    commit: sha,
+    project,
+    comparator,
+    metadata,
+  });
+}
+
+function exactCommitFile(repositoryName, sha, path) {
+  const encoded = path.split("/").map(encodeURIComponent).join("/");
+  return `https://github.com/${repositoryName}/blob/${sha}/${encoded}`;
+}
+
+function renderBrowserPreflight(result) {
+  browserPreflightResult = result;
+  browserPreflightOverride = null;
+  if (
+    !browserPreflight || !browserPreflightSummary || !browserPreflightDiagnostics ||
+    !browserPreflightDeferred
+  ) return;
+  browserPreflight.hidden = false;
+  browserPreflight.dataset.state = result.outcome;
+  browserPreflightDiagnostics.replaceChildren();
+  browserPreflightAnyway?.setAttribute("hidden", "");
+  if (result.outcome === "checking") {
+    browserPreflightSummary.textContent = "Checking the files at this commit…";
+    browserPreflightDeferred.textContent = "You can submit while this check is running.";
+    return;
+  }
+  if (result.diagnostics.length) {
+    browserPreflightSummary.textContent = result.guard
+      ? "Palomar found changes that are likely to be required."
+      : result.policyCurrent
+        ? "Palomar found advisory items that full verification will decide."
+        : "Palomar found possible problems, but could not confirm the current browser-check policy.";
+    for (const item of result.diagnostics) {
+      const row = document.createElement("li");
+      if (item.field) {
+        const fieldName = document.createElement("code");
+        fieldName.textContent = item.field;
+        row.append(fieldName, ": ");
+      }
+      if (item.path) {
+        const link = document.createElement("a");
+        link.href = exactCommitFile(result.repository, result.commit, item.path);
+        link.target = "_blank";
+        link.rel = "noreferrer noopener";
+        link.textContent = item.summary;
+        row.append(link);
+      } else {
+        row.append(item.summary);
+      }
+      browserPreflightDiagnostics.append(row);
+    }
+  } else if (result.outcome === "passed") {
+    browserPreflightSummary.textContent = "The portable preparation checks passed.";
+  } else {
+    browserPreflightSummary.textContent = "The complete browser check was not available.";
+  }
+  browserPreflightDeferred.textContent = result.guard
+    ? "Full verification will repeat these checks and run Licensee, LFS, release, taxonomy, TOML, and thin-wrapper checks. You may review the findings or submit anyway."
+    : "Full verification will run every authoritative check after submission; you can still submit now.";
+}
+
+function decodeGithubBlob(blob) {
+  if (!blob || blob.encoding !== "base64" || typeof blob.content !== "string") return null;
+  try {
+    const binary = atob(blob.content.replace(/\s/g, ""));
+    const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    return null;
+  }
+}
+
+async function optionalGithub(path) {
+  try {
+    return await githubJson(path, { preflight: true });
+  } catch {
+    return null;
+  }
+}
+
+async function currentBrowserPolicy(selectedPolicy) {
+  const policyDocument = await optionalGithub(
+    "repos/PalomarRegistry/PalomarSubmission/contents/browser-preflight-policy.json?ref=main",
+  );
+  const text = decodeGithubBlob(policyDocument);
+  if (!text) return false;
+  try {
+    const remote = JSON.parse(text);
+    return JSON.stringify(remote) === JSON.stringify(selectedPolicy);
+  } catch {
+    return false;
+  }
+}
+
+function loadBrowserPreflight() {
+  browserPreflightModulePromise ??= import("/preflight.js");
+  return browserPreflightModulePromise;
+}
+
+async function inspectBrowserPreflight() {
+  const fingerprint = preflightFingerprint();
+  const mine = ++browserPreflightToken;
+  if (!fingerprint) {
+    browserPreflightResult = null;
+    browserPreflightOverride = null;
+    if (browserPreflight) browserPreflight.hidden = true;
+    return;
+  }
+  const input = JSON.parse(fingerprint);
+  const layoutMatches = describedLayout?.name === input.repository &&
+    describedLayout?.sha === input.commit && Array.isArray(describedLayout.entries);
+  if (!layoutMatches) return;
+  renderBrowserPreflight({
+    fingerprint,
+    repository: input.repository,
+    commit: input.commit,
+    outcome: "checking",
+    diagnostics: [],
+    incomplete: true,
+    guard: false,
+  });
+  try {
+    const {
+      BROWSER_PREFLIGHT_POLICY: selectedPolicy,
+      inspectTree,
+      validatePortable,
+    } = await loadBrowserPreflight();
+    const treeResult = inspectTree(describedLayout.entries, input, selectedPolicy);
+    const content = {};
+    let incomplete = false;
+    const reads = Object.entries(treeResult.files).map(async ([name, entry]) => {
+      if (!entry?.sha) {
+        incomplete = true;
+        return;
+      }
+      const blob = await optionalGithub(`repos/${input.repository}/git/blobs/${entry.sha}`);
+      const text = decodeGithubBlob(blob);
+      if (text === null) incomplete = true;
+      else content[name] = text;
+    });
+    const work = Promise.all([currentBrowserPolicy(selectedPolicy), ...reads]);
+    const deadline = new Promise((resolve) => setTimeout(() => resolve([false]), 15_000));
+    const values = await Promise.race([work, deadline]);
+    if (mine !== browserPreflightToken || fingerprint !== preflightFingerprint()) return;
+    const policyCurrent = values[0] === true;
+    if (!policyCurrent || Object.keys(content).length !== reads.length) incomplete = true;
+    const diagnostics = [
+      ...treeResult.diagnostics,
+      ...validatePortable(content, selectedPolicy),
+    ];
+    const guard = policyCurrent && diagnostics.some((item) => !item.advisory);
+    renderBrowserPreflight({
+      fingerprint,
+      repository: input.repository,
+      commit: input.commit,
+      outcome: diagnostics.length ? "failed" : incomplete ? "incomplete" : "passed",
+      diagnostics,
+      incomplete,
+      policyCurrent,
+      guard,
+    });
+    announce(diagnostics.length
+      ? `The browser check found ${diagnostics.length} possible ${diagnostics.length === 1 ? "problem" : "problems"}.`
+      : "The browser preparation check finished.");
+  } catch {
+    if (mine !== browserPreflightToken || fingerprint !== preflightFingerprint()) return;
+    renderBrowserPreflight({
+      fingerprint,
+      repository: input.repository,
+      commit: input.commit,
+      outcome: "incomplete",
+      diagnostics: [],
+      incomplete: true,
+      policyCurrent: false,
+      guard: false,
+    });
+    announce("The browser preparation check was not available; authoritative verification can still continue.");
+  }
+}
+
+function scheduleBrowserPreflight() {
+  browserPreflightToken += 1;
+  browserPreflightResult = null;
+  browserPreflightOverride = null;
+  browserPreflightAnyway?.setAttribute("hidden", "");
+  if (browserPreflight) browserPreflight.hidden = true;
+  clearTimeout(browserPreflightTimer);
+  browserPreflightTimer = setTimeout(() => { void inspectBrowserPreflight(); }, 350);
+}
 
 function invalidateLayout() {
   layoutToken += 1;
   describedLayout = null;
   resetComparatorSuggestions();
   clearSuggestions();
+  scheduleBrowserPreflight();
 }
 
 function describeTreeLayout(entries) {
@@ -954,11 +1180,26 @@ async function describeLayout(name, sha) {
   if (!current() || !Array.isArray(tree?.tree)) return;
   if (tree.truncated) {
     layout.open = true;
+    const fingerprint = preflightFingerprint();
+    if (fingerprint) {
+      renderBrowserPreflight({
+        fingerprint,
+        repository: name,
+        commit: sha,
+        outcome: "incomplete",
+        diagnostics: [],
+        incomplete: true,
+        guard: false,
+      });
+      browserPreflightSummary.textContent =
+        "GitHub truncated this repository's tree, so browser preparation was not completed.";
+    }
     return say("This repository is too large for GitHub to list in one request, so the layout was not checked. Fill these in if the project is not at the root.");
   }
   describedLayout = { name, sha, entries: tree.tree };
   setComparatorSuggestions(tree.tree);
   describeTreeLayout(tree.tree);
+  scheduleBrowserPreflight();
 }
 
 // Filling one of these in by hand makes the layout non-standard whatever the
@@ -966,6 +1207,7 @@ async function describeLayout(name, sha) {
 for (const input of [projectPath, metadataPath]) {
   input?.addEventListener("input", () => {
     if (input.value) summarize("custom");
+    scheduleBrowserPreflight();
   });
 }
 
@@ -983,6 +1225,7 @@ for (const input of [projectPath, configPath]) {
         describeTreeLayout(describedLayout.entries);
       }
     }
+    scheduleBrowserPreflight();
   });
 }
 
@@ -1251,8 +1494,30 @@ recoveryForm?.addEventListener("submit", () => {
 // Make sure the action does not still look as though it is in progress.
 window.addEventListener("pageshow", () => setRecoveryBusy(false));
 
-form?.addEventListener("submit", () => {
+browserPreflightAnyway?.addEventListener("click", () => {
+  const fingerprint = preflightFingerprint();
+  if (!fingerprint || browserPreflightResult?.fingerprint !== fingerprint) return;
+  browserPreflightOverride = fingerprint;
+  form?.requestSubmit(submit);
+});
+
+form?.addEventListener("submit", (event) => {
   if (!submit) return;
+  const fingerprint = preflightFingerprint();
+  if (
+    fingerprint &&
+    browserPreflightResult?.fingerprint === fingerprint &&
+    browserPreflightResult.guard &&
+    browserPreflightResult.diagnostics.length &&
+    browserPreflightOverride !== fingerprint
+  ) {
+    event.preventDefault();
+    browserPreflightAnyway?.removeAttribute("hidden");
+    browserPreflight?.scrollIntoView({ behavior: "smooth", block: "center" });
+    browserPreflightSummary?.focus();
+    announce("Review the browser check, then submit anyway if you want authoritative verification to continue.");
+    return;
+  }
   // Not disabled: a disabled submit button is not sent with the form, and
   // some browsers will not submit at all. Blocked by hand instead.
   submit.dataset.busy = "true";
@@ -1260,6 +1525,6 @@ form?.addEventListener("submit", () => {
   announce("Checking the repository and commit with GitHub.");
 });
 
-// Nothing here cancels the submit event. A guard against double submission
-// would also be a way to lose a submission, and the server now retries a
-// racing write rather than failing it, so a second press is harmless.
+// The browser preflight above is the only deliberate cancellation, and always
+// exposes the explicit override. The server still retries a racing write, so a
+// second press after submission starts is harmless.

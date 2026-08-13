@@ -1217,7 +1217,7 @@ test("an event never claims a status the submission cannot be in", async () => {
   const stamped = sources.flatMap((source) =>
     [...source.matchAll(/\{\s*at: (?:recordedAt\(\)|createdAt), status: "([a-z-]+)"/g)]
       .map((m) => m[1]));
-  assert.ok(stamped.includes("preflighting"), "the admission event escaped the status scan");
+  assert.ok(stamped.includes("verifying"), "the admission event escaped the status scan");
   assert.ok(stamped.includes("withdrawn"), "the decision events escaped the status scan");
   for (const status of stamped) {
     assert.ok(status in STATUSES, `an event claims the status "${status}", which does not exist`);
@@ -2843,8 +2843,9 @@ test("a rejected initial dispatch leaves a durable retryable verification", asyn
 
   assert.equal(response.status, 200);
   const record = stub.written.find((item) => item.path.endsWith("state.json"));
-  assert.equal(record.value.status, "preflighting");
-  assert.equal(record.value.preflight_run, undefined);
+  assert.equal(record.value.status, "verifying");
+  assert.equal(record.value.run, undefined);
+  assert.equal(record.value.dispatch_lease_count, 1);
   assert.equal(stub.deleted.length, 1);
 });
 

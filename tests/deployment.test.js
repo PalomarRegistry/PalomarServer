@@ -27,10 +27,12 @@ test("the only configured routes are the three reviewed hostnames", () => {
 test("deployment applies the hostname policy before uploading a version", async () => {
   const workflow = await readFile(new URL("../.github/workflows/test.yml", import.meta.url), "utf8");
   const applyAt = workflow.indexOf("/workers/scripts/palomar-server/subdomain");
+  const buildAt = workflow.lastIndexOf("run: npm run build:preflight");
   const uploadAt = workflow.indexOf("run: npx wrangler versions upload");
   const promoteAt = workflow.indexOf("run: npx wrangler versions deploy");
   assert.ok(applyAt >= 0);
-  assert.ok(uploadAt > applyAt);
+  assert.ok(buildAt > applyAt);
+  assert.ok(uploadAt > buildAt);
   assert.ok(promoteAt > uploadAt);
   assert.equal(workflow.match(/\/workers\/scripts\/palomar-server\/subdomain/g)?.length, 1);
   assert.equal(workflow.match(/enabled: false, previews_enabled: false/g)?.length, 1);

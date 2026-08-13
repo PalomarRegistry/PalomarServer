@@ -75,7 +75,7 @@ const WAITING_MESSAGES = {
   "preflight-reporting":
     "Preflight finished and Palomar is preparing a complete, actionable explanation.",
   verifying:
-    "Palomar is mechanically checking the repository. If verification and review pass, " +
+    "Palomar is preparing and mechanically checking the repository. If verification and review pass, " +
     "the option to register will appear on this page.",
   "awaiting-review":
     "Mechanical verification passed and the automated review has been queued. If the " +

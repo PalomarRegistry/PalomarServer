@@ -291,22 +291,21 @@ capacity refusal writes none of those changes, so “start the new one” cannot
 strand the earlier submission halfway through the choice.
 
 The external verification dispatch cannot be part of a Git commit. A newly
-committed `preflighting` record therefore doubles as a durable outbox item and
+committed `verifying` record therefore doubles as a durable outbox item and
 carries a short dispatch lease. The admitting request tries immediately. The
 ten-minute lifecycle first searches for the workflow run (covering a crash
 after GitHub accepted an ambiguous dispatch), then one reconciler claims an
 expired lease and retries. It does not release capacity or declare the dispatch
 lost merely because a credential or provider outage needs repair. After three
 complete searches and dispatch attempts, an undiscoverable run is irrecoverable:
-the scheduled pass records the Palomar-owned `preflight-failed` or
-`dispatch-lost` status before releasing its slot. A
+the scheduled pass records the Palomar-owned `dispatch-lost` status before
+releasing its slot. A
 pinned run that GitHub confirms is gone is handled the same way and is never
 replaced by a namesake dispatch. Queued or running work remains reserved without
 an age timeout.
 
-A successful preflight transitions the same record to `verifying`, creates a
-separate full-verification dispatch lease, and keeps the admission slot. A
-failed run first enters a reporting status; the Reviewer ingests the exact
+The full workflow performs authoritative preparation before installing its
+verification-only toolchain. A failed run first enters a reporting status; the Reviewer ingests the exact
 run's artifact and atomically records bounded, owner-labelled diagnostics before
 the status page treats the result as terminal.
 
@@ -348,9 +347,9 @@ finishes. Starting is the expensive act: it dispatches a verification run that
 takes a quarter of an hour of somebody's runners whether or not anything comes
 of it. So the interval is sixty seconds to begin with, doubles every time a
 submission is started, and is put back to that floor only by a completed
-registration or by one of the first two preflights that asks for repository
+registration or by one of the first two preparation failures that asks for repository
 changes. Later metadata failures keep the accumulated interval, so the
-correction concession cannot turn repeated preflight work into an unbounded
+correction concession cannot turn repeated preparation work into an unbounded
 cheap loop. A submission
 that fails full verification, or is withdrawn, leaves it where it is, because
 those are exactly the loops worth slowing down; ordinary metadata correction is
