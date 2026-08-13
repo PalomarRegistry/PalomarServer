@@ -23,6 +23,14 @@ test("only the submission form marks Submit as the current page", () => {
   assert.doesNotMatch(errorPage(env, "No", []), current);
 });
 
+test("the submission form relies on interactive preflight instead of static metadata guidance", () => {
+  const form = intakeForm(env);
+  assert.doesNotMatch(form, /Check <code>formalization\.yaml<\/code> before you submit/);
+  assert.doesNotMatch(form, /copy-formalization-prompt/);
+  assert.match(form, /id="browser-preflight"/);
+  assert.match(form, /only after you have seen them, and decided to complete the registration/);
+});
+
 test("submission pages let browser colour preference select page chrome", () => {
   assert.match(html, /name="theme-color" content="#ffffff" media="\(prefers-color-scheme: light\)"/);
   assert.match(html, /name="theme-color" content="#101216" media="\(prefers-color-scheme: dark\)"/);

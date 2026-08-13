@@ -30,23 +30,6 @@ import {
   registrationIdentityDigest,
   repositoryQuery,
 } from "./normalize.js";
-const promptButton = document.getElementById("copy-formalization-prompt");
-const promptText = document.getElementById("formalization-prompt");
-const promptStatus = document.getElementById("formalization-prompt-status");
-promptButton?.addEventListener("click", async () => {
-  try {
-    await navigator.clipboard.writeText(promptText?.textContent ?? "");
-    promptStatus.textContent = "Prompt copied.";
-  } catch {
-    const selection = window.getSelection();
-    const range = document.createRange();
-    range.selectNodeContents(promptText);
-    selection.removeAllRanges();
-    selection.addRange(range);
-    promptStatus.textContent = "The prompt is selected; copy it with your browser's copy command.";
-  }
-});
-
 // The versions of one result, at a key named after it. The registry index
 // names every record ever accepted, so asking it which versions one identifier
 // has meant fetching all of them, and paying more for it every time anybody

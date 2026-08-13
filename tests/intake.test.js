@@ -44,47 +44,12 @@ test("the introduction summarizes the submission requirements", () => {
   assert.match(form, /Automated agents: read \/llms\.txt before submitting/);
 });
 
-test("the self-check prompt names every strict Palomar metadata section", () => {
-  for (const section of [
-    "project", "classification", "sources", "automation", "review",
-  ]) assert.match(form, new RegExp(`top-level sections:[\\s\\S]*${section}`));
-  for (const requirement of [
-    "responsible_maintainers", "substantive_formalization",
-    "classification.arxiv", "classification.msc2020", "automation.methods",
-    "review.status",
-  ]) assert.match(form, new RegExp(requirement.replace(".", "\\.")));
-  assert.match(form, /omit repository for an ordinary project/);
-  assert.match(form, /substantive development by default/);
-});
-
-test("the self-check guidance sends the repository context to a coding agent", () => {
-  const normalized = form.replace(/\s+/g, " ");
-  assert.match(normalized, /coding agent in a local clone of your repository/);
-  assert.match(normalized, /web interface for an LLM/);
-  assert.match(normalized, /other context from your repository/);
-  assert.match(
-    form,
-    /href="https:\/\/github\.com\/mathlib-initiative\/formalization\.yaml">mathlib-initiative formalization\.yaml<\/a>/,
-  );
-  assert.match(
-    form,
-    /<\/a> v0\.4 \(https:\/\/github\.com\/mathlib-initiative\/formalization\.yaml\) as a base/,
-  );
-  assert.match(form, /formalization\.yaml file for this project in the current repository/);
-  assert.doesNotMatch(form, /attached formalization\.yaml/);
-  assert.doesNotMatch(form, /obsolete singular author or provenance spellings/);
-  assert.doesNotMatch(form, /missing, malformed, obsolete, or inconsistent/);
-});
-
-test("the metadata warning prepares submitters for careful preflight", () => {
-  assert.match(form, /provides the essential metadata for your registration/);
-  assert.match(form, /submission process may request changes/);
-  assert.match(form, /submit with the new commit/);
-});
-
 test("the disclosure says what is recorded and when it becomes public", () => {
   assert.match(form, /permanently recorded in public/);
-  assert.match(form, /public only if you choose to register after seeing them/);
+  assert.match(
+    form,
+    /public only after you have seen them, and decided to complete the registration/,
+  );
   // "The review" invites the reading that a person did it. Say what it is.
   assert.match(form, /automated review/);
   // The earlier wording claimed reviews were readable by "the model provider"
