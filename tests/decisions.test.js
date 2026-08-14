@@ -1750,6 +1750,7 @@ test("an active Technical Maintainer can run a marked test without push access o
   const pending = {
     ...PENDING,
     authorization_relationship: "technical-test",
+    context: "Private submitter notes.",
   };
   const stub = stubOAuth({
     push: false,
@@ -1791,9 +1792,18 @@ test("an active Technical Maintainer can run a marked test without push access o
     false,
     "a non-registrable test acquired a backoff that registration can never clear",
   );
+  const dispatchedOptions = JSON.parse(stub.dispatched[0].body.inputs.options);
   assert.equal(
-    JSON.parse(stub.dispatched[0].body.inputs.options).authorization_relationship,
+    dispatchedOptions.authorization_relationship,
     "I am a Palomar Technical Maintainer testing the workflow",
+  );
+  // Dispatch inputs are world-readable on the public submission repository's
+  // run page, and the form promises the notes stay private.
+  assert.equal(record.value.context, "Private submitter notes.");
+  assert.equal(
+    Object.hasOwn(dispatchedOptions, "context"),
+    false,
+    "the submitter's private notes reached the public verification dispatch inputs",
   );
 });
 
@@ -2774,7 +2784,7 @@ test("agent intake writes every normalized optional field to the pending record"
 
 test("a tag and a gist together admit a submission", async () => {
   const stub = stubAgent();
-  const begun = await agentSubmit();
+  const begun = await agentSubmit({ context: "Private submitter notes." });
   stub.state.tag = { exists: true, sha: "1".repeat(40) };
   stub.state.gist = { exists: true, content: begun.challenge };
   const response = await agentVerify({ pending_secret: begun.pending_secret, gist_id: "abc123" });
@@ -2804,9 +2814,18 @@ test("a tag and a gist together admit a submission", async () => {
     ]),
   );
   assert.equal(stub.dispatched.length, 1);
+  const dispatchedOptions = JSON.parse(stub.dispatched[0].body.inputs.options);
   assert.equal(
-    JSON.parse(stub.dispatched[0].body.inputs.options).authorization_relationship,
+    dispatchedOptions.authorization_relationship,
     "I am a responsible author or maintainer",
+  );
+  // The AI review reads the notes from this private record, so the public
+  // dispatch has no reason to carry them.
+  assert.equal(record.value.context, "Private submitter notes.");
+  assert.equal(
+    Object.hasOwn(dispatchedOptions, "context"),
+    false,
+    "the submitter's private notes reached the public verification dispatch inputs",
   );
 });
 
