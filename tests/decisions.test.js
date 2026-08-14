@@ -419,10 +419,10 @@ test("withdrawal takes what identifies the submitter out of the record", async (
 test("withdrawal keeps the numeric principal that recovery verifies", async () => {
   // Recovery selects records from the principal locator and the reviewer's
   // queue and then checks the numeric principal on every one of them, before
-  // it filters the closed ones out, so this is the one identifying-looking
-  // field a withdrawal must not remove. It names nobody by itself: the
-  // locator and rate paths are peppered digests of it precisely so that
-  // neither directory enumerates anyone.
+  // it filters the closed ones out, so this is the one identifying field a
+  // withdrawal must not remove. It stays as an integrity check and not because
+  // it is anonymous: a GitHub account id resolves back to the account through
+  // an endpoint that needs no permission.
   const { written } = stubState(await identifyingFixture());
   assert.equal((await worker.fetch(request("/withdraw", "POST"), ENV)).status, 200);
   const record = written.find((item) => item.path.endsWith("state.json")).value;

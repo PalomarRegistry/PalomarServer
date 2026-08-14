@@ -100,11 +100,11 @@ export const WITHDRAWAL_SCRUB_NOTE = "Identifying details removed on withdrawal"
  * A withdrawn record, with what identified its submitter taken out of it.
  *
  * Withdrawal used to change one word and append an event, so the record went
- * on holding the submitter's login, whatever they typed in the notes field —
- * which is free text and can name people who never submitted anything — and
- * whatever they typed to evidence their authorization, for as long as the
- * registry exists. Nothing reads any of it once the submission is closed, and
- * what the submitter asked for was for the submission to stop.
+ * on holding the submitter's login and both of the free-text fields they
+ * wrote, the notes and the evidence for their authorization relationship,
+ * either of which can name people who never submitted anything, for as long as
+ * the registry exists. Nothing reads any of it once the submission is closed,
+ * and what the submitter asked for was for the submission to stop.
  *
  * The numeric principal stays, and it is the one field here that has to.
  * Recovery intersects `index/principals/<digest>.json` with the reviewer's
@@ -114,10 +114,16 @@ export const WITHDRAWAL_SCRUB_NOTE = "Identifying details removed on withdrawal"
  * principal would not read as "closed, ignore it" but as a locator naming
  * somebody else's submission, which fails closed and takes the whole recovery
  * page down with it for as long as the id is queued. Replacement checks the
- * same field before it refuses to replace something already closed. The number
- * on its own names nobody: it is the value the principal and rate paths are
- * peppered digests of precisely so that neither directory enumerates anyone,
- * and everything beside it that made it a person is now gone.
+ * same field before it refuses to replace something already closed.
+ *
+ * Keeping it is a trade, not a claim that the result is anonymous. A GitHub
+ * account id is stable and publicly resolvable: the provider answers "who is
+ * this id" without any permission at all, so a withdrawn record still leads
+ * back to the account that sent it. The pepper stops `index/principals/` and
+ * `index/rate/` enumerating anyone, because those names are digests of the id
+ * rather than the id; it does nothing for the number stored here. What the
+ * scrub removes is the direct login and both free-text fields, and what it
+ * keeps is the bare identifier those integrity checks fail closed without.
  *
  * Git history keeps what was committed before this. Scrubbing the current tree
  * is what stops every later read, sweep, clone, and index rebuild carrying it
