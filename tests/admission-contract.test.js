@@ -19,7 +19,6 @@ function inflight(overrides = {}) {
 function rate(overrides = {}) {
   return {
     schema_version: 1,
-    login: "someone",
     starts: 3,
     interval_seconds: 3600,
     last_start_at: "2026-08-07T23:00:00Z",
@@ -133,7 +132,13 @@ test("present rate state has one strict current contract", () => {
     [null, /JSON object/],
     [[], /JSON object/],
     [rate({ schema_version: 2 }), /schema_version/],
+    // A login is no longer written, but one that is present is still held to
+    // being a login, because a document nobody understands is not a document
+    // to admit on.
     [rate({ login: "" }), /login/],
+    [rate({ login: "not a login" }), /login/],
+    [rate({ login: 42 }), /login/],
+    [rate({ login: null }), /login/],
     [rate({ starts: "3" }), /starts/],
     [rate({ starts: 0 }), /starts/],
     [rate({ interval_seconds: "3600" }), /interval_seconds/],
@@ -151,12 +156,17 @@ test("present rate state has one strict current contract", () => {
 
   const extended = rate({ producer_extension: { retained: true } });
   assert.equal(rateRecord(extended).value, extended);
+
+  // Documents written before the Server stopped recording logins are still
+  // read, so a deployment does not lock out everybody who already had a
+  // backoff.
+  const legacy = rate({ login: "someone" });
+  assert.equal(rateRecord(legacy).value, legacy);
 });
 
 test("an unrepresentable next deadline fails before it can be written", () => {
   assert.throws(
     () => nextRateRecord({
-      login: "someone",
       starts: 20,
       interval: Number.MAX_SAFE_INTEGER,
       startedAt: "2026-08-08T00:00:00Z",
@@ -167,22 +177,21 @@ test("an unrepresentable next deadline fails before it can be written", () => {
 });
 
 test("an accepted start gets one deterministic next rate record", () => {
+  // Nothing here identifies the submitter. The file name already does, to
+  // whoever holds the pepper, and to nobody else.
   assert.deepEqual(nextRateRecord({
-    login: "someone",
     starts: 0,
     interval: 60,
     startedAt: "2026-08-08T00:00:00Z",
     at: AT,
   }), {
     schema_version: 1,
-    login: "someone",
     starts: 1,
     interval_seconds: 60,
     last_start_at: "2026-08-08T00:00:00Z",
     next_allowed_at: "2026-08-08T00:01:00Z",
   });
   assert.equal(nextRateRecord({
-    login: "someone",
     starts: 1,
     interval: 60,
     startedAt: "2026-08-08T00:00:00Z",
@@ -193,14 +202,12 @@ test("an accepted start gets one deterministic next rate record", () => {
 test("registration reset preserves rate history and returns to the floor", () => {
   assert.deepEqual(resetRateRecord({
     schema_version: 1,
-    login: "someone",
     starts: 3,
     interval_seconds: 240,
     last_start_at: "2026-08-07T00:00:00Z",
     next_allowed_at: "2026-08-07T00:04:00Z",
   }, "2026-08-08T00:00:00Z"), {
     schema_version: 1,
-    login: "someone",
     starts: 3,
     interval_seconds: 60,
     last_start_at: "2026-08-07T00:00:00Z",
@@ -210,4 +217,25 @@ test("registration reset preserves rate history and returns to the floor", () =>
     () => resetRateRecord(null, "2026-08-08T00:00:00Z"),
     RateContractError,
   );
+});
+
+test("a reset sheds a login left by an older document", () => {
+  // The spread that preserves history would otherwise carry the login forward
+  // forever, so ordinary registration traffic is what retires those bodies.
+  const reset = resetRateRecord({
+    schema_version: 1,
+    login: "someone",
+    starts: 3,
+    interval_seconds: 240,
+    last_start_at: "2026-08-07T00:00:00Z",
+    next_allowed_at: "2026-08-07T00:04:00Z",
+  }, "2026-08-08T00:00:00Z");
+  assert.equal(Object.hasOwn(reset, "login"), false);
+  assert.deepEqual(reset, {
+    schema_version: 1,
+    starts: 3,
+    interval_seconds: 60,
+    last_start_at: "2026-08-07T00:00:00Z",
+    next_allowed_at: "2026-08-08T00:00:00Z",
+  });
 });

@@ -223,7 +223,9 @@ submissions/<id>/state.json   # the record: status, source, authorization, run, 
 submissions/<id>/review.json  # the private review, once delivered
 index/tokens/<digest>.json    # original or recovery token digest to submission id
 index/principals/<digest>.json # private submission locator for one submitter
-index/rate/<digest>.json       # how long this submitter waits before starting again
+index/rate/<digest>.json       # how long this submitter waits before starting
+                              #   again; the digest is the only thing naming
+                              #   them, and the body names nobody
 index/inflight.json           # admission slots, released by cron reconciliation
 index/open.json               # the reviewer's queue: added here, pruned there
 index/review-timing.json      # how long recent reviews took, for the estimate
@@ -370,9 +372,16 @@ those are exactly the loops worth slowing down; ordinary metadata correction is
 not treated as abuse.
 
 The Server owns the rate document's current `schema_version: 1` contract. A
-present document records a GitHub `login`, positive integer `starts`, an integer
-`interval_seconds` of at least sixty, and canonical UTC-seconds
-`last_start_at` and `next_allowed_at` timestamps. The State repository's
+present document records a positive integer `starts`, an integer
+`interval_seconds` of at least sixty, and canonical UTC-seconds `last_start_at`
+and `next_allowed_at` timestamps. It records no `login`, and nothing else that
+identifies the submitter: the file name is a peppered digest so that listing the
+directory enumerates nobody, and a cleartext login in the body handed that back
+to anyone who could read the files. Documents written before this contract may
+still carry one. Such a document is still valid, and the next projection of it
+drops the field, whether that is a registration reset or a rewrite by
+`tools/strip-rate-logins.js`. A `login` that is present but is not a GitHub
+login is a malformed document and still fails closed. The State repository's
 whole-tree validator deliberately treats these producer-owned fields as opaque,
 so the Server validates all of them before admission and before projecting a
 reset. A missing file is a first start; a malformed present file makes intake
@@ -384,10 +393,11 @@ There is no ceiling, and that is deliberate rather than an omission to fix.
 Twenty starts with nothing registered is already years; nobody submitting in
 good faith reaches it, and the failure worth designing for is the other one, a
 person locked out with no way back on their own. The escape hatch is an operator
-deleting one file, which is why the file records the login and the time beside
-the interval even though its name is a peppered digest of the principal. The
-name is a digest for the same reason `index/tokens/` is: listing the directory
-should not enumerate everyone who has ever submitted.
+deleting one file, which is why the file records the time beside the interval.
+Which file that is comes from the pepper, not from the file: `tools/rate-path.js`
+turns a login into the path. The name is a digest for the same reason
+`index/tokens/` is, and the body is anonymous for the same reason again, since a
+digest for a name buys nothing if the file it names says the name.
 
 This server applies the reset, not the reviewer, even though the reviewer is
 what registers. It sees the reset when a status refresh finds the submission
@@ -416,6 +426,42 @@ palomar-review finalize --submission <id> --pr <n>   # after the database PR mer
 `run` without `--apply` still runs the review: it calls the model, spends money,
 and writes a workspace. What it does not do is touch the state repository, which
 is the only thing `--apply` adds.
+
+### Releasing a submitter from an accumulated backoff
+
+The backoff doubles without a ceiling, so somebody who starts submissions and
+never finishes one can end up waiting a length of time nothing they can do will
+shorten. Deleting their rate document puts them back at the floor. Finding it
+needs `TOKEN_PEPPER`, because the file is named by a peppered digest of the
+submitter's numeric GitHub id and its body names nobody:
+
+```bash
+TOKEN_PEPPER=... tools/rate-path.js --login someone   # resolves the id with `gh`
+TOKEN_PEPPER=... tools/rate-path.js --id 4242         # when the id is known
+```
+
+It prints one `index/rate/<digest>.json` path and nothing else. Delete that file
+in a clone of the state repository and push. The pepper is never printed; pass it in
+the environment rather than as `--pepper` where a process list or a shell
+history would keep it. `last_start_at` in the document is what tells you when
+this submitter last started, if you want to confirm the file before deleting it.
+
+### Retiring logins from older rate documents
+
+Rate documents written before the Server stopped recording logins carry a
+cleartext `login`. A registration reset drops it the next time it touches one,
+but a submitter who never registers again leaves theirs in place, so the
+remainder wants one pass over a clone of the state repository:
+
+```bash
+tools/strip-rate-logins.js ../PalomarSubmissionState           # report only
+tools/strip-rate-logins.js ../PalomarSubmissionState --write   # rewrite in place
+```
+
+Review the diff, commit, and push. It needs neither the pepper nor the GitHub
+API, and it only ever removes a field. It is not erasure: the state repository's
+git history retains the old bodies, and what happens to those is a question for
+the state repository's retention policy rather than for this pass.
 
 ## Deploying
 

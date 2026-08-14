@@ -29,7 +29,15 @@ export class RateContractError extends Error {}
  * changing it. Twenty starts with nothing registered is already years. Nobody
  * submitting in good faith reaches that, and an operator can clear one file to
  * release someone who does. The failure mode is a person locked out with no way
- * back on their own, so the file says who and when.
+ * back on their own, so the file says when.
+ *
+ * It no longer says who. The file name is a peppered digest of the principal
+ * precisely so that listing the directory does not enumerate everyone who has
+ * ever submitted, and a cleartext `login` in the body gave that back to anyone
+ * who could read the files. An operator holding the pepper reaches the file
+ * from the login instead: `tools/rate-path.js` prints the path. Documents
+ * written before this change may still carry a `login`; it is tolerated on
+ * read and dropped the next time the document is projected.
  */
 const RATE_FLOOR_SECONDS = 60;
 
@@ -65,8 +73,12 @@ export function rateRecord(value) {
     fail("must be a JSON object");
   }
   if (value.schema_version !== 1) fail("schema_version must be 1");
-  if (typeof value.login !== "string" || !GITHUB_LOGIN.test(value.login)) {
-    fail("login must be a GitHub login");
+  // Current documents carry no login at all. Documents written before that are
+  // still valid, so absence is accepted; a login that is present but not a
+  // login is still a malformed document and still fails closed.
+  if (Object.hasOwn(value, "login") &&
+      (typeof value.login !== "string" || !GITHUB_LOGIN.test(value.login))) {
+    fail("login must be a GitHub login when present");
   }
   if (!Number.isSafeInteger(value.starts) || value.starts < 1) {
     fail("starts must be a positive safe integer");
@@ -112,10 +124,7 @@ export function rateDecision(value, at = Date.now()) {
 }
 
 /** Project the rate record written after one accepted admission. */
-export function nextRateRecord({ login, starts, interval, startedAt, at = Date.now() }) {
-  if (typeof login !== "string" || !GITHUB_LOGIN.test(login)) {
-    fail("login must be a GitHub login");
-  }
+export function nextRateRecord({ starts, interval, startedAt, at = Date.now() }) {
   if (!Number.isSafeInteger(starts) || starts < 0) {
     fail("starts must be a non-negative safe integer before an admission");
   }
@@ -132,9 +141,10 @@ export function nextRateRecord({ login, starts, interval, startedAt, at = Date.n
   if (!Number.isFinite(nextAllowed) || nextAllowed < 0 || nextAllowed > LAST_UTC_SECONDS_MS) {
     fail("next_allowed_at is outside the representable date range");
   }
+  // No login. Everything an operator needs beyond the interval is the time,
+  // and the file is found from a login through the pepper, not by reading it.
   const result = {
     schema_version: 1,
-    login,
     starts: starts + 1,
     interval_seconds: nextInterval,
     last_start_at: startedAt,
@@ -154,6 +164,11 @@ export function resetRateRecord(value, resetAt) {
     interval_seconds: RATE_FLOOR_SECONDS,
     next_allowed_at: resetAt,
   };
+  // A spread preserves whatever the document already held, which for a
+  // document written before this change includes the submitter's login. Shed
+  // it here, so ordinary traffic retires the old bodies without a migration
+  // having to reach every file.
+  delete result.login;
   rateRecord(result);
   return result;
 }

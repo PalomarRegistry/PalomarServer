@@ -3645,6 +3645,11 @@ test("starting a submission doubles the wait, and only registering clears it", a
 
   assert.equal((await submit()).status, 200);
   assert.equal(rate().interval_seconds, 60, "the first start asks for a minute");
+  assert.equal(
+    Object.hasOwn(rate(), "login"),
+    false,
+    "the rate document named the submitter the digest in its name is hiding",
+  );
 
   // The second is refused, because the first has not been registered.
   const second = await submit();
@@ -3672,7 +3677,6 @@ test("malformed present rate state preserves the proof and admits nothing", asyn
     null,
     {
       schema_version: 1,
-      login: "someone",
       starts: 1,
       interval_seconds: "60",
       last_start_at: "2026-08-01T00:00:00Z",
@@ -3680,9 +3684,18 @@ test("malformed present rate state preserves the proof and admits nothing", asyn
     },
     {
       schema_version: 1,
-      login: "someone",
       starts: 20,
       interval_seconds: Number.MAX_SAFE_INTEGER,
+      last_start_at: "2019-12-31T23:59:00Z",
+      next_allowed_at: "2020-01-01T00:00:00Z",
+    },
+    // A login that is present but is not one: an older document nobody can
+    // interpret, which must fail closed rather than be admitted on.
+    {
+      schema_version: 1,
+      login: "not a login",
+      starts: 1,
+      interval_seconds: 60,
       last_start_at: "2019-12-31T23:59:00Z",
       next_allowed_at: "2020-01-01T00:00:00Z",
     },
@@ -3764,9 +3777,11 @@ test("a registration puts the interval back to a minute", async () => {
     pending_secret: begun.pending_secret, gist_id: "abc123",
   })).json();
 
-  // Wind the interval up, then register, as the reviewer would.
+  // Wind the interval up, then register, as the reviewer would. The login is
+  // what a document written before this contract would have carried, so this
+  // also checks that such a document still admits and still sheds it.
   const file = [...stub.store.keys()].find((path) => path.startsWith("index/rate/"));
-  stub.store.set(file, { ...stub.store.get(file), interval_seconds: 3600 });
+  stub.store.set(file, { ...stub.store.get(file), interval_seconds: 3600, login: "someone" });
   const statePathName = statePath(verified.submission_id, "state.json");
   stub.store.set(statePathName, { ...stub.store.get(statePathName), status: "registered" });
 
@@ -3780,6 +3795,11 @@ test("a registration puts the interval back to a minute", async () => {
   );
   assert.equal(response.status, 200);
   assert.equal(stub.store.get(file).interval_seconds, 60, "registering did not clear the wait");
+  assert.equal(
+    Object.hasOwn(stub.store.get(file), "login"),
+    false,
+    "a reset carried an older document's login forward",
+  );
 });
 
 test("repeated metadata failures do not erase the accumulated admission backoff", async () => {
