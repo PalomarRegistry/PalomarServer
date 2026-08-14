@@ -69,6 +69,13 @@ That is five steps and six calls, because step 5 is two deletes. If six calls
 where you expected one looks like a badly designed service, it is not: each one
 is load-bearing, and there is no shorter route to the same proof.
 
+Steps 1 to 4 are one sitting. An intake nobody comes back for is discarded
+fifteen minutes after step 1, and a `pending_secret` older than that is gone:
+step 4 answers 404 `that submission has already been verified`, because from
+here a consumed intake and a discarded one look the same. So do not call step 1
+until you are ready to prove it, and do not hold one across a pause for your
+user. Beginning again is cheap: a fresh step 1 spends no verification attempt.
+
 Creating a ref requires the same write access the browser sign-in checks for,
 which is what makes step 2 a proof rather than a formality. A ref records no
 author, and a third party cannot ask GitHub who has push, so step 3 is the only
@@ -177,6 +184,10 @@ press it, that is fine; deciding for them is not.
 - There is also an interval between starting one submission and starting the
   next. A 429 that says you started one too recently says how long to wait;
   wait that long rather than probing for the boundary.
+- A 503 whose `error` is `submission intake is at capacity` is about Palomar
+  rather than about your submission or your address: more intakes are in
+  progress at once than it will hold. Nothing was consumed and there is nothing
+  to correct. Wait for the `retry-after` and send the same body again.
 - `/api/verify` allows a bounded number of failed proofs and then refuses and
   discards the intake. Fix the tag or the gist before retrying, rather than
   retrying the same broken proof.

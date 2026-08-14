@@ -174,7 +174,12 @@ test("the real callback refuses a planted legacy intake cookie", async () => {
   const outbound = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const request = new Request(input, init);
     if (request.method === "GET") {
-      const value = { binding_sha256: await hexDigest(binding) };
+      // Inside its quarter of an hour, so the callback reaches the cookie
+      // check rather than refusing the intake as lapsed.
+      const value = {
+        binding_sha256: await hexDigest(binding),
+        created_at: new Date().toISOString(),
+      };
       return Response.json({
         content: btoa(`${JSON.stringify(value)}\n`),
         sha: "b".repeat(40),

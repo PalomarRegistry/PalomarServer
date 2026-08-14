@@ -403,6 +403,33 @@ export async function reconcile(env) {
 }
 
 /**
+ * How long an unconsumed intake record is kept.
+ *
+ * A quarter of an hour, because this is what decides how much of the ceiling on
+ * concurrent intake one address can hold at once. Nothing authenticates a
+ * submitter before the record is written, and the address throttle allows five
+ * intakes a minute, so how long a record is kept multiplied by that rate is
+ * roughly what one host occupies. An hour was several times the whole ceiling,
+ * which made filling it a for-loop from one machine and left everybody else
+ * refused until the flood stopped.
+ *
+ * This is traffic shaping and not a bound, and it is worth being exact about
+ * why. Records are discarded on a schedule rather than the instant they lapse,
+ * so the occupancy from one address swings between about a third of the ceiling
+ * just after a sweep and about two thirds just before the next one. The
+ * throttle is counted per data centre and settles rather than being exact, so
+ * two data centres are two allowances. What this buys is that the simple
+ * version of the attack no longer works and the expensive version has to be
+ * distributed and sustained; `MAX_PENDING` remains the backstop behind it, and
+ * a reservation nobody can take twice would be the only real guarantee.
+ *
+ * It is still far longer than the round trip it exists for. A browser sign-in
+ * is a redirect to GitHub and back, and the agent path is two API calls, both
+ * of them minutes at the outside.
+ */
+export const PENDING_TTL_MS = 15 * 60_000;
+
+/**
  * Discard intake records nobody came back for.
  *
  * A pending record is written before the submitter is sent to GitHub. Most are
@@ -410,6 +437,10 @@ export async function reconcile(env) {
  * consumed at all, and without this they accumulate for the life of the
  * registry. They hold what somebody typed, so they are not kept indefinitely
  * for no reason.
+ *
+ * What stops a lapsed record being used is the route that reads it, which
+ * treats anything past `PENDING_TTL_MS` as gone. This is what stops it taking
+ * up room, and it runs on a schedule, so the two are not the same moment.
  */
 export async function sweepPending(env, now = Date.now()) {
   let removed = 0;
@@ -417,9 +448,7 @@ export async function sweepPending(env, now = Date.now()) {
     if (item.type !== "file" || !item.name.endsWith(".json")) continue;
     const record = await readState(env, `pending/${item.name}`);
     const created = Date.parse(record.value?.created_at ?? "");
-    // An hour is far longer than a sign-in takes and short enough that an
-    // abandoned one does not linger.
-    if (Number.isFinite(created) && now - created < 3600_000) continue;
+    if (Number.isFinite(created) && now - created < PENDING_TTL_MS) continue;
     if (await deleteState(env, `pending/${item.name}`, item.sha, "Discard an abandoned intake")) {
       removed += 1;
     }

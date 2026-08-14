@@ -250,6 +250,10 @@ export function intakeForm(
         the verified account in this browser for twelve hours so it can find
         submissions in progress automatically.
       </p>
+      <p class="hint">
+        Finish the sign-in within fifteen minutes. After that Palomar discards
+        what you typed here and the submission has to be started again.
+      </p>
       </fieldset>
       <p class="visually-hidden" role="status" id="live-status"></p>
     </form>
@@ -319,6 +323,10 @@ export function submissionsPage(
     ? `<p class="lede">
          GitHub identified you. Before Palomar starts another submission, choose whether
          to return to work already in progress or continue with the new commit.
+       </p>
+       <p class="hint">
+         Choose within fifteen minutes. After that the new submission has to be
+         started again, and the work already in progress is unaffected either way.
        </p>`
     : `<p class="lede">
          Here are your submissions in progress. Keep these links private.

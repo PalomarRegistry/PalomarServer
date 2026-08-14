@@ -1098,8 +1098,11 @@ test("recovery start rejects cross-site navigation and its callback is throttled
 test("intake stops before it can fill the pending directory", async () => {
   // `listState` refuses to enumerate a directory at the contents API's limit,
   // so a `pending/` allowed to reach it takes the sweep down with it and the
-  // flood stops being something an hour undoes.
+  // flood stops being something the next quarter of an hour undoes.
   const previous = globalThis.fetch;
+  const warn = console.warn;
+  const warned = [];
+  console.warn = (...args) => warned.push(args);
   const seen = [];
   globalThis.fetch = async (url) => {
     const path = new URL(url).pathname;
@@ -1125,13 +1128,61 @@ test("intake stops before it can fill the pending directory", async () => {
       }),
       ENV,
     );
-    assert.equal(response.status, 400);
-    assert.match(await response.text(), /too many submissions in progress/);
+    // Full is Palomar's condition, not a fault in what was sent: 400 said the
+    // submission was refused, and the sender could act on neither the status
+    // nor a message that read like the throttle's.
+    assert.equal(response.status, 503);
+    assert.equal(response.headers.get("retry-after"), "300");
+    const body = await response.json();
+    assert.equal(body.error, "submission intake is at capacity");
+    assert.match(body.detail, /cannot start another submission just now/);
+    assert.doesNotMatch(body.detail, /slow down|from this address/);
     // The ceiling is checked before the repository and the commit are read, so
     // a flood costs one call rather than three.
     assert.deepEqual(seen.filter((p) => !p.endsWith("/contents/pending")), []);
+
+    // A browser gets the same condition in the same words, and keeps what it
+    // typed: there is nothing in the form to correct.
+    const page = await worker.fetch(
+      new Request("https://submit.palomar-registry.org/submit", {
+        method: "POST",
+        headers: { "sec-fetch-site": "same-origin" },
+        body: new URLSearchParams({
+          repository: "owner/name",
+          commit: "c".repeat(40),
+          authorization_relationship: "maintainer",
+          comparator_config_path: "comparator.json",
+        }),
+      }),
+      ENV,
+    );
+    assert.equal(page.status, 503);
+    const form = await page.text();
+    assert.match(form, /cannot start another submission just now/);
+    assert.match(form, /value="owner\/name"/);
+
+    // And so does recovery, which is refused by the same count for the same
+    // reason and used to call it busy.
+    const recovery = await worker.fetch(
+      new Request("https://submit.palomar-registry.org/submissions", {
+        headers: { "sec-fetch-site": "none" },
+      }),
+      ENV,
+    );
+    assert.equal(recovery.status, 503);
+    assert.match(await recovery.text(), /cannot start another submission just now/);
+
+    // Every one of them is one line an operator can search for, and it carries
+    // the count that caused it.
+    // Logged as an object rather than a string, so the platform indexes
+    // `event` and `pending` as fields instead of storing one opaque line.
+    assert.equal(warned.length, 3);
+    for (const line of warned) {
+      assert.deepEqual(line, [{ event: "intake-at-capacity", pending: 200 }]);
+    }
   } finally {
     globalThis.fetch = previous;
+    console.warn = warn;
   }
 });
 
