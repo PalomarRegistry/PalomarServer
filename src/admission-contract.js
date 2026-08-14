@@ -29,9 +29,50 @@ export class RateContractError extends Error {}
  * changing it. Twenty starts with nothing registered is already years. Nobody
  * submitting in good faith reaches that, and an operator can clear one file to
  * release someone who does. The failure mode is a person locked out with no way
- * back on their own, so the file says who and when.
+ * back on their own, so the file says when.
+ *
+ * It no longer says who. The file name is a peppered digest of the principal
+ * precisely so that listing the directory does not enumerate everyone who has
+ * ever submitted, and a cleartext `login` in the body gave that back to anyone
+ * who could read the files. An operator holding the pepper reaches the file
+ * from the login instead: `tools/rate-path.js` prints the path.
+ *
+ * Documents written earlier may still carry an identifying field: `login`, or
+ * `submission_ids`, which named this principal's submissions until they moved
+ * to `index/principals/` and which points at records that do name the
+ * submitter. Both are accepted on read, so that a deployment does not lock
+ * their submitters out of intake, and neither survives a projection.
+ *
+ * Every other field is refused. Writing no identity is a property of one
+ * writer and a future one could quietly reacquire it, so the shape is an
+ * allowlist instead: `submitter_login` would have to fail this contract and
+ * its tests before it could reach a file. The list below is every field any
+ * version of this Worker has ever written to a rate document, so the allowlist
+ * costs nothing in compatibility. It does mean a deployment that adds a field
+ * cannot be rolled back past this one without refusing the documents it wrote,
+ * which is the same append-only discipline the dashboard contract states, and
+ * the reason to bump `schema_version` rather than widen this quietly.
  */
 const RATE_FLOOR_SECONDS = 60;
+
+/** The fields the Server writes today, in the order it writes them. */
+const RATE_FIELDS = [
+  "schema_version",
+  "starts",
+  "interval_seconds",
+  "last_start_at",
+  "next_allowed_at",
+];
+
+/**
+ * Fields an older rate document may carry that identify its submitter.
+ *
+ * Exported so the one-time migration in `tools/strip-rate-logins.js` retires
+ * exactly the set this contract tolerates, and the two cannot drift apart.
+ */
+export const IDENTIFYING_FIELDS = ["login", "submission_ids"];
+
+const KNOWN_FIELDS = new Set([...RATE_FIELDS, ...IDENTIFYING_FIELDS]);
 
 function describeInterval(seconds) {
   if (seconds < 90) {
@@ -65,8 +106,19 @@ export function rateRecord(value) {
     fail("must be a JSON object");
   }
   if (value.schema_version !== 1) fail("schema_version must be 1");
-  if (typeof value.login !== "string" || !GITHUB_LOGIN.test(value.login)) {
-    fail("login must be a GitHub login");
+  // An allowlist rather than a search for the identity fields we happen to
+  // know about, so that a field nobody has thought of yet cannot arrive
+  // silently.
+  const unknown = Object.keys(value).filter((key) => !KNOWN_FIELDS.has(key)).sort();
+  if (unknown.length > 0) {
+    fail(`must not carry the unknown field${unknown.length === 1 ? "" : "s"} ${unknown.join(", ")}`);
+  }
+  // Current documents carry no login at all. Documents written before that are
+  // still valid, so absence is accepted; a login that is present but not a
+  // login is still a malformed document and still fails closed.
+  if (Object.hasOwn(value, "login") &&
+      (typeof value.login !== "string" || !GITHUB_LOGIN.test(value.login))) {
+    fail("login must be a GitHub login when present");
   }
   if (!Number.isSafeInteger(value.starts) || value.starts < 1) {
     fail("starts must be a positive safe integer");
@@ -112,10 +164,7 @@ export function rateDecision(value, at = Date.now()) {
 }
 
 /** Project the rate record written after one accepted admission. */
-export function nextRateRecord({ login, starts, interval, startedAt, at = Date.now() }) {
-  if (typeof login !== "string" || !GITHUB_LOGIN.test(login)) {
-    fail("login must be a GitHub login");
-  }
+export function nextRateRecord({ starts, interval, startedAt, at = Date.now() }) {
   if (!Number.isSafeInteger(starts) || starts < 0) {
     fail("starts must be a non-negative safe integer before an admission");
   }
@@ -132,9 +181,10 @@ export function nextRateRecord({ login, starts, interval, startedAt, at = Date.n
   if (!Number.isFinite(nextAllowed) || nextAllowed < 0 || nextAllowed > LAST_UTC_SECONDS_MS) {
     fail("next_allowed_at is outside the representable date range");
   }
+  // No login. Everything an operator needs beyond the interval is the time,
+  // and the file is found from a login through the pepper, not by reading it.
   const result = {
     schema_version: 1,
-    login,
     starts: starts + 1,
     interval_seconds: nextInterval,
     last_start_at: startedAt,
@@ -149,9 +199,15 @@ export function nextRateRecord({ login, starts, interval, startedAt, at = Date.n
 export function resetRateRecord(value, resetAt) {
   const current = rateRecord(value).value;
   timestamp(resetAt, "next_allowed_at");
+  // Projected field by field rather than spread from the document. A spread
+  // carries forward whatever happens to be there, which is how `login` and
+  // `submission_ids` outlived the writers that produced them; naming the
+  // output means a field can only persist because this contract says so.
   const result = {
-    ...current,
+    schema_version: 1,
+    starts: current.starts,
     interval_seconds: RATE_FLOOR_SECONDS,
+    last_start_at: current.last_start_at,
     next_allowed_at: resetAt,
   };
   rateRecord(result);

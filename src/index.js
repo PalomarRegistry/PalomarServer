@@ -601,7 +601,11 @@ async function beginRecovery(request, env) {
 
 // Filed under a peppered digest rather than a login, so reading the state
 // repository does not enumerate everyone who has ever submitted — the same
-// reason `index/tokens/` is shaped that way.
+// reason `index/tokens/` is shaped that way. The body names nobody either: a
+// digest for a name is worth nothing if the file it names says the name, and
+// the rate contract is an allowlist so that it cannot start saying it again.
+// An operator who needs the file for a known person derives this path with
+// `tools/rate-path.js`, which wants the pepper the deployment already has.
 async function ratePath(env, principalId) {
   return `index/rate/${await digest(`${pepper(env)}:${principalId}`)}.json`;
 }
@@ -1206,7 +1210,6 @@ async function admitSubmission(
         changes.push({
           path: rate,
           value: nextRateRecord({
-            login: proof.principal.login,
             starts: limit.starts,
             interval: limit.interval,
             startedAt: record.created_at,

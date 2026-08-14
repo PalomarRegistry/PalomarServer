@@ -223,7 +223,9 @@ submissions/<id>/state.json   # the record: status, source, authorization, run, 
 submissions/<id>/review.json  # the private review, once delivered
 index/tokens/<digest>.json    # original or recovery token digest to submission id
 index/principals/<digest>.json # private submission locator for one submitter
-index/rate/<digest>.json       # how long this submitter waits before starting again
+index/rate/<digest>.json       # how long this submitter waits before starting
+                              #   again; the digest is the only thing naming
+                              #   them, and the body names nobody
 index/inflight.json           # admission slots, released by cron reconciliation
 index/open.json               # the reviewer's queue: added here, pruned there
 index/review-timing.json      # how long recent reviews took, for the estimate
@@ -370,11 +372,37 @@ those are exactly the loops worth slowing down; ordinary metadata correction is
 not treated as abuse.
 
 The Server owns the rate document's current `schema_version: 1` contract. A
-present document records a GitHub `login`, positive integer `starts`, an integer
-`interval_seconds` of at least sixty, and canonical UTC-seconds
-`last_start_at` and `next_allowed_at` timestamps. The State repository's
-whole-tree validator deliberately treats these producer-owned fields as opaque,
-so the Server validates all of them before admission and before projecting a
+present document records a positive integer `starts`, an integer
+`interval_seconds` of at least sixty, and canonical UTC-seconds `last_start_at`
+and `next_allowed_at` timestamps. It carries nothing that identifies the
+submitter: the file name is a peppered digest so that listing the directory
+enumerates nobody, and a cleartext login in the body handed that back to anyone
+who could read the files.
+
+That is enforced rather than merely intended. Like the dashboard aggregate and
+the principal locator, this contract is an exact field-name allowlist, so a
+future writer cannot quietly reacquire an identity field: `submitter_login`
+would have to be added here, past these tests, before it could reach a file.
+Two fields the Server no longer writes are on the list because older documents
+carry them, and refusing those would lock their submitters out of intake rather
+than merely losing information: `login`, and `submission_ids` from before the
+principal locator took that job over. Between them and the current five, that is
+every field any version of the Server has ever written to a rate document, so
+the allowlist costs nothing in compatibility. Both are accepted on read, neither
+survives a projection, and a registration reset names its output field by field
+rather than spreading the document it read, which is how those two outlived the
+writers that produced them. A `login` that is present but is not a GitHub login
+is a malformed document and still fails closed.
+
+The cost of the allowlist is that a deployment which adds a field cannot be
+rolled back past one that does not know it without refusing the documents it
+wrote. That is the same append-only discipline the dashboard contracts state
+above, and the reason to add a field by bumping `schema_version` rather than by
+widening this quietly.
+
+The State repository's whole-tree validator deliberately treats these
+producer-owned fields as opaque, so the Server validates all of them before
+admission and before projecting a
 reset. A missing file is a first start; a malformed present file makes intake
 temporarily unavailable rather than silently granting the floor. A malformed
 file also leaves a registration reset unapplied until repair, but does not hide
@@ -384,10 +412,11 @@ There is no ceiling, and that is deliberate rather than an omission to fix.
 Twenty starts with nothing registered is already years; nobody submitting in
 good faith reaches it, and the failure worth designing for is the other one, a
 person locked out with no way back on their own. The escape hatch is an operator
-deleting one file, which is why the file records the login and the time beside
-the interval even though its name is a peppered digest of the principal. The
-name is a digest for the same reason `index/tokens/` is: listing the directory
-should not enumerate everyone who has ever submitted.
+deleting one file, which is why the file records the time beside the interval.
+Which file that is comes from the pepper, not from the file: `tools/rate-path.js`
+turns a login into the path. The name is a digest for the same reason
+`index/tokens/` is, and the body is anonymous for the same reason again, since a
+digest for a name buys nothing if the file it names says the name.
 
 This server applies the reset, not the reviewer, even though the reviewer is
 what registers. It sees the reset when a status refresh finds the submission
@@ -416,6 +445,61 @@ palomar-review finalize --submission <id> --pr <n>   # after the database PR mer
 `run` without `--apply` still runs the review: it calls the model, spends money,
 and writes a workspace. What it does not do is touch the state repository, which
 is the only thing `--apply` adds.
+
+### Releasing a submitter from an accumulated backoff
+
+The backoff doubles without a ceiling, so somebody who starts submissions and
+never finishes one can end up waiting a length of time nothing they can do will
+shorten. Deleting their rate document puts them back at the floor. Finding it
+needs `TOKEN_PEPPER`, because the file is named by a peppered digest of the
+submitter's numeric GitHub id and its body names nobody:
+
+```bash
+TOKEN_PEPPER=... tools/rate-path.js --login someone   # resolves the id with `gh`
+TOKEN_PEPPER=... tools/rate-path.js --id 4242         # when the id is known
+```
+
+It prints one `index/rate/<digest>.json` path and nothing else. Delete that file
+in a clone of the state repository and push. `last_start_at` in the document is
+what tells you when this submitter last started, if you want to confirm the file
+before deleting it.
+
+The pepper is read from the environment and there is deliberately no argument
+for it, because a shell history and a process listing both outlive the run. It
+is never printed, including on the failure paths, and `gh` is spawned without
+it.
+
+### Retiring identifying fields from older rate documents
+
+Rate documents written before the Server stopped recording identity carry a
+cleartext `login`, a `submission_ids` list, or both. A registration reset drops
+them the next time it touches a document, but a submitter who never registers
+again leaves theirs in place, so the remainder wants one pass over a clone of
+the state repository:
+
+```bash
+tools/strip-rate-logins.js ../PalomarSubmissionState           # report only
+tools/strip-rate-logins.js ../PalomarSubmissionState --write   # rewrite in place
+```
+
+Review the diff, commit, and push. It needs neither the pepper nor the GitHub
+API, and it retires exactly the fields the contract tolerates, from the same
+list in `src/admission-contract.js`. It is deliberately not the validator: it
+removes those fields and leaves everything else exactly as it found it, because
+it edits files by hand outside the Worker.
+
+Removing a field means reserializing the document, which is not in general a
+byte-preserving operation. So it rewrites a file only when the bytes on disk are
+already exactly the canonical serialization of what they parse to, which is what
+the Worker writes. A document that is formatted differently, or that has
+duplicate keys or an integer too large to survive a JSON round-trip, is reported
+and left alone, and the run exits nonzero: rewriting it would change more than
+the field being removed. Those are for a human to edit. Running it again after a
+successful pass changes nothing.
+
+It is not erasure: the state repository's git history retains the old bodies,
+and what happens to those is a question for the state repository's retention
+policy rather than for this pass.
 
 ## Deploying
 
