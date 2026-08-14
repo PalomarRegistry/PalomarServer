@@ -75,6 +75,7 @@ import {
   assertInflightContract,
   dispatchSubmissionVerification,
   openSubmission,
+  PENDING_TTL_MS,
   release,
   scheduledMaintenance,
 } from "./submission-lifecycle.js";
@@ -195,6 +196,32 @@ function intakeUnavailable(env, machine) {
 }
 
 /**
+ * A pending record past its allowance is read as though the sweep had taken it.
+ *
+ * The sweep is a schedule, not a deadline. It runs every ten minutes, so a
+ * record that ran out of time is still on disk for up to another ten; and a
+ * scheduled pass that fails leaves it there for longer than that. Neither is a
+ * reason for a secret to keep working, and a quarter of an hour that means
+ * fifteen to twenty-five minutes depending on where the cron happens to be is
+ * not the thing the intake form and the agent guide say it is. The read is the
+ * only place that can hold the promise, so it holds it here and the sweep goes
+ * back to being what it always was: how the record stops taking up room.
+ *
+ * A record with no readable `created_at` is expired, matching the sweep, which
+ * discards one rather than keeping it for ever on an unparseable date.
+ *
+ * `created_at` is rewritten when an OAuth sign-in is verified and the record is
+ * kept for the submission choice, so the choice gets its own fresh quarter of
+ * an hour measured from the moment GitHub answered rather than from whatever
+ * was left of the sign-in. That is deliberate, and reading the same field is
+ * what respects it.
+ */
+function pendingExpired(record, now = Date.now()) {
+  const created = Date.parse(record?.created_at ?? "");
+  return !Number.isFinite(created) || now - created >= PENDING_TTL_MS;
+}
+
+/**
  * Full, which is a condition of Palomar's rather than a fault in what was sent.
  *
  * Worded unlike the refusals either side of it on purpose. A throttled address,
@@ -206,11 +233,14 @@ function intakeUnavailable(env, machine) {
  * that caused it, so how close to the ceiling it was is in the record too.
  */
 const INTAKE_AT_CAPACITY =
-  "Palomar is holding as many submissions in progress as it can just now. " +
-  "Nothing is wrong with yours; please try again in a few minutes.";
+  "Palomar cannot start another submission just now. Nothing was recorded; " +
+  "please try again in a few minutes.";
 
+// The object rather than a string, so the platform's log search indexes
+// `event` and `pending` as fields and an operator can ask how close to the
+// ceiling it was without reading the line.
 function reportIntakeAtCapacity(pending) {
-  console.warn(JSON.stringify({ event: "intake-at-capacity", pending }));
+  console.warn({ event: "intake-at-capacity", pending });
 }
 
 const CONSUMED_PROOF_RESTART =
@@ -266,10 +296,13 @@ function atRatePath(path, operation) {
 // takes `sweepPending` down with it, and a flood the sweep cannot clear stops
 // being something the next quarter of an hour undoes.
 //
-// It is the backstop and not the first line. What keeps ordinary traffic well
-// under it is `PENDING_TTL_MS`: a record nobody comes back for is discarded a
-// quarter of an hour after it is written, so the most one throttled address can
-// hold at once is a fraction of this rather than several times over.
+// It is the backstop and not the first line, and it is not a number anyone
+// should be relying on to be reached rarely by itself. What keeps one address
+// away from it is `PENDING_TTL_MS`: a record nobody comes back for stops being
+// usable a quarter of an hour after it is written and is discarded on the next
+// sweep, so a single throttled address holds a fraction of this at a time
+// rather than several times over. A fraction that moves with the sweep, and per
+// data centre, so this stays where it is.
 const MAX_PENDING = 200;
 
 /**
@@ -1224,7 +1257,12 @@ async function verifySubmission(request, env) {
 
   const pendingPath = `pending/${await digest(secret)}.json`;
   const pending = await readState(env, pendingPath);
-  if (!pending.value) return json({ error: "that submission has already been verified" }, 404);
+  // One answer for a record that is gone and one that has run out of time: the
+  // caller is in the same position either way, holding a secret that will never
+  // work again, and the fix for both is to begin at `/api/submit`.
+  if (!pending.value || pendingExpired(pending.value)) {
+    return json({ error: "that submission has already been verified" }, 404);
+  }
   if (pending.value.method !== "tag-and-gist") {
     return json({ error: "that intake is a browser sign-in, not an agent submission" }, 409);
   }
@@ -1407,18 +1445,41 @@ async function completeSubmission(request, env) {
   }
   const pendingPath = `pending/${nonceDigest}.json`;
   const pending = await readState(env, pendingPath);
-  if (!pending.value) {
-    return html(errorPage(env, "That sign-in has already been used", [
-      "Start again from the submission form.",
-    ]), 400);
+  if (!pending.value || pendingExpired(pending.value)) {
+    // Told apart here, because the two are different things to be told. One
+    // sign-in was finished already and the other was left open too long, and
+    // somebody who spent a quarter of an hour authenticating deserves to know
+    // that is what happened rather than to wonder who used their link.
+    //
+    // The cookie goes either way. It outlives the record on purpose, and with
+    // the record gone it opens nothing; leaving it set means a browser carries
+    // a credential for an intake that no longer exists.
+    return html(
+      pending.value
+        ? errorPage(env, "That sign-in took too long", [
+            "A submission has fifteen minutes to finish signing in, and this one is past that.",
+            "Nothing was recorded. Start again from the submission form.",
+          ])
+        : errorPage(env, "That sign-in has already been used", [
+            "Start again from the submission form.",
+          ]),
+      400,
+      { "set-cookie": await intakeCookie(nonce, null, { clear: true }) },
+    );
   }
 
   // The cookie half of the intake, checked before the code is exchanged. It
   // can be absent because the browser finishing this sign-in is not the one
-  // that began it, which is the attack, and it can be absent because fifteen
-  // minutes went by or the browser was told to keep no cookies, which is not.
-  // Both get the same answer: there is no way to tell them apart from here,
-  // and guessing at which it was would only make the message worse.
+  // that began it, which is the attack, and it can be absent because the
+  // browser was told to keep no cookies or because its hour ran out, which is
+  // not. Both get the same answer: there is no way to tell them apart from
+  // here, and guessing at which it was would only make the message worse.
+  //
+  // Its hour is deliberately longer than the record's quarter of an hour, and
+  // has to be: a verified sign-in that is kept for the submission choice starts
+  // a fresh quarter of an hour of its own, so the same cookie is still wanted
+  // half an hour after it was set. The read above is what expires an intake;
+  // the cookie only has to outlast it.
   const presented = credential.kind === "valid" ? credential.value : null;
   const expected = pending.value.binding_sha256;
   if (!expected || !presented || (await digest(presented)) !== expected) {
@@ -1708,6 +1769,10 @@ async function completeSubmissionChoice(request, env) {
   const expected = pending.value?.binding_sha256;
   if (
     !pending.value ||
+    // The choice has its own quarter of an hour, counted from the moment the
+    // sign-in was verified rather than from when the submission began. Past
+    // that this page says what it already said: expired, authenticate again.
+    pendingExpired(pending.value) ||
     pending.value.method !== "oauth" ||
     !expected ||
     !presented ||

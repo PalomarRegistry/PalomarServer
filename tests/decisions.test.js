@@ -632,11 +632,13 @@ test("an abandoned sign-in is discarded, and a fresh one is left alone", async (
   // A pending record holds what somebody typed. The ones nobody comes back for
   // are never consumed, so without this they accumulate for ever.
   //
-  // The allowance is pinned because it is what stops one address holding the
-  // ceiling on concurrent intake: nothing authenticates a submitter before the
-  // record is written, and the address throttle allows five a minute, so a
-  // longer allowance than a quarter of an hour lets a single host reach 200 by
-  // itself and refuse intake to everybody until it stops.
+  // The allowance is pinned because it is what keeps one address away from the
+  // ceiling on concurrent intake. Nothing authenticates a submitter before the
+  // record is written and the address throttle allows five a minute, so an hour
+  // of retention was several times the whole ceiling and a simple loop from one
+  // machine could refuse intake to everybody. A quarter of an hour is a share
+  // of it rather than a multiple: shaping, not a bound, with the ceiling behind
+  // it.
   const { PENDING_TTL_MS } = await import("../src/submission-lifecycle.js");
   assert.equal(PENDING_TTL_MS, 15 * 60_000);
 
@@ -1541,6 +1543,12 @@ function stubOAuth({
 // callback refuses anything that cannot present it.
 const BINDING = "9".repeat(64);
 
+// A pending record is usable for a quarter of an hour from `created_at`, and
+// these fixtures are read by the routes rather than by the sweep, so they carry
+// the time the suite is running. A fixed date would have been an intake that
+// lapsed some time before anybody ran the test.
+const justNow = (agoMs = 0) => new Date(Date.now() - agoMs).toISOString();
+
 const PENDING = {
   schema_version: 2,
   binding_sha256: await digest(BINDING),
@@ -1553,7 +1561,7 @@ const PENDING = {
   requested_paths: {},
   authorization_relationship: "maintainer",
   authorization_evidence: null,
-  created_at: "2026-08-01T00:00:00Z",
+  created_at: justNow(),
 };
 
 const PRINCIPAL_INDEX_PATH =
@@ -2036,7 +2044,7 @@ test("a recovery sign-in issues fresh links to every current submission owned by
         schema_version: 2,
         binding_sha256: await digest(BINDING),
         method: "oauth-recovery",
-        created_at: "2026-08-01T00:00:00Z",
+        created_at: justNow(),
       },
       [statePath(old.id, "state.json")]: old,
       [statePath(other.id, "state.json")]: other,
@@ -2094,7 +2102,7 @@ test("recovery consumes its proof and reports an empty current list", async () =
         schema_version: 2,
         binding_sha256: await digest(BINDING),
         method: "oauth-recovery",
-        created_at: "2026-08-01T00:00:00Z",
+        created_at: justNow(),
       },
     },
   });
@@ -2140,6 +2148,128 @@ test("a same-repository sign-in offers the old link before starting anything new
   assert.equal(stub.dispatched.length, 0, "showing the choice started new work");
   assert.equal(stub.store.get(statePath(old.id, "state.json")).status, "verifying");
   assert.ok(stub.store.get(pendingPath).oauth_verification, "the choice lost its spent OAuth proof");
+});
+
+test("a sign-in left open past the allowance is refused at the read", async () => {
+  // The sweep is a schedule, not a deadline: it runs every ten minutes, and a
+  // pass that fails does not run at all. A record it has not reached yet is
+  // still on disk, and the form and the agent guide both promise fifteen
+  // minutes, so the read is where that promise has to be kept.
+  const { PENDING_TTL_MS } = await import("../src/submission-lifecycle.js");
+
+  // Exactly at the allowance is past it, which is the sweep's boundary too: it
+  // keeps a record while `now - created_at` is below the allowance.
+  const nonce = "9".repeat(64);
+  const stub = stubOAuth({
+    push: true,
+    files: {
+      [`pending/${await digest(nonce)}.json`]:
+        { ...PENDING, created_at: justNow(PENDING_TTL_MS) },
+    },
+  });
+  const response = await callback(nonce);
+
+  assert.equal(response.status, 400);
+  const body = await response.text();
+  // Told apart from a sign-in somebody else finished, because they are
+  // different things to be told.
+  assert.match(body, /That sign-in took too long/);
+  assert.match(body, /fifteen minutes/);
+  assert.doesNotMatch(body, /already been used/);
+  // The cookie outlives the record on purpose, so a lapsed intake takes it
+  // with it rather than leaving a browser holding a credential for nothing.
+  assert.ok(
+    responseCookies(response).includes(await clearedIntakeCookie(nonce)),
+    "a lapsed intake left its cookie set",
+  );
+  assert.deepEqual(stub.written.map((item) => item.path), []);
+
+  // A minute inside it is an ordinary slow sign-in and is admitted.
+  const inTime = "f".repeat(64);
+  stubOAuth({
+    push: true,
+    files: {
+      [`pending/${await digest(inTime)}.json`]:
+        { ...PENDING, created_at: justNow(PENDING_TTL_MS - 60_000) },
+    },
+  });
+  assert.equal((await callback(inTime)).status, 303);
+});
+
+test("the submission choice gets its own allowance from when GitHub answered", async () => {
+  // Verifying the sign-in rewrites `created_at` and keeps the record for the
+  // choice. That is deliberate: whoever has just authenticated should get a
+  // fresh quarter of an hour to choose in, not whatever was left of the one
+  // they spent signing in. Reading the same field is what respects it.
+  const { PENDING_TTL_MS } = await import("../src/submission-lifecycle.js");
+  const nonce = "6".repeat(64);
+  const pendingPath = `pending/${await digest(nonce)}.json`;
+  const old = currentSubmission();
+  stubOAuth({
+    push: true,
+    inflight: { open: [{
+      id: old.id,
+      owner: old.owner,
+      submitter: old.submitter,
+      at: old.created_at,
+    }] },
+    reviewer: { schema_version: 1, open: [old.id] },
+    files: {
+      // Nearly out of time when GitHub answered.
+      [pendingPath]: { ...PENDING, created_at: justNow(PENDING_TTL_MS - 60_000) },
+      [statePath(old.id, "state.json")]: old,
+      [`index/tokens/${old.token_sha256}.json`]: { id: old.id },
+    },
+  });
+  assert.equal((await callback(nonce)).status, 200);
+  assert.equal(
+    (await chooseSubmission(nonce, old.id)).status,
+    303,
+    "the fresh choice was refused",
+  );
+
+  // And the fresh allowance is an allowance rather than an exemption.
+  const later = "3".repeat(64);
+  const laterPath = `pending/${await digest(later)}.json`;
+  const other = currentSubmission();
+  const stale = stubOAuth({
+    push: true,
+    inflight: { open: [{
+      id: other.id,
+      owner: other.owner,
+      submitter: other.submitter,
+      at: other.created_at,
+    }] },
+    reviewer: { schema_version: 1, open: [other.id] },
+    files: {
+      [laterPath]: PENDING,
+      [statePath(other.id, "state.json")]: other,
+      [`index/tokens/${other.token_sha256}.json`]: { id: other.id },
+    },
+  });
+  assert.equal((await callback(later)).status, 200);
+  stale.store.set(laterPath, {
+    ...stale.store.get(laterPath),
+    created_at: justNow(PENDING_TTL_MS),
+  });
+  const refused = await chooseSubmission(later, other.id);
+
+  assert.equal(refused.status, 400);
+  assert.match(await refused.text(), /That submission choice expired or opened elsewhere/);
+  assert.ok(
+    responseCookies(refused).includes(await clearedIntakeCookie(later)),
+    "a lapsed choice left its cookie set",
+  );
+  // The links the choice page was built with were written when GitHub
+  // answered; what must not happen after the allowance is a new submission.
+  assert.deepEqual(
+    stale.written
+      .filter((item) => item.path.endsWith("state.json"))
+      .map((item) => item.value.id),
+    [other.id],
+    "a lapsed choice still admitted the new submission",
+  );
+  assert.equal(stale.dispatched.length, 0, "a lapsed choice started new work");
 });
 
 test("a new repository still pauses to list the submitter's other current work", async () => {
@@ -2793,6 +2923,41 @@ test("agent intake writes every normalized optional field to the pending record"
     comparator_config_path: "proof/comparator.json",
     formalization_metadata_path: "docs/formalization.yaml",
   });
+});
+
+test("an agent intake past its allowance answers as though it were gone", async () => {
+  // The guide tells an agent that steps 1 to 4 are one sitting and that a
+  // secret older than fifteen minutes will not work. Between the allowance
+  // running out and the next sweep the record is still on disk, so the read is
+  // what makes that true.
+  const { PENDING_TTL_MS } = await import("../src/submission-lifecycle.js");
+  const stub = stubAgent();
+  const begun = await agentSubmit();
+  const pendingPath = `pending/${await digest(begun.pending_secret)}.json`;
+  // A proof that would have been accepted: nothing is wrong with it but when
+  // it arrived.
+  stub.state.tag = { exists: true, sha: "1".repeat(40) };
+  stub.state.gist = { exists: true, content: begun.challenge };
+  stub.store.set(pendingPath, {
+    ...stub.store.get(pendingPath),
+    created_at: justNow(PENDING_TTL_MS),
+  });
+
+  const response = await agentVerify({
+    pending_secret: begun.pending_secret,
+    gist_id: "abc123",
+  });
+
+  // One answer for a record that is gone and one that has run out of time: the
+  // caller holds a secret that will never work again either way, and begins
+  // again at /api/submit either way.
+  assert.equal(response.status, 404);
+  assert.match((await response.json()).error, /already been verified/);
+  assert.equal(
+    stub.written.filter((item) => item.path.endsWith("state.json")).length,
+    0,
+    "a lapsed intake was still admitted",
+  );
 });
 
 test("a tag and a gist together admit a submission", async () => {

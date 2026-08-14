@@ -1102,7 +1102,7 @@ test("intake stops before it can fill the pending directory", async () => {
   const previous = globalThis.fetch;
   const warn = console.warn;
   const warned = [];
-  console.warn = (...args) => warned.push(args.join(" "));
+  console.warn = (...args) => warned.push(args);
   const seen = [];
   globalThis.fetch = async (url) => {
     const path = new URL(url).pathname;
@@ -1135,7 +1135,7 @@ test("intake stops before it can fill the pending directory", async () => {
     assert.equal(response.headers.get("retry-after"), "300");
     const body = await response.json();
     assert.equal(body.error, "submission intake is at capacity");
-    assert.match(body.detail, /as many submissions in progress as it can/);
+    assert.match(body.detail, /cannot start another submission just now/);
     assert.doesNotMatch(body.detail, /slow down|from this address/);
     // The ceiling is checked before the repository and the commit are read, so
     // a flood costs one call rather than three.
@@ -1158,7 +1158,7 @@ test("intake stops before it can fill the pending directory", async () => {
     );
     assert.equal(page.status, 503);
     const form = await page.text();
-    assert.match(form, /as many submissions in progress as it can/);
+    assert.match(form, /cannot start another submission just now/);
     assert.match(form, /value="owner\/name"/);
 
     // And so does recovery, which is refused by the same count for the same
@@ -1170,13 +1170,15 @@ test("intake stops before it can fill the pending directory", async () => {
       ENV,
     );
     assert.equal(recovery.status, 503);
-    assert.match(await recovery.text(), /as many submissions in progress as it can/);
+    assert.match(await recovery.text(), /cannot start another submission just now/);
 
     // Every one of them is one line an operator can search for, and it carries
     // the count that caused it.
+    // Logged as an object rather than a string, so the platform indexes
+    // `event` and `pending` as fields instead of storing one opaque line.
     assert.equal(warned.length, 3);
     for (const line of warned) {
-      assert.deepEqual(JSON.parse(line), { event: "intake-at-capacity", pending: 200 });
+      assert.deepEqual(line, [{ event: "intake-at-capacity", pending: 200 }]);
     }
   } finally {
     globalThis.fetch = previous;
