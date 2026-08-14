@@ -216,6 +216,31 @@ reviewer independently refuse it, and State validation reports any test record
 edited by hand to carry consent or registration state. Test submissions also
 cannot request an automated metadata-repair pull request.
 
+Withdrawing also empties the record, in the same write that closes it. What the
+submission was and what happened to it stay; what identified the person who
+sent it does not. The submitter's login, the free-text notes, which are the one
+field that can name people who never submitted anything, and whatever was typed
+to evidence an authorization relationship all go, and a second event on the
+record's own timeline says that they went. Replacing an earlier submission of
+the same repository closes it the same way and scrubs it the same way.
+
+The numeric GitHub principal is the exception, and it has to be. Recovery
+intersects `index/principals/<digest>.json` with the reviewer's queue and then
+verifies the numeric principal stored in every record it selected, before it
+filters out the closed ones; a withdrawn id stays queued until the reviewer's
+next pass drops it. A record with no principal would therefore not read as
+"closed, ignore it" but as a locator naming somebody else's submission, which
+fails closed and would take the whole recovery page down for as long as the id
+is queued. Replacement checks the same field before refusing to replace
+something already closed. The number enumerates nobody on its own: it is the
+value both `index/principals/` and `index/rate/` are peppered digests of,
+precisely so that neither directory names anyone.
+
+It is not erasure. The state repository's git history retains the record as it
+was before the withdrawal, and what happens to that is a question for the state
+repository's retention policy. Scrubbing the current tree is what stops every
+later read, sweep, clone, and index rebuild carrying it forward.
+
 ## The state a submission holds
 
 ```text

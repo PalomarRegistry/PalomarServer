@@ -11,7 +11,12 @@ import test from "node:test";
 import { readFile } from "node:fs/promises";
 import worker from "../src/index.js";
 import { submissionsPage } from "../src/html.js";
-import { digest, statePath, tokenDigest } from "../src/submission.js";
+import {
+  digest,
+  statePath,
+  tokenDigest,
+  WITHDRAWAL_SCRUB_NOTE,
+} from "../src/submission.js";
 import { githubIdentityCookie } from "../src/request-credentials.js";
 
 const ENV = {
@@ -320,7 +325,8 @@ test("a submission whose review could not be completed is still the submitter's 
   assert.equal(response.status, 200);
   const state = written.find((item) => item.path.endsWith("state.json"));
   assert.equal(state.value.status, "withdrawn");
-  assert.equal(state.value.events.at(-1).note, "Withdrawn by the submitter");
+  assert.equal(state.value.events.at(-2).note, "Withdrawn by the submitter");
+  assert.equal(state.value.events.at(-1).note, WITHDRAWAL_SCRUB_NOTE);
   assert.equal(inflightReads, 0, "a record without a slot consulted unrelated capacity state");
   assert.deepEqual(
     written.map((item) => item.path),
@@ -362,6 +368,139 @@ test("withdrawing a verifying submission commits the decision before releasing i
     written.map((item) => item.path),
     [statePath(held.id, "state.json"), "index/inflight.json"],
   );
+});
+
+/** A record holding every field a withdrawal is supposed to empty. */
+async function identifyingFixture(overrides = {}) {
+  return fixture({
+    submitter: "someone",
+    context: "Ask my co-author Dana Example whether the appendix counts.",
+    authorization: {
+      relationship: "approved",
+      evidence: "Dana Example approved this by email on the 3rd.",
+    },
+    push_proof: {
+      schema_version: 1,
+      method: "oauth",
+      binding: "same-account",
+      repository_id: 987654321,
+      commit: "1".repeat(40),
+      principal: { login: "someone", id: 4242 },
+    },
+    ...overrides,
+  });
+}
+
+test("withdrawal takes what identifies the submitter out of the record", async () => {
+  // The submitter asked for the submission to stop. Leaving their login, the
+  // free-text notes that can name people who never submitted anything, and
+  // the evidence they typed for their authorization in the current tree kept
+  // all of it for the life of the registry, for nobody to read.
+  const { written } = stubState(await identifyingFixture());
+  const response = await worker.fetch(request("/withdraw", "POST"), ENV);
+  assert.equal(response.status, 200);
+  const record = written.find((item) => item.path.endsWith("state.json")).value;
+
+  assert.equal(record.status, "withdrawn");
+  assert.equal(record.context, null);
+  assert.equal(record.submitter, null);
+  assert.equal(Object.hasOwn(record.authorization, "evidence"), false);
+  assert.equal(Object.hasOwn(record.push_proof.principal, "login"), false);
+  // Nothing else about the submission is lost: what it was, what it asked for,
+  // and what happened to it are the record's whole reason to survive.
+  assert.equal(record.authorization.relationship, "approved");
+  assert.equal(record.repository, "example/project");
+  assert.equal(record.commit, "1".repeat(40));
+  const serialized = JSON.stringify(record);
+  assert.equal(serialized.includes("someone"), false, "the record still names its submitter");
+  assert.equal(serialized.includes("Dana Example"), false, "the record still names a third party");
+});
+
+test("withdrawal keeps the numeric principal that recovery verifies", async () => {
+  // Recovery selects records from the principal locator and the reviewer's
+  // queue and then checks the numeric principal on every one of them, before
+  // it filters the closed ones out, so this is the one identifying-looking
+  // field a withdrawal must not remove. It names nobody by itself: the
+  // locator and rate paths are peppered digests of it precisely so that
+  // neither directory enumerates anyone.
+  const { written } = stubState(await identifyingFixture());
+  assert.equal((await worker.fetch(request("/withdraw", "POST"), ENV)).status, 200);
+  const record = written.find((item) => item.path.endsWith("state.json")).value;
+  assert.deepEqual(record.push_proof.principal, { id: 4242 });
+});
+
+test("a scrubbed withdrawal records that it scrubbed, in a shape State validation accepts", async () => {
+  const { written } = stubState(await identifyingFixture({
+    events: [{ at: "2026-08-01T00:00:00Z", status: "review-ready" }],
+  }));
+  assert.equal((await worker.fetch(request("/withdraw", "POST"), ENV)).status, 200);
+  const record = written.find((item) => item.path.endsWith("state.json")).value;
+
+  const decision = record.events.at(-2);
+  const scrub = record.events.at(-1);
+  assert.equal(decision.note, "Withdrawn by the submitter");
+  assert.equal(scrub.note, WITHDRAWAL_SCRUB_NOTE);
+  // State validation requires the last event to name the record's current
+  // status and the timestamps to be ordered, so the scrub event cannot invent
+  // a status of its own and cannot be stamped before the decision it follows.
+  assert.equal(scrub.status, record.status);
+  const stamps = record.events.map((event) => event.at);
+  assert.deepEqual(stamps, [...stamps].sort());
+  for (const at of stamps) assert.match(at, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
+  assert.ok(stamps.at(-1) >= "2026-08-01T00:00:00Z");
+});
+
+test("polling a withdrawn submission does not write its identifying fields back", async () => {
+  // `/api/submission` refreshes as well as reads. Nothing on that path may
+  // reconstruct a scrubbed field from a run, a dispatch, or a pending record.
+  const withdrawn = await identifyingFixture({ status: "withdrawn" });
+  const path = statePath("a1b2c3d4e5f6", "state.json");
+  withdrawn[path] = {
+    ...withdrawn[path],
+    submitter: null,
+    context: null,
+    authorization: { relationship: "approved" },
+    push_proof: { ...withdrawn[path].push_proof, principal: { id: 4242 } },
+    events: [{ at: "2026-08-01T00:00:00Z", status: "withdrawn" }],
+  };
+  const { written, store } = stubState(withdrawn, [{ id: 12345, status: "completed", conclusion: "success" }]);
+
+  const response = await worker.fetch(request("/api/submission"), ENV);
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.status, "withdrawn");
+  for (const field of ["submitter", "context", "authorization", "push_proof"]) {
+    assert.equal(Object.hasOwn(body, field), false, `the status answer carries ${field}`);
+  }
+  assert.deepEqual(written, [], "polling a withdrawn submission wrote to its record");
+  assert.deepEqual(store.get(path).push_proof.principal, { id: 4242 });
+});
+
+test("reconciliation releases a scrubbed withdrawal without rewriting its record", async () => {
+  const { reconcile } = await import("../src/submission-lifecycle.js");
+  const withdrawn = await identifyingFixture({ status: "withdrawn" });
+  const path = statePath("a1b2c3d4e5f6", "state.json");
+  withdrawn[path] = {
+    ...withdrawn[path],
+    submitter: null,
+    context: null,
+    authorization: { relationship: "approved" },
+    push_proof: { ...withdrawn[path].push_proof, principal: { id: 4242 } },
+    events: [{ at: "2026-08-01T00:00:00Z", status: "withdrawn" }],
+  };
+  withdrawn["index/inflight.json"] = { open: [{
+    id: "a1b2c3d4e5f6", owner: "example", submitter: "someone", at: "2026-08-01T00:00:00Z",
+  }] };
+  const { written, store } = stubState(withdrawn, [{ id: 12345, status: "completed", conclusion: "success" }]);
+
+  assert.deepEqual(await reconcile(ENV), { released: 1, open: 0 });
+  assert.deepEqual(
+    written.map((item) => item.path),
+    ["index/inflight.json"],
+    "the scheduled pass rewrote a withdrawn record",
+  );
+  assert.equal(store.get(path).context, null);
+  assert.equal(store.get(path).submitter, null);
 });
 
 test("consent is not forged by an anonymous request", async () => {
@@ -1276,11 +1415,11 @@ test("an event never claims a status the submission cannot be in", async () => {
   // anything else recognises, so the timeline disagreed with the record.
   const { STATUSES } = await import("../src/submission.js");
   const sources = await Promise.all(
-    ["../src/index.js", "../src/submission-lifecycle.js"].map((path) =>
+    ["../src/index.js", "../src/submission-lifecycle.js", "../src/submission.js"].map((path) =>
       readFile(new URL(path, import.meta.url), "utf8")),
   );
   const stamped = sources.flatMap((source) =>
-    [...source.matchAll(/\{\s*at: (?:recordedAt\(\)|createdAt), status: "([a-z-]+)"/g)]
+    [...source.matchAll(/\{\s*at(?:: (?:recordedAt\(\)|createdAt))?, status: "([a-z-]+)"/g)]
       .map((m) => m[1]));
   assert.ok(stamped.includes("verifying"), "the admission event escaped the status scan");
   assert.ok(stamped.includes("withdrawn"), "the decision events escaped the status scan");
@@ -1935,6 +2074,56 @@ test("automatic recovery excludes a withdrawn submission left in the open index"
   assert.deepEqual(stub.written, [], "viewing the form changed a withdrawn submission");
 });
 
+test("recovery still reads a scrubbed withdrawal, and fails closed without its principal", async () => {
+  // The reviewer's queue keeps a withdrawn id until its next pass, and
+  // recovery verifies the numeric principal of every record it selects from
+  // that queue before it drops the closed ones. A scrub that also took the
+  // number would not read as "closed, ignore it": it would read as a locator
+  // naming somebody else's submission, which fails closed and takes the
+  // recovery page down for as long as the id is queued.
+  const scrubbed = currentSubmission({
+    status: "withdrawn",
+    submitter: null,
+    context: null,
+    push_proof: {
+      schema_version: 1,
+      method: "oauth",
+      binding: "same-account",
+      principal: { id: 4242 },
+    },
+  });
+  const listing = async (record) => {
+    stubOAuth({
+      push: true,
+      reviewer: { schema_version: 1, open: [record.id] },
+      files: {
+        [statePath(record.id, "state.json")]: record,
+        // Named explicitly rather than derived, so that the locator still
+        // points at the record when the record no longer says who owns it.
+        [PRINCIPAL_INDEX_PATH]: { schema_version: 1, submissions: [record.id] },
+      },
+    });
+    return worker.fetch(
+      new Request("https://submit.palomar-registry.org/api/submissions", {
+        method: "POST",
+        headers: { "sec-fetch-site": "same-origin", cookie: await identityCookieHeader() },
+      }),
+      ENV,
+    );
+  };
+
+  const kept = await listing(scrubbed);
+  assert.equal(kept.status, 200);
+  assert.deepEqual(await kept.json(), { submissions: [] });
+
+  const overScrubbed = {
+    ...scrubbed,
+    push_proof: { ...scrubbed.push_proof, principal: {} },
+  };
+  const lost = await listing(overScrubbed);
+  assert.equal(lost.status, 503, "removing the numeric principal left recovery working");
+});
+
 test("automatic recovery requires both its identity cookie and this exact origin", async () => {
   stubOAuth({ push: true });
   const missing = await worker.fetch(
@@ -2379,7 +2568,14 @@ test("replacing a same-repository submission atomically withdraws the old and ad
   assert.match(response.headers.get("location"), /^https:\/\/submit\.palomar-registry\.org\/s#[0-9a-f]{64}$/);
   const oldAfter = stub.store.get(statePath(old.id, "state.json"));
   assert.equal(oldAfter.status, "withdrawn");
-  assert.match(oldAfter.events.at(-1).note, /Replaced by submission/);
+  assert.match(oldAfter.events.at(-2).note, /Replaced by submission/);
+  // A replacement closes the old record for good, so it scrubs it like any
+  // other withdrawal rather than leaving the notes and the login behind.
+  assert.equal(oldAfter.events.at(-1).note, WITHDRAWAL_SCRUB_NOTE);
+  assert.equal(oldAfter.submitter, null);
+  assert.equal(oldAfter.context, null);
+  assert.equal(Object.hasOwn(oldAfter.push_proof.principal, "login"), false);
+  assert.equal(oldAfter.push_proof.principal.id, 4242);
   const inflight = stub.store.get("index/inflight.json").open;
   assert.equal(inflight.length, 1);
   assert.notEqual(inflight[0].id, old.id);

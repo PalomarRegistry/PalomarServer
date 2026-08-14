@@ -8,6 +8,7 @@ import {
   STATUSES,
   statePath,
   tokenDigest,
+  withdrawnRecord,
 } from "./submission.js";
 import {
   GitHubError,
@@ -1142,18 +1143,12 @@ async function admitSubmission(
           };
         }
         availableInflight = inflight.filter((item) => item.id !== replaceId);
-        replaced = {
-          ...old,
-          status: "withdrawn",
-          events: [
-            ...old.events,
-            {
-              at: record.created_at,
-              status: "withdrawn",
-              note: `Replaced by submission ${id}`,
-            },
-          ],
-        };
+        // A replacement closes the earlier record for good, so it scrubs it
+        // exactly as the submitter's own withdrawal does.
+        replaced = withdrawnRecord(old, {
+          at: record.created_at,
+          note: `Replaced by submission ${id}`,
+        });
       }
       let limit = { refused: false, interval: null, starts: null };
       if (rate) {
@@ -2261,12 +2256,13 @@ export default {
             return json({ error: "submission decisions are temporarily unavailable" }, 503);
           }
         }
-        const next = {
-          ...entry.record,
-          status: "withdrawn",
-          events: [...entry.record.events,
-                   { at: recordedAt(), status: "withdrawn", note: "Withdrawn by the submitter" }],
-        };
+        // The decision and the scrub are the same write. Two writes would
+        // leave a window in which a crash kept everything the submitter asked
+        // to be rid of, in a record nothing will ever visit again.
+        const next = withdrawnRecord(entry.record, {
+          at: recordedAt(),
+          note: "Withdrawn by the submitter",
+        });
         await writeState(env, statePath(next.id, "state.json"), next,
                          `Withdraw ${next.id}`, entry.sha);
         if (entry.record.status === "verifying") await release(env, next.id);
