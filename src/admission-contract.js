@@ -40,20 +40,39 @@ export class RateContractError extends Error {}
  * Documents written earlier may still carry an identifying field: `login`, or
  * `submission_ids`, which named this principal's submissions until they moved
  * to `index/principals/` and which points at records that do name the
- * submitter. Both are tolerated on read, because refusing them would lock the
- * submitter out of intake entirely, and both are dropped the next time the
- * document is projected. `IDENTIFYING_FIELDS` is that list, shared with the
- * one-time migration in `tools/strip-rate-logins.js`.
+ * submitter. Both are accepted on read, so that a deployment does not lock
+ * their submitters out of intake, and neither survives a projection.
+ *
+ * Every other field is refused. Writing no identity is a property of one
+ * writer and a future one could quietly reacquire it, so the shape is an
+ * allowlist instead: `submitter_login` would have to fail this contract and
+ * its tests before it could reach a file. The list below is every field any
+ * version of this Worker has ever written to a rate document, so the allowlist
+ * costs nothing in compatibility. It does mean a deployment that adds a field
+ * cannot be rolled back past this one without refusing the documents it wrote,
+ * which is the same append-only discipline the dashboard contract states, and
+ * the reason to bump `schema_version` rather than widen this quietly.
  */
 const RATE_FLOOR_SECONDS = 60;
+
+/** The fields the Server writes today, in the order it writes them. */
+const RATE_FIELDS = [
+  "schema_version",
+  "starts",
+  "interval_seconds",
+  "last_start_at",
+  "next_allowed_at",
+];
 
 /**
  * Fields an older rate document may carry that identify its submitter.
  *
- * Exported so the migration tool retires exactly the set the reset projection
- * sheds, and the two cannot drift apart.
+ * Exported so the one-time migration in `tools/strip-rate-logins.js` retires
+ * exactly the set this contract tolerates, and the two cannot drift apart.
  */
 export const IDENTIFYING_FIELDS = ["login", "submission_ids"];
+
+const KNOWN_FIELDS = new Set([...RATE_FIELDS, ...IDENTIFYING_FIELDS]);
 
 function describeInterval(seconds) {
   if (seconds < 90) {
@@ -87,6 +106,13 @@ export function rateRecord(value) {
     fail("must be a JSON object");
   }
   if (value.schema_version !== 1) fail("schema_version must be 1");
+  // An allowlist rather than a search for the identity fields we happen to
+  // know about, so that a field nobody has thought of yet cannot arrive
+  // silently.
+  const unknown = Object.keys(value).filter((key) => !KNOWN_FIELDS.has(key)).sort();
+  if (unknown.length > 0) {
+    fail(`must not carry the unknown field${unknown.length === 1 ? "" : "s"} ${unknown.join(", ")}`);
+  }
   // Current documents carry no login at all. Documents written before that are
   // still valid, so absence is accepted; a login that is present but not a
   // login is still a malformed document and still fails closed.
@@ -173,16 +199,17 @@ export function nextRateRecord({ starts, interval, startedAt, at = Date.now() })
 export function resetRateRecord(value, resetAt) {
   const current = rateRecord(value).value;
   timestamp(resetAt, "next_allowed_at");
+  // Projected field by field rather than spread from the document. A spread
+  // carries forward whatever happens to be there, which is how `login` and
+  // `submission_ids` outlived the writers that produced them; naming the
+  // output means a field can only persist because this contract says so.
   const result = {
-    ...current,
+    schema_version: 1,
+    starts: current.starts,
     interval_seconds: RATE_FLOOR_SECONDS,
+    last_start_at: current.last_start_at,
     next_allowed_at: resetAt,
   };
-  // A spread preserves whatever the document already held, which for an older
-  // document includes fields that identify the submitter. Shed them here, so
-  // ordinary traffic retires those bodies without a migration having to reach
-  // every file.
-  for (const field of IDENTIFYING_FIELDS) delete result[field];
   rateRecord(result);
   return result;
 }

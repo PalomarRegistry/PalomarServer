@@ -46,15 +46,22 @@ function bail(message) {
 const options = {};
 const argv = process.argv.slice(2);
 for (let index = 0; index < argv.length; index += 1) {
-  const flag = argv[index];
-  if (flag === "--pepper") {
+  const argument = argv[index];
+  // Split the name off first, and report only ever the name. `--pepper=secret`
+  // has to be refused like a bare `--pepper`, and refusing it by echoing the
+  // argument back would put the secret on the terminal and into the operator's
+  // scrollback, which is most of what the argument was refused for.
+  const equals = argument.indexOf("=");
+  const name = equals === -1 ? argument : argument.slice(0, equals);
+  if (name === "--pepper") {
     bail("--pepper is not supported: set TOKEN_PEPPER in the environment instead");
   }
-  if (!["--login", "--id"].includes(flag)) bail(`unknown argument ${flag}`);
-  const value = argv[index += 1];
-  if (value === undefined) bail(`${flag} needs a value`);
-  if (options[flag]) bail(`${flag} was given twice`);
-  options[flag] = value;
+  if (!name.startsWith("--")) bail("unexpected argument without a flag");
+  if (!["--login", "--id"].includes(name)) bail(`unknown argument ${name}`);
+  const value = equals === -1 ? argv[index += 1] : argument.slice(equals + 1);
+  if (value === undefined) bail(`${name} needs a value`);
+  if (options[name]) bail(`${name} was given twice`);
+  options[name] = value;
 }
 
 const pepper = process.env.TOKEN_PEPPER;
@@ -65,7 +72,9 @@ let id = options["--id"];
 if (id === undefined) {
   const login = options["--login"];
   if (!login) bail("pass --login or --id");
-  if (!/^[A-Za-z0-9_-]{1,39}$/.test(login)) bail(`${login} is not a GitHub login`);
+  // Values are never echoed either. A mistyped flag that put the pepper in a
+  // value should not be answered by printing it back.
+  if (!/^[A-Za-z0-9_-]{1,39}$/.test(login)) bail("--login must be a GitHub login");
   // `gh` needs a GitHub credential, not this deployment's pepper.
   const environment = { ...process.env };
   delete environment.TOKEN_PEPPER;
@@ -85,7 +94,7 @@ if (id === undefined) {
 // past the safe-integer range could not have survived the Worker's own JSON
 // round-trip either, so it is a mistake rather than an unusual account.
 if (!/^[1-9][0-9]*$/.test(id) || !Number.isSafeInteger(Number(id))) {
-  bail(`${id} is not a canonical positive safe-integer GitHub id`);
+  bail("--id must be a canonical positive safe-integer GitHub id");
 }
 
 console.log(`index/rate/${await digest(`${pepper}:${id}`)}.json`);

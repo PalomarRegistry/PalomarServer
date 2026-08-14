@@ -65,6 +65,13 @@ test("rate-path prints exactly the path the Worker would have written", async ()
   });
   assert.notEqual(other.stdout.trim(), stdout.trim());
   assert.equal(other.stdout.trim(), await workerRatePath("another-pepper", ID));
+
+  // Splitting a flag on `=` is what makes `--pepper=secret` refusable, so the
+  // spelling has to keep working for the flags that are allowed.
+  const joined = await run(tool("rate-path.js"), [`--id=${ID}`], {
+    env: { ...process.env, TOKEN_PEPPER: PEPPER },
+  });
+  assert.equal(joined.stdout.trim(), stdout.trim());
 });
 
 test("rate-path takes its pepper only from the environment", async () => {
@@ -75,15 +82,46 @@ test("rate-path takes its pepper only from the environment", async () => {
   assert.match(missing.stderr, /set TOKEN_PEPPER in the environment/);
 
   // A pepper on the command line reaches the process list and the shell
-  // history, so the argument is refused rather than quietly honoured.
-  const argument = await attempt(
-    tool("rate-path.js"),
+  // history, so the argument is refused rather than quietly honoured. Both
+  // spellings, and neither refusal may echo the value back: printing it to the
+  // terminal is most of what the argument was refused for.
+  for (const args of [
     ["--id", ID, "--pepper", "secret-pepper"],
-    { env: withheld },
-  );
-  assert.equal(argument.code, 2);
-  assert.match(argument.stderr, /--pepper is not supported/);
-  assert.doesNotMatch(argument.stderr, /secret-pepper/);
+    ["--id", ID, "--pepper=secret-pepper"],
+    ["--pepper=secret-pepper"],
+    ["--pepper=secret-pepper", "--id", ID],
+  ]) {
+    const argument = await attempt(tool("rate-path.js"), args, { env: withheld });
+    assert.equal(argument.code, 2, `${args} was not refused`);
+    assert.match(argument.stderr, /--pepper is not supported/);
+    assert.doesNotMatch(
+      `${argument.stdout}${argument.stderr}`,
+      /secret-pepper/,
+      `${args} echoed the pepper back`,
+    );
+  }
+});
+
+test("no rate-path failure path echoes an argument value", async () => {
+  // A typo that puts the pepper in some other flag's value must not be
+  // answered by printing it, so the parser reports flag names and never
+  // values. `--peppr=` is the near miss that a bare unknown-argument message
+  // would have leaked.
+  const withheld = { ...process.env };
+  delete withheld.TOKEN_PEPPER;
+  for (const args of [
+    ["--peppr=secret-pepper"],
+    ["--unknown", "secret-pepper"],
+    ["secret-pepper"],
+    ["--login=secret-pepper!"],
+    ["--id=secret-pepper"],
+  ]) {
+    const { code, stdout, stderr } = await attempt(tool("rate-path.js"), args, {
+      env: { ...withheld, TOKEN_PEPPER: PEPPER },
+    });
+    assert.equal(code, 2, `${args} was not refused`);
+    assert.doesNotMatch(`${stdout}${stderr}`, /secret-pepper/, `${args} echoed a value`);
+  }
 });
 
 test("rate-path never prints the pepper, even while failing", async () => {
@@ -152,8 +190,10 @@ test("strip-rate-logins reports before it writes, and writes only when asked", a
 });
 
 test("strip-rate-logins removes the identifying fields and nothing else", async () => {
-  // Opaque extension fields are the ones a rewrite would most easily damage,
-  // and the validator accepts them, so they have to survive untouched.
+  // The tool is deliberately not the validator: it edits files the Worker may
+  // never have written, so it removes the fields it was asked to remove and
+  // leaves everything else exactly as it found it, including a field the
+  // contract would now refuse. That is the property a migration wants.
   const extended = rateDocument({
     login: "someone",
     submission_ids: ["abcdefghijkl"],

@@ -374,22 +374,31 @@ not treated as abuse.
 The Server owns the rate document's current `schema_version: 1` contract. A
 present document records a positive integer `starts`, an integer
 `interval_seconds` of at least sixty, and canonical UTC-seconds `last_start_at`
-and `next_allowed_at` timestamps. The Server writes no `login` and nothing else
-that identifies the submitter: the file name is a peppered digest so that
-listing the directory enumerates nobody, and a cleartext login in the body
-handed that back to anyone who could read the files.
+and `next_allowed_at` timestamps. It carries nothing that identifies the
+submitter: the file name is a peppered digest so that listing the directory
+enumerates nobody, and a cleartext login in the body handed that back to anyone
+who could read the files.
 
-That is a property of the writer, not of the validator. Unlike the dashboard
-aggregate and the principal locator, this contract does not hold documents to
-an exact field-name allowlist, because older documents carry fields the Server
-no longer writes and refusing them would lock their submitters out of intake
-rather than merely losing information. `login` is one; `submission_ids` is the
-other, from before the principal locator took that job over. Both are accepted
-on read and both are deleted by the next projection of the document, whether
-that is a registration reset or a rewrite by `tools/strip-rate-logins.js`. A
-`login` that is present but is not a GitHub login is a malformed document and
-still fails closed. Adding a field to this document is therefore a change to
-review for what it discloses, since nothing mechanical will refuse it.
+That is enforced rather than merely intended. Like the dashboard aggregate and
+the principal locator, this contract is an exact field-name allowlist, so a
+future writer cannot quietly reacquire an identity field: `submitter_login`
+would have to be added here, past these tests, before it could reach a file.
+Two fields the Server no longer writes are on the list because older documents
+carry them, and refusing those would lock their submitters out of intake rather
+than merely losing information: `login`, and `submission_ids` from before the
+principal locator took that job over. Between them and the current five, that is
+every field any version of the Server has ever written to a rate document, so
+the allowlist costs nothing in compatibility. Both are accepted on read, neither
+survives a projection, and a registration reset names its output field by field
+rather than spreading the document it read, which is how those two outlived the
+writers that produced them. A `login` that is present but is not a GitHub login
+is a malformed document and still fails closed.
+
+The cost of the allowlist is that a deployment which adds a field cannot be
+rolled back past one that does not know it without refusing the documents it
+wrote. That is the same append-only discipline the dashboard contracts state
+above, and the reason to add a field by bumping `schema_version` rather than by
+widening this quietly.
 
 The State repository's whole-tree validator deliberately treats these
 producer-owned fields as opaque, so the Server validates all of them before
@@ -474,8 +483,10 @@ tools/strip-rate-logins.js ../PalomarSubmissionState --write   # rewrite in plac
 ```
 
 Review the diff, commit, and push. It needs neither the pepper nor the GitHub
-API, and it retires exactly the fields the reset projection does, from the same
-list in `src/admission-contract.js`.
+API, and it retires exactly the fields the contract tolerates, from the same
+list in `src/admission-contract.js`. It is deliberately not the validator: it
+removes those fields and leaves everything else exactly as it found it, because
+it edits files by hand outside the Worker.
 
 Removing a field means reserializing the document, which is not in general a
 byte-preserving operation. So it rewrites a file only when the bytes on disk are
