@@ -13,9 +13,12 @@
  * The digest is computed by the Worker's own `digest`, imported rather than
  * reimplemented, so this tool cannot drift from what intake writes.
  *
- * The pepper is read from `TOKEN_PEPPER` by preference. `--pepper` exists for
- * a shell that does not have it exported, at the cost of putting the secret in
- * the process list and the shell history; neither path ever prints it.
+ * The pepper comes from `TOKEN_PEPPER` in the environment and from nowhere
+ * else. A `--pepper` argument would put the deployment's secret into the shell
+ * history and into every process listing on the machine for as long as this
+ * runs, which is a poor trade for saving one `export`. For the same reason
+ * `gh` is spawned with `TOKEN_PEPPER` removed from its environment: it has no
+ * use for it, and a subprocess that never receives a secret cannot leak it.
  *
  *   TOKEN_PEPPER=... tools/rate-path.js --login someone
  *   TOKEN_PEPPER=... tools/rate-path.js --id 4242
@@ -26,11 +29,13 @@ import { execFileSync } from "node:child_process";
 import { digest } from "../src/submission.js";
 
 const USAGE = [
-  "usage: tools/rate-path.js (--login <login> | --id <numeric id>) [--pepper <pepper>]",
+  "usage: TOKEN_PEPPER=... tools/rate-path.js (--login <login> | --id <numeric id>)",
   "",
   "  --login   GitHub login; its numeric id is resolved with `gh api users/<login>`",
   "  --id      numeric GitHub id, when it is already known or `gh` is unavailable",
-  "  --pepper  the deployment's TOKEN_PEPPER, if it is not already in the environment",
+  "",
+  "The pepper is read from TOKEN_PEPPER in the environment. There is deliberately",
+  "no argument for it: a shell history and a process listing both outlive the run.",
 ].join("\n");
 
 function bail(message) {
@@ -42,15 +47,18 @@ const options = {};
 const argv = process.argv.slice(2);
 for (let index = 0; index < argv.length; index += 1) {
   const flag = argv[index];
-  if (!["--login", "--id", "--pepper"].includes(flag)) bail(`unknown argument ${flag}`);
+  if (flag === "--pepper") {
+    bail("--pepper is not supported: set TOKEN_PEPPER in the environment instead");
+  }
+  if (!["--login", "--id"].includes(flag)) bail(`unknown argument ${flag}`);
   const value = argv[index += 1];
   if (value === undefined) bail(`${flag} needs a value`);
   if (options[flag]) bail(`${flag} was given twice`);
   options[flag] = value;
 }
 
-const pepper = options["--pepper"] ?? process.env.TOKEN_PEPPER;
-if (!pepper) bail("no pepper: set TOKEN_PEPPER or pass --pepper");
+const pepper = process.env.TOKEN_PEPPER;
+if (!pepper) bail("no pepper: set TOKEN_PEPPER in the environment");
 if (options["--login"] && options["--id"]) bail("pass one of --login or --id, not both");
 
 let id = options["--id"];
@@ -58,9 +66,13 @@ if (id === undefined) {
   const login = options["--login"];
   if (!login) bail("pass --login or --id");
   if (!/^[A-Za-z0-9_-]{1,39}$/.test(login)) bail(`${login} is not a GitHub login`);
+  // `gh` needs a GitHub credential, not this deployment's pepper.
+  const environment = { ...process.env };
+  delete environment.TOKEN_PEPPER;
   try {
     id = execFileSync("gh", ["api", `users/${login}`, "--jq", ".id"], {
       encoding: "utf8",
+      env: environment,
       stdio: ["ignore", "pipe", "inherit"],
     }).trim();
   } catch {
@@ -68,9 +80,12 @@ if (id === undefined) {
     bail(`could not resolve the numeric id of ${login}`);
   }
 }
-// The path is a digest of the id exactly as the Worker interpolated it, so a
-// value that is not a bare decimal integer would silently name a file that
-// cannot exist.
-if (!/^[1-9]\d*$/.test(id)) bail(`${id} is not a numeric GitHub id`);
+// The path digests the id exactly as the Worker interpolated it, so anything
+// but a bare canonical decimal would name a file that cannot exist. A value
+// past the safe-integer range could not have survived the Worker's own JSON
+// round-trip either, so it is a mistake rather than an unusual account.
+if (!/^[1-9][0-9]*$/.test(id) || !Number.isSafeInteger(Number(id))) {
+  bail(`${id} is not a canonical positive safe-integer GitHub id`);
+}
 
 console.log(`index/rate/${await digest(`${pepper}:${id}`)}.json`);

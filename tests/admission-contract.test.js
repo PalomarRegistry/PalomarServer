@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   admissionDecision,
+  IDENTIFYING_FIELDS,
   nextRateRecord,
   RateContractError,
   rateDecision,
@@ -157,11 +158,18 @@ test("present rate state has one strict current contract", () => {
   const extended = rate({ producer_extension: { retained: true } });
   assert.equal(rateRecord(extended).value, extended);
 
-  // Documents written before the Server stopped recording logins are still
+  // Documents written before the Server stopped recording identity are still
   // read, so a deployment does not lock out everybody who already had a
-  // backoff.
-  const legacy = rate({ login: "someone" });
-  assert.equal(rateRecord(legacy).value, legacy);
+  // backoff. `submission_ids` is the other one: it was a rate-document field
+  // until the principal locator took it over, and the documents that still
+  // carry it were never rewritten.
+  for (const legacy of [
+    rate({ login: "someone" }),
+    rate({ submission_ids: ["abcdefghijkl"] }),
+    rate({ login: "someone", submission_ids: ["abcdefghijkl"] }),
+  ]) {
+    assert.equal(rateRecord(legacy).value, legacy);
+  }
 });
 
 test("an unrepresentable next deadline fails before it can be written", () => {
@@ -219,23 +227,30 @@ test("registration reset preserves rate history and returns to the floor", () =>
   );
 });
 
-test("a reset sheds a login left by an older document", () => {
-  // The spread that preserves history would otherwise carry the login forward
+test("a reset sheds every identifying field an older document left", () => {
+  // The spread that preserves history would otherwise carry these forward
   // forever, so ordinary registration traffic is what retires those bodies.
   const reset = resetRateRecord({
     schema_version: 1,
     login: "someone",
+    submission_ids: ["abcdefghijkl"],
     starts: 3,
     interval_seconds: 240,
     last_start_at: "2026-08-07T00:00:00Z",
     next_allowed_at: "2026-08-07T00:04:00Z",
+    producer_extension: { retained: true },
   }, "2026-08-08T00:00:00Z");
-  assert.equal(Object.hasOwn(reset, "login"), false);
+  for (const field of IDENTIFYING_FIELDS) {
+    assert.equal(Object.hasOwn(reset, field), false, `${field} survived a reset`);
+  }
+  // Everything the document held that does not name the submitter is still
+  // opaque to this contract and still preserved.
   assert.deepEqual(reset, {
     schema_version: 1,
     starts: 3,
     interval_seconds: 60,
     last_start_at: "2026-08-07T00:00:00Z",
     next_allowed_at: "2026-08-08T00:00:00Z",
+    producer_extension: { retained: true },
   });
 });

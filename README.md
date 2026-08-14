@@ -374,16 +374,26 @@ not treated as abuse.
 The Server owns the rate document's current `schema_version: 1` contract. A
 present document records a positive integer `starts`, an integer
 `interval_seconds` of at least sixty, and canonical UTC-seconds `last_start_at`
-and `next_allowed_at` timestamps. It records no `login`, and nothing else that
-identifies the submitter: the file name is a peppered digest so that listing the
-directory enumerates nobody, and a cleartext login in the body handed that back
-to anyone who could read the files. Documents written before this contract may
-still carry one. Such a document is still valid, and the next projection of it
-drops the field, whether that is a registration reset or a rewrite by
-`tools/strip-rate-logins.js`. A `login` that is present but is not a GitHub
-login is a malformed document and still fails closed. The State repository's
-whole-tree validator deliberately treats these producer-owned fields as opaque,
-so the Server validates all of them before admission and before projecting a
+and `next_allowed_at` timestamps. The Server writes no `login` and nothing else
+that identifies the submitter: the file name is a peppered digest so that
+listing the directory enumerates nobody, and a cleartext login in the body
+handed that back to anyone who could read the files.
+
+That is a property of the writer, not of the validator. Unlike the dashboard
+aggregate and the principal locator, this contract does not hold documents to
+an exact field-name allowlist, because older documents carry fields the Server
+no longer writes and refusing them would lock their submitters out of intake
+rather than merely losing information. `login` is one; `submission_ids` is the
+other, from before the principal locator took that job over. Both are accepted
+on read and both are deleted by the next projection of the document, whether
+that is a registration reset or a rewrite by `tools/strip-rate-logins.js`. A
+`login` that is present but is not a GitHub login is a malformed document and
+still fails closed. Adding a field to this document is therefore a change to
+review for what it discloses, since nothing mechanical will refuse it.
+
+The State repository's whole-tree validator deliberately treats these
+producer-owned fields as opaque, so the Server validates all of them before
+admission and before projecting a
 reset. A missing file is a first start; a malformed present file makes intake
 temporarily unavailable rather than silently granting the floor. A malformed
 file also leaves a registration reset unapplied until repair, but does not hide
@@ -441,17 +451,22 @@ TOKEN_PEPPER=... tools/rate-path.js --id 4242         # when the id is known
 ```
 
 It prints one `index/rate/<digest>.json` path and nothing else. Delete that file
-in a clone of the state repository and push. The pepper is never printed; pass it in
-the environment rather than as `--pepper` where a process list or a shell
-history would keep it. `last_start_at` in the document is what tells you when
-this submitter last started, if you want to confirm the file before deleting it.
+in a clone of the state repository and push. `last_start_at` in the document is
+what tells you when this submitter last started, if you want to confirm the file
+before deleting it.
 
-### Retiring logins from older rate documents
+The pepper is read from the environment and there is deliberately no argument
+for it, because a shell history and a process listing both outlive the run. It
+is never printed, including on the failure paths, and `gh` is spawned without
+it.
 
-Rate documents written before the Server stopped recording logins carry a
-cleartext `login`. A registration reset drops it the next time it touches one,
-but a submitter who never registers again leaves theirs in place, so the
-remainder wants one pass over a clone of the state repository:
+### Retiring identifying fields from older rate documents
+
+Rate documents written before the Server stopped recording identity carry a
+cleartext `login`, a `submission_ids` list, or both. A registration reset drops
+them the next time it touches a document, but a submitter who never registers
+again leaves theirs in place, so the remainder wants one pass over a clone of
+the state repository:
 
 ```bash
 tools/strip-rate-logins.js ../PalomarSubmissionState           # report only
@@ -459,9 +474,21 @@ tools/strip-rate-logins.js ../PalomarSubmissionState --write   # rewrite in plac
 ```
 
 Review the diff, commit, and push. It needs neither the pepper nor the GitHub
-API, and it only ever removes a field. It is not erasure: the state repository's
-git history retains the old bodies, and what happens to those is a question for
-the state repository's retention policy rather than for this pass.
+API, and it retires exactly the fields the reset projection does, from the same
+list in `src/admission-contract.js`.
+
+Removing a field means reserializing the document, which is not in general a
+byte-preserving operation. So it rewrites a file only when the bytes on disk are
+already exactly the canonical serialization of what they parse to, which is what
+the Worker writes. A document that is formatted differently, or that has
+duplicate keys or an integer too large to survive a JSON round-trip, is reported
+and left alone, and the run exits nonzero: rewriting it would change more than
+the field being removed. Those are for a human to edit. Running it again after a
+successful pass changes nothing.
+
+It is not erasure: the state repository's git history retains the old bodies,
+and what happens to those is a question for the state repository's retention
+policy rather than for this pass.
 
 ## Deploying
 

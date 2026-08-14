@@ -35,11 +35,25 @@ export class RateContractError extends Error {}
  * precisely so that listing the directory does not enumerate everyone who has
  * ever submitted, and a cleartext `login` in the body gave that back to anyone
  * who could read the files. An operator holding the pepper reaches the file
- * from the login instead: `tools/rate-path.js` prints the path. Documents
- * written before this change may still carry a `login`; it is tolerated on
- * read and dropped the next time the document is projected.
+ * from the login instead: `tools/rate-path.js` prints the path.
+ *
+ * Documents written earlier may still carry an identifying field: `login`, or
+ * `submission_ids`, which named this principal's submissions until they moved
+ * to `index/principals/` and which points at records that do name the
+ * submitter. Both are tolerated on read, because refusing them would lock the
+ * submitter out of intake entirely, and both are dropped the next time the
+ * document is projected. `IDENTIFYING_FIELDS` is that list, shared with the
+ * one-time migration in `tools/strip-rate-logins.js`.
  */
 const RATE_FLOOR_SECONDS = 60;
+
+/**
+ * Fields an older rate document may carry that identify its submitter.
+ *
+ * Exported so the migration tool retires exactly the set the reset projection
+ * sheds, and the two cannot drift apart.
+ */
+export const IDENTIFYING_FIELDS = ["login", "submission_ids"];
 
 function describeInterval(seconds) {
   if (seconds < 90) {
@@ -164,11 +178,11 @@ export function resetRateRecord(value, resetAt) {
     interval_seconds: RATE_FLOOR_SECONDS,
     next_allowed_at: resetAt,
   };
-  // A spread preserves whatever the document already held, which for a
-  // document written before this change includes the submitter's login. Shed
-  // it here, so ordinary traffic retires the old bodies without a migration
-  // having to reach every file.
-  delete result.login;
+  // A spread preserves whatever the document already held, which for an older
+  // document includes fields that identify the submitter. Shed them here, so
+  // ordinary traffic retires those bodies without a migration having to reach
+  // every file.
+  for (const field of IDENTIFYING_FIELDS) delete result[field];
   rateRecord(result);
   return result;
 }
