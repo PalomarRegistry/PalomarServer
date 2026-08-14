@@ -537,6 +537,26 @@ It is not erasure: the state repository's git history retains the old bodies,
 and what happens to those is a question for the state repository's retention
 policy rather than for this pass.
 
+### Scrubbing submissions withdrawn before the scrub shipped
+
+A withdrawal empties the record it closes, but only from the write that closes
+it. A submission withdrawn before that shipped kept its submitter, its notes,
+its authorization evidence and its principal's login, and nothing later goes
+back for them. The same one pass over a clone retires those:
+
+```bash
+tools/scrub-withdrawn-records.js ../PalomarSubmissionState           # report only
+tools/scrub-withdrawn-records.js ../PalomarSubmissionState --write   # rewrite in place
+```
+
+It touches only records already `withdrawn`, empties exactly the fields
+`withdrawnRecord` empties, and appends the scrub event that record would have
+carried, stamped with its own status because that is what the State validator
+asks of a last event. A record already scrubbed is left alone, so running it
+again changes nothing.
+
+The same caveat applies: history keeps what the tip no longer shows.
+
 ## Deploying
 
 Pushes to `main` are deployed automatically after the test suite passes. The
