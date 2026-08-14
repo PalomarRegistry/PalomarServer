@@ -50,6 +50,15 @@ test("the disclosure says what is recorded and when it becomes public", () => {
     form,
     /public only after you have seen them, and decided to complete the registration/,
   );
+  // The box is the short answer to "what becomes public", so it has to name the
+  // approval evidence: that one is public from verification rather than from
+  // registration, which is the opposite of what a reader would assume.
+  assert.match(form, /as is any approval evidence you write/);
+  // And it points at the long answer rather than trying to be it.
+  assert.match(
+    form,
+    /<a href="https:\/\/[^"]+\/privacy\.html">privacy policy<\/a>/,
+  );
   // "The review" invites the reading that a person did it. Say what it is.
   assert.match(form, /automated review/);
   // The earlier wording claimed reviews were readable by "the model provider"

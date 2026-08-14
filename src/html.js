@@ -100,8 +100,11 @@ export function intakeForm(
       <h2>What becomes public</h2>
       <p>
         The submitted repository, commit, and Comparator configuration path are
-        permanently recorded in public. The automated review and decision become
+        permanently recorded in public, as is any approval evidence you write.
+        The automated review and decision become
         public only after you have seen them, and decided to complete the registration.
+        The <a href="${escape(env.SITE_URL)}/privacy.html">privacy policy</a>
+        says what else is kept, for how long, and how to ask about it.
       </p>
     </section>
 
