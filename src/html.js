@@ -222,9 +222,12 @@ export function intakeForm(
       <label for="context">Notes <span class="optional">optional</span></label>
       <textarea id="context" name="context" rows="4" aria-describedby="context-hint">${escape(values.context)}</textarea>
       <p class="hint" id="context-hint">
-        This field is not public, but is provided to the AI checks that validate
-        <code>formalization.yaml</code> and the correspondence between the
-        informal and formal statements.
+        Stored in the private submission record and given to the AI checks that
+        validate <code>formalization.yaml</code> and the correspondence between
+        the informal and formal statements. Never sent to the public
+        verification workflow, but Palomar operators, GitHub, and the model
+        provider read it, and the review it informs becomes public if you
+        register. Do not include anything sensitive.
       </p>
 
       <section class="disclosure browser-preflight" id="browser-preflight"
