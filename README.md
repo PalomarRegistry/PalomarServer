@@ -420,9 +420,15 @@ is the only thing `--apply` adds.
 
 Pushes to `main` are deployed automatically after the test suite passes. The
 GitHub repository must provide `CLOUDFLARE_ACCOUNT_ID` and
-`CLOUDFLARE_API_TOKEN` as Actions secrets. Before uploading a version, CI
-reapplies the reviewed Worker hostname policy; it then uploads and promotes that
-version. The version workflow does not change the existing route or cron trigger.
+`CLOUDFLARE_API_TOKEN` as Actions secrets. The Cloudflare dashboard credential
+stored under that secret is named exactly **palomar worker deployment token**.
+It is not **PalomarDatabaseTools GitHub deploy**, which is a separate credential
+owned by a different repository. **palomar worker deployment token** must not
+have **Workers Routes: Edit**: this deployment deliberately uploads and promotes
+versions without changing the existing route. Before uploading a version, CI
+reapplies the reviewed Worker hostname policy; it then uploads and promotes
+that version. The version workflow does not change the existing route or cron
+trigger.
 
 The Worker imports no package from npm at runtime. The locked npm graph is
 development tooling: Wrangler and the official Vitest pool's Miniflare/workerd
