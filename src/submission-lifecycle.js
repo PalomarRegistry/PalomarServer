@@ -403,6 +403,23 @@ export async function reconcile(env) {
 }
 
 /**
+ * How long an unconsumed intake record is kept.
+ *
+ * A quarter of an hour, because this is what decides how much of the ceiling
+ * on concurrent intake one address can hold at once. Nothing authenticates a
+ * submitter before the record is written, and the address throttle allows five
+ * intakes a minute, so the allowance multiplied by that rate is the share of
+ * the ceiling a single unauthenticated host can occupy: an hour was more than
+ * the whole of it, and a quarter of an hour is about a third. The ceiling stays
+ * where it is as the backstop; this is what stops one host reaching it.
+ *
+ * It is still far longer than the round trip it exists for. A browser sign-in
+ * is a redirect to GitHub and back, and the agent path is two API calls, both
+ * of them minutes at the outside.
+ */
+export const PENDING_TTL_MS = 15 * 60_000;
+
+/**
  * Discard intake records nobody came back for.
  *
  * A pending record is written before the submitter is sent to GitHub. Most are
@@ -417,9 +434,7 @@ export async function sweepPending(env, now = Date.now()) {
     if (item.type !== "file" || !item.name.endsWith(".json")) continue;
     const record = await readState(env, `pending/${item.name}`);
     const created = Date.parse(record.value?.created_at ?? "");
-    // An hour is far longer than a sign-in takes and short enough that an
-    // abandoned one does not linger.
-    if (Number.isFinite(created) && now - created < 3600_000) continue;
+    if (Number.isFinite(created) && now - created < PENDING_TTL_MS) continue;
     if (await deleteState(env, `pending/${item.name}`, item.sha, "Discard an abandoned intake")) {
       removed += 1;
     }

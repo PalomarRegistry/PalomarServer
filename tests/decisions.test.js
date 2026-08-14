@@ -631,10 +631,23 @@ test("retrying gives up rather than hammering GitHub", async () => {
 test("an abandoned sign-in is discarded, and a fresh one is left alone", async () => {
   // A pending record holds what somebody typed. The ones nobody comes back for
   // are never consumed, so without this they accumulate for ever.
+  //
+  // The allowance is pinned because it is what stops one address holding the
+  // ceiling on concurrent intake: nothing authenticates a submitter before the
+  // record is written, and the address throttle allows five a minute, so a
+  // longer allowance than a quarter of an hour lets a single host reach 200 by
+  // itself and refuse intake to everybody until it stops.
+  const { PENDING_TTL_MS } = await import("../src/submission-lifecycle.js");
+  assert.equal(PENDING_TTL_MS, 15 * 60_000);
+
   const now = Date.parse("2026-08-05T12:00:00Z");
   const files = {
     "abandoned.json": { created_at: "2026-08-05T09:00:00Z" },
-    "fresh.json": { created_at: "2026-08-05T11:59:00Z" },
+    // Sixteen minutes: past the allowance, and an hour would still be holding
+    // it.
+    "lapsed.json": { created_at: "2026-08-05T11:44:00Z" },
+    // Fourteen, which is inside a sign-in that is merely slow.
+    "fresh.json": { created_at: "2026-08-05T11:46:00Z" },
     "undated.json": {},
   };
   const deleted = [];
@@ -658,8 +671,8 @@ test("an abandoned sign-in is discarded, and a fresh one is left alone", async (
   };
   const { sweepPending } = await import("../src/submission-lifecycle.js");
   const removed = await sweepPending(ENV, now);
-  assert.deepEqual(deleted.sort(), ["abandoned.json", "undated.json"]);
-  assert.equal(removed, 2);
+  assert.deepEqual(deleted.sort(), ["abandoned.json", "lapsed.json", "undated.json"]);
+  assert.equal(removed, 3);
 });
 
 test("a pending directory too long to list is refused, not half-swept", async () => {

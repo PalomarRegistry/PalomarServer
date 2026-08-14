@@ -229,7 +229,8 @@ index/open.json               # the reviewer's queue: added here, pruned there
 index/review-timing.json      # how long recent reviews took, for the estimate
 pending/<digest>.json         # a one-time intake nonce; an OAuth submission may
                               #   retain its proved identity until the choice,
-                              #   and abandoned records are swept after an hour
+                              #   and abandoned records are swept after fifteen
+                              #   minutes
 ```
 
 `index/inflight.json` has exactly one top-level field, `open`, and no versioned

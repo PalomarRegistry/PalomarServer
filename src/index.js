@@ -194,6 +194,25 @@ function intakeUnavailable(env, machine) {
       );
 }
 
+/**
+ * Full, which is a condition of Palomar's rather than a fault in what was sent.
+ *
+ * Worded unlike the refusals either side of it on purpose. A throttled address,
+ * a body that would not parse, and a repository that could not be read are all
+ * things the sender can act on and all things that say nothing about the state
+ * of the registry; this one is neither, and an operator holding a screenshot or
+ * reading a log has to be able to tell it from the others before deciding
+ * whether anything at this end needs attention. The log line carries the count
+ * that caused it, so how close to the ceiling it was is in the record too.
+ */
+const INTAKE_AT_CAPACITY =
+  "Palomar is holding as many submissions in progress as it can just now. " +
+  "Nothing is wrong with yours; please try again in a few minutes.";
+
+function reportIntakeAtCapacity(pending) {
+  console.warn(JSON.stringify({ event: "intake-at-capacity", pending }));
+}
+
 const CONSUMED_PROOF_RESTART =
   "This proof was consumed. Start a new submission and create a new proof.";
 
@@ -245,7 +264,12 @@ function atRatePath(path, operation) {
 // for is the cliff behind it. `listState` refuses to enumerate a directory at
 // the contents API's thousand-name limit, so a `pending/` allowed to reach that
 // takes `sweepPending` down with it, and a flood the sweep cannot clear stops
-// being something an hour undoes.
+// being something the next quarter of an hour undoes.
+//
+// It is the backstop and not the first line. What keeps ordinary traffic well
+// under it is `PENDING_TTL_MS`: a record nobody comes back for is discarded a
+// quarter of an hour after it is written, so the most one throttled address can
+// hold at once is a fraction of this rather than several times over.
 const MAX_PENDING = 200;
 
 /**
@@ -368,7 +392,16 @@ async function beginSubmission(request, env, { machine = false } = {}) {
     return intakeUnavailable(env, machine);
   }
   if (pendingCount >= MAX_PENDING) {
-    return rejected("Palomar has too many submissions in progress. Please try again shortly.");
+    reportIntakeAtCapacity(pendingCount);
+    // Not `rejected`: that answers 400 and says the submission was refused,
+    // and neither is true here. The browser still gets its form back with
+    // everything in it, because there is nothing to correct and nothing anyone
+    // should have to retype to try again.
+    return machine
+      ? json({ error: "submission intake is at capacity", detail: INTAKE_AT_CAPACITY }, 503,
+             { "retry-after": "300" })
+      : html(intakeForm(env, values, [INTAKE_AT_CAPACITY], { automaticRecovery }), 503,
+             { "retry-after": "300" });
   }
 
   const repo = await fetchRepository(env.GITHUB_TOKEN, repositoryName);
@@ -488,9 +521,13 @@ async function beginRecovery(request, env) {
     return intakeUnavailable(env, false);
   }
   if (pendingCount >= MAX_PENDING) {
-    return html(errorPage(env, "Submission recovery is temporarily busy", [
-      "Please try again shortly.",
-    ]), 429);
+    reportIntakeAtCapacity(pendingCount);
+    // The same condition and the same words as on the intake path, so that two
+    // reports of it are recognisably one thing. 429 said the caller had asked
+    // too often, which was never what this was.
+    return html(errorPage(env, "Submission intake is at capacity", [
+      INTAKE_AT_CAPACITY,
+    ]), 503, { "retry-after": "300" });
   }
 
   const nonce = newAccessToken();
@@ -1389,8 +1426,8 @@ async function completeSubmission(request, env) {
     // stops a leaked callback URL being replayed by whoever composed the flow.
     // Not fatal if it fails, unlike the consumption on the success path: this
     // request is refused either way and the sweep collects the record within
-    // the hour. Logged rather than ignored, so a delete that keeps failing is
-    // visible before it becomes a pile.
+    // the quarter hour. Logged rather than ignored, so a delete that keeps
+    // failing is visible before it becomes a pile.
     if (!(await deleteState(env, pendingPath, pending.sha,
                             "Discard an intake finished elsewhere"))) {
       console.error("pending", `could not discard ${pendingPath}`);
