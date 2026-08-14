@@ -35,6 +35,7 @@ export function page(env, title, body, { submitCurrent = false } = {}) {
         <a href="${escape(env.SITE_URL)}">Registry</a>
         <a href="${escape(env.SITE_URL)}/about.html">About</a>
         <a href="https://github.com/PalomarRegistry/PalomarPolicy/blob/main/CONTRIBUTING.md">Policy</a>
+        <a href="${escape(env.SITE_URL)}/privacy.html">Privacy</a>
       </div>
     </footer>
   </body>
@@ -213,9 +214,11 @@ export function intakeForm(
                   ${approvalApplies ? "" : "disabled "}
                   aria-describedby="authorization_evidence-hint">${escape(values.authorization_evidence)}</textarea>
         <p class="hint warning" id="authorization_evidence-hint">
-          Included in the public mechanical report during verification and
-          retained permanently if you register. Do not name anyone who has not
-          agreed to be named.
+          Public as soon as verification starts, whether or not you register: it
+          travels in the inputs of a workflow run on a public repository, and it
+          appears in the public mechanical report. Registering keeps it in the
+          registry record permanently. Do not name anyone who has not agreed to
+          be named.
         </p>
       </div>
 

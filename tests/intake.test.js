@@ -60,7 +60,16 @@ test("the disclosure says what is recorded and when it becomes public", () => {
 
 test("the approval note appears only when approval is selected", async () => {
   assert.match(form, /<div class="dependent" id="approval-evidence" hidden>/);
-  assert.match(form, /Included in the public mechanical report during verification/);
+  // The evidence rides in the dispatch inputs of a run on the public
+  // submission repository, where anyone can read them, so it is public from
+  // verification onward whether or not a registration ever follows. Copy that
+  // dated the exposure to the mechanical report, or made it conditional on
+  // registering, promised a privacy this field does not have.
+  assert.match(
+    form.replace(/\s+/g, " "),
+    /Public as soon as verification starts, whether or not you register: it travels in the inputs of a workflow run on a public repository, and it appears in the public mechanical report\. Registering keeps it in the registry record permanently\. Do not name anyone who has not agreed to be named\./,
+  );
+  assert.doesNotMatch(form, /Included in the public mechanical report during verification/);
   assert.match(form, /maxlength="4000"/);
 
   const approved = intakeForm(ENV, { authorization_relationship: "approved" });
@@ -706,6 +715,28 @@ test("every status the reviewer can set has something to show for it", async () 
     assert.ok(labels.includes(`"${status}"`) || labels.includes(`${status}:`),
       `the page has no label for "${status}"`);
   }
+});
+
+test("every page carries the privacy policy in its footer", async () => {
+  // The form asks for a GitHub sign-in, free text, and evidence that goes
+  // public, so the page that says where all of it lives has to be reachable
+  // from the pages that collect it, not only from the registry site.
+  const { statusPage, submissionsPage, errorPage } = await import("../src/html.js");
+  for (const [name, page] of [
+    ["intake", form],
+    ["status", statusPage(ENV)],
+    ["submissions", submissionsPage(ENV)],
+    ["error", errorPage(ENV, "Something went wrong", [])],
+  ]) {
+    assert.match(
+      page,
+      /<a href="https:\/\/palomar-registry\.org\/privacy\.html">Privacy<\/a>/,
+      `${name} does not link the privacy policy`,
+    );
+  }
+  // The site's own footer orders these Policy then Privacy; the server's
+  // pages sit under the same wordmark and read as the same site or as two.
+  assert.match(form, /Policy<\/a>\s*<a href="[^"]*\/privacy\.html">Privacy<\/a>/);
 });
 
 test("every page asks for the favicon, and it is servable", async () => {
