@@ -86,6 +86,81 @@ export const STATUSES = {
   withdrawn: "Withdrawn",
 };
 
+/**
+ * The event a scrubbed withdrawal appends, so the audit trail says it happened.
+ *
+ * It carries the withdrawn status rather than a status of its own: State
+ * validation requires the last event to name the record's current status, and
+ * inventing a `scrubbed` status here would put every withdrawn record outside
+ * the contract it is validated against.
+ */
+export const WITHDRAWAL_SCRUB_NOTE = "Identifying details removed on withdrawal";
+
+/**
+ * A withdrawn record, with what identified its submitter taken out of it.
+ *
+ * Withdrawal used to change one word and append an event, so the record went
+ * on holding the submitter's login and both of the free-text fields they
+ * wrote, the notes and the evidence for their authorization relationship,
+ * either of which can name people who never submitted anything, for as long as
+ * the registry exists. Nothing reads any of it once the submission is closed,
+ * and what the submitter asked for was for the submission to stop.
+ *
+ * The numeric principal stays, and it is the one field here that has to.
+ * Recovery intersects `index/principals/<digest>.json` with the reviewer's
+ * queue and then verifies the numeric principal stored in every record it
+ * selected, before it filters the closed ones out. A withdrawn record stays in
+ * that queue until the reviewer's next pass drops it, so a record with no
+ * principal would not read as "closed, ignore it" but as a locator naming
+ * somebody else's submission, which fails closed and takes the whole recovery
+ * page down with it for as long as the id is queued. Replacement checks the
+ * same field before it refuses to replace something already closed.
+ *
+ * Keeping it is a trade, not a claim that the result is anonymous. A GitHub
+ * account id is stable and publicly resolvable: the provider answers "who is
+ * this id" without any permission at all, so a withdrawn record still leads
+ * back to the account that sent it. The pepper stops `index/principals/` and
+ * `index/rate/` enumerating anyone, because those names are digests of the id
+ * rather than the id; it does nothing for the number stored here. What the
+ * scrub removes is the direct login and both free-text fields, and what it
+ * keeps is the bare identifier those integrity checks fail closed without.
+ *
+ * Git history keeps what was committed before this. Scrubbing the current tree
+ * is what stops every later read, sweep, clone, and index rebuild carrying it
+ * forward; the residue in history is disclosed in the retention documentation
+ * rather than pretended away.
+ */
+export function withdrawnRecord(record, { at, note }) {
+  const scrubbed = {
+    ...record,
+    status: "withdrawn",
+    // Both are fields every record carries, so they are emptied rather than
+    // removed: null is what intake already writes for notes nobody gave.
+    submitter: null,
+    context: null,
+    events: [
+      ...record.events,
+      { at, status: "withdrawn", note },
+      { at, status: "withdrawn", note: WITHDRAWAL_SCRUB_NOTE },
+    ],
+  };
+  // These two are absent rather than null on a record that never had them, so
+  // a scrub that wrote null would invent a shape no intake produces. The
+  // copies matter: the record passed in is the value a caller still holds.
+  if (scrubbed.authorization) {
+    scrubbed.authorization = { ...scrubbed.authorization };
+    delete scrubbed.authorization.evidence;
+  }
+  if (scrubbed.push_proof?.principal) {
+    scrubbed.push_proof = {
+      ...scrubbed.push_proof,
+      principal: { ...scrubbed.push_proof.principal },
+    };
+    delete scrubbed.push_proof.principal.login;
+  }
+  return scrubbed;
+}
+
 export function newRecord({
   id, repositoryName, commit, owner, submitter, existingId, context, authorization,
   requestedPaths = {}, testSubmission = false,
