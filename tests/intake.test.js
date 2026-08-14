@@ -76,7 +76,7 @@ test("private notes are described as input to AI checks, not a reviewer", () => 
   assert.match(normalized, /<label for="context">Notes <span class="optional">optional<\/span><\/label>/);
   assert.match(
     normalized,
-    /Stored in the private submission record and shown to the AI checks that validate <code>formalization\.yaml<\/code> and the correspondence between the informal and formal statements\. Never public\./,
+    /Stored in the private submission record and given to the AI checks that validate <code>formalization\.yaml<\/code> and the correspondence between the informal and formal statements\. Never sent to the public verification workflow, but Palomar operators, GitHub, and the model provider read it, and the review it informs becomes public if you register\. Do not include anything sensitive\./,
   );
   assert.doesNotMatch(normalized, /Notes for the reviewer|Read by the reviewer/);
 });

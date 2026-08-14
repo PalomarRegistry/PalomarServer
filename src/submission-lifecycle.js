@@ -139,8 +139,9 @@ export function dispatchSubmissionVerification(env, record, mode = "full") {
       ...(record.existing_id ? { existing_id: record.existing_id } : {}),
       // The submitter's notes are deliberately absent. Dispatch inputs are
       // world-readable on the public submission repository's run page, the
-      // form promises the notes stay private, and the workflow never reads
-      // them: the AI review takes them from the private State record.
+      // form promises the notes never reach that workflow, and the workflow
+      // never reads them: the AI review takes them from the private State
+      // record.
     },
   });
 }

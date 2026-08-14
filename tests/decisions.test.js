@@ -1798,7 +1798,7 @@ test("an active Technical Maintainer can run a marked test without push access o
     "I am a Palomar Technical Maintainer testing the workflow",
   );
   // Dispatch inputs are world-readable on the public submission repository's
-  // run page, and the form promises the notes stay private.
+  // run page, and the form promises the notes never reach that workflow.
   assert.equal(record.value.context, "Private submitter notes.");
   assert.equal(
     Object.hasOwn(dispatchedOptions, "context"),
