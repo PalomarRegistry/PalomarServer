@@ -18,7 +18,7 @@
     "source_relationships": ["adapts", "background", "formalizes", "independently-proves", "other"],
     "source_endorsements": ["declined", "endorsed", "n/a", "no-response", "not-contacted", "participated"],
     "related_relationships": ["adapts", "builds-on", "independent", "other", "supersedes"],
-    "classification_cardinality": {"arxiv": [1, 2], "msc2020": [1, 8]}
+    "classification_cardinality": {"arxiv": [1, null], "msc2020": [0, 8]}
   },
   "comparator": {
     "required_keys": ["challenge_module", "permitted_axioms", "solution_module", "theorem_names"],
