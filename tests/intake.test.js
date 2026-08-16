@@ -158,6 +158,7 @@ test("the button says what it does", () => {
 
 test("preliminary-check copy describes the browser and post-authentication work", async () => {
   const script = await readFile(new URL("../public/intake.js", import.meta.url), "utf8");
+  const css = await readFile(new URL("../public/style.css", import.meta.url), "utf8");
   assert.match(form, /id="browser-preflight-heading">Preliminary checks<\/h2>/);
   assert.match(
     form,
@@ -171,6 +172,7 @@ test("preliminary-check copy describes the browser and post-authentication work"
   assert.match(script, /Authenticate via GitHub and prepare pull request/);
   assert.match(script, /formalizationRepairDraft/);
   assert.doesNotMatch(script, /you can still submit now/);
+  assert.match(css, /\[hidden\] \{ display: none !important; \}/);
 });
 
 test("finding submissions shows progress while GitHub authentication starts", async () => {
