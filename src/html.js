@@ -183,7 +183,7 @@ export function intakeForm(
                  value="${escape(values.existing_id)}">
           <p class="hint" id="existing_id-hint">
             <span class="field-status" id="existing_id-status" aria-hidden="true"></span>
-            <span id="existing_id-message">Use this to identify the registration this submission should replace.</span>
+            <span id="existing_id-message">Leave this blank when retrying an unsuccessful submission. Enter an ID only to register a new version of a result already in the Palomar Registry.</span>
           </p>
         </details>
       </section>
