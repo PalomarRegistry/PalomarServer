@@ -5,7 +5,7 @@
  * nothing it says is trusted: the server checks the repository, the commit, the
  * submitter's push access, and the Palomar ID again, and its answers are the
  * ones that count. A deterministic browser finding asks for one explicit
- * “submit anyway” confirmation, while an incomplete check, rate limit, or API
+ * checkbox confirmation, while an incomplete check, rate limit, or API
  * outage never blocks submission. A validated exact-commit match cannot become
  * another registration, so the later controls are disabled until the submitter
  * changes the registration identity or commit.
@@ -30,6 +30,7 @@ import {
   registrationIdentityDigest,
   repositoryQuery,
 } from "./normalize.js";
+import { createPreflightRepairForm } from "./preflight-repair-form.js";
 // The versions of one result, at a key named after it. The registry index
 // names every record ever accepted, so asking it which versions one identifier
 // has meant fetching all of them, and paying more for it every time anybody
@@ -886,14 +887,32 @@ let describedLayout = null;
 let browserPreflightToken = 0;
 let browserPreflightTimer;
 let browserPreflightResult = null;
-let browserPreflightOverride = null;
 let browserPreflightModulePromise;
 
 const browserPreflight = document.getElementById("browser-preflight");
 const browserPreflightSummary = document.getElementById("browser-preflight-summary");
 const browserPreflightDiagnostics = document.getElementById("browser-preflight-diagnostics");
 const browserPreflightDeferred = document.getElementById("browser-preflight-deferred");
+const browserPreflightConfirmation = document.getElementById("browser-preflight-confirmation");
 const browserPreflightAnyway = document.getElementById("browser-preflight-anyway");
+const preflightRepairRequest = document.getElementById("preflight-repair-request");
+let redisplayedPreflightRepair = preflightRepairRequest?.value ?? "";
+let redisplayedPreflightRepairFingerprint = null;
+const preflightRepairController = (() => {
+  const container = document.getElementById("preflight-repair");
+  const fields = document.getElementById("preflight-repair-fields");
+  const status = document.getElementById("preflight-repair-status");
+  return container && fields && status
+    ? createPreflightRepairForm({ container, fields, status })
+    : null;
+})();
+
+function setSubmissionAction({ repair = false } = {}) {
+  if (!submit || submit.dataset.busy === "true") return;
+  submit.textContent = repair
+    ? "Authenticate via GitHub and prepare pull request"
+    : "Authenticate via GitHub and submit";
+}
 
 function preflightFingerprint() {
   const name = normalizeRepository(repository.input?.value);
@@ -911,6 +930,9 @@ function preflightFingerprint() {
   });
 }
 
+redisplayedPreflightRepairFingerprint = redisplayedPreflightRepair
+  ? preflightFingerprint() : null;
+
 function exactCommitFile(repositoryName, sha, path) {
   const encoded = path.split("/").map(encodeURIComponent).join("/");
   return `https://github.com/${repositoryName}/blob/${sha}/${encoded}`;
@@ -918,7 +940,6 @@ function exactCommitFile(repositoryName, sha, path) {
 
 function renderBrowserPreflight(result) {
   browserPreflightResult = result;
-  browserPreflightOverride = null;
   if (
     !browserPreflight || !browserPreflightSummary || !browserPreflightDiagnostics ||
     !browserPreflightDeferred
@@ -926,7 +947,11 @@ function renderBrowserPreflight(result) {
   browserPreflight.hidden = false;
   browserPreflight.dataset.state = result.outcome;
   browserPreflightDiagnostics.replaceChildren();
-  browserPreflightAnyway?.setAttribute("hidden", "");
+  if (browserPreflightAnyway) browserPreflightAnyway.checked = false;
+  browserPreflightConfirmation?.setAttribute("hidden", "");
+  preflightRepairController?.clear();
+  if (preflightRepairRequest) preflightRepairRequest.value = "";
+  setSubmissionAction();
   if (result.outcome === "checking") {
     browserPreflightSummary.textContent = "Checking the files at this commit…";
     browserPreflightDeferred.textContent = "You can submit while this check is running.";
@@ -973,8 +998,31 @@ function renderBrowserPreflight(result) {
     );
   } else {
     browserPreflightDeferred.textContent = result.guard
-      ? "Full verification will repeat these checks and run Licensee, LFS, release, taxonomy, TOML, and thin-wrapper checks. You may review the findings or submit anyway."
+      ? result.repairFailure
+        ? "Complete the metadata form below to prepare a pull request now, or confirm that you want full verification to continue despite these findings."
+        : "Full verification will repeat these checks and run Licensee, LFS, release, taxonomy, TOML, and thin-wrapper checks. Confirm below if you want to continue."
       : "Full verification will run every authoritative check after submission. This browser check does not block submission.";
+  }
+  let restoredEdits = [];
+  if (
+    result.repairFailure && redisplayedPreflightRepair &&
+    result.fingerprint === redisplayedPreflightRepairFingerprint
+  ) {
+    try {
+      restoredEdits = JSON.parse(redisplayedPreflightRepair)?.edits ?? [];
+    } catch {
+      // The Worker will already have explained a malformed redisplayed value.
+    }
+    redisplayedPreflightRepair = "";
+  }
+  if (
+    result.repairFailure &&
+    preflightRepairController?.render(result.repairFailure, restoredEdits)
+  ) {
+    setSubmissionAction({ repair: true });
+  }
+  if (result.guard && result.diagnostics.length) {
+    browserPreflightConfirmation?.removeAttribute("hidden");
   }
 }
 
@@ -1021,7 +1069,8 @@ async function inspectBrowserPreflight() {
   const mine = ++browserPreflightToken;
   if (!fingerprint) {
     browserPreflightResult = null;
-    browserPreflightOverride = null;
+    if (browserPreflightAnyway) browserPreflightAnyway.checked = false;
+    browserPreflightConfirmation?.setAttribute("hidden", "");
     if (browserPreflight) browserPreflight.hidden = true;
     return;
   }
@@ -1041,6 +1090,9 @@ async function inspectBrowserPreflight() {
   try {
     const {
       BROWSER_PREFLIGHT_POLICY: selectedPolicy,
+      canApplyFormalizationRepair,
+      formalizationRepairDraft,
+      guidedFormalizationDiagnostics,
       inspectTree,
       validatePortable,
     } = await loadBrowserPreflight();
@@ -1063,10 +1115,23 @@ async function inspectBrowserPreflight() {
     if (mine !== browserPreflightToken || fingerprint !== preflightFingerprint()) return;
     const policyCurrent = values[0] === true;
     if (!policyCurrent || Object.keys(content).length !== reads.length) incomplete = true;
+    const portableDiagnostics = validatePortable(content, selectedPolicy);
     const diagnostics = [
       ...treeResult.diagnostics,
-      ...validatePortable(content, selectedPolicy),
+      ...portableDiagnostics,
     ];
+    const repairDiagnostics = guidedFormalizationDiagnostics(diagnostics);
+    const repairFailure = policyCurrent && content.formalization && repairDiagnostics.length &&
+      canApplyFormalizationRepair(
+        content.formalization,
+        repairDiagnostics.map((item) => item.field),
+      )
+      ? {
+          profile_version: selectedPolicy.formalization_profile_version,
+          diagnostics: repairDiagnostics,
+          repair_draft: formalizationRepairDraft(content.formalization, selectedPolicy),
+        }
+      : null;
     const guard = policyCurrent && diagnostics.some((item) => !item.advisory);
     renderBrowserPreflight({
       fingerprint,
@@ -1077,6 +1142,7 @@ async function inspectBrowserPreflight() {
       incomplete,
       policyCurrent,
       guard,
+      repairFailure,
     });
     announce(diagnostics.length
       ? `The browser check found ${diagnostics.length} possible ${diagnostics.length === 1 ? "problem" : "problems"}.`
@@ -1100,8 +1166,11 @@ async function inspectBrowserPreflight() {
 function scheduleBrowserPreflight() {
   browserPreflightToken += 1;
   browserPreflightResult = null;
-  browserPreflightOverride = null;
-  browserPreflightAnyway?.setAttribute("hidden", "");
+  if (browserPreflightAnyway) browserPreflightAnyway.checked = false;
+  browserPreflightConfirmation?.setAttribute("hidden", "");
+  preflightRepairController?.clear();
+  if (preflightRepairRequest) preflightRepairRequest.value = "";
+  setSubmissionAction();
   if (browserPreflight) browserPreflight.hidden = true;
   clearTimeout(browserPreflightTimer);
   browserPreflightTimer = setTimeout(() => { void inspectBrowserPreflight(); }, 350);
@@ -1488,37 +1557,54 @@ recoveryForm?.addEventListener("submit", () => {
 // Make sure the action does not still look as though it is in progress.
 window.addEventListener("pageshow", () => setRecoveryBusy(false));
 
-browserPreflightAnyway?.addEventListener("click", () => {
-  const fingerprint = preflightFingerprint();
-  if (!fingerprint || browserPreflightResult?.fingerprint !== fingerprint) return;
-  browserPreflightOverride = fingerprint;
-  form?.requestSubmit(submit);
+browserPreflightAnyway?.addEventListener("change", () => {
+  if (browserPreflightAnyway.checked) {
+    if (preflightRepairRequest) preflightRepairRequest.value = "";
+    setSubmissionAction();
+  } else {
+    setSubmissionAction({ repair: preflightRepairController?.active === true });
+  }
 });
 
 form?.addEventListener("submit", (event) => {
   if (!submit) return;
   const fingerprint = preflightFingerprint();
+  const wantsRepair = preflightRepairController?.active === true &&
+    browserPreflightAnyway?.checked !== true;
+  const repairPayload = wantsRepair ? preflightRepairController.payload() : null;
+  if (wantsRepair && !repairPayload) {
+    event.preventDefault();
+    browserPreflight?.scrollIntoView({ behavior: "smooth", block: "start" });
+    announce("Complete the metadata form, or confirm that you want to submit anyway.");
+    return;
+  }
+  if (preflightRepairRequest) preflightRepairRequest.value = repairPayload ?? "";
   if (
     fingerprint &&
     browserPreflightResult?.fingerprint === fingerprint &&
     browserPreflightResult.guard &&
     browserPreflightResult.diagnostics.length &&
-    browserPreflightOverride !== fingerprint
+    !wantsRepair &&
+    browserPreflightAnyway &&
+    !browserPreflightAnyway.checked
   ) {
     event.preventDefault();
-    browserPreflightAnyway?.removeAttribute("hidden");
     browserPreflight?.scrollIntoView({ behavior: "smooth", block: "center" });
-    browserPreflightSummary?.focus();
-    announce("Review the browser check, then submit anyway if you want authoritative verification to continue.");
+    browserPreflightAnyway.focus();
+    announce("Review the browser check and confirm that you want to submit anyway.");
     return;
   }
   // Not disabled: a disabled submit button is not sent with the form, and
   // some browsers will not submit at all. Blocked by hand instead.
   submit.dataset.busy = "true";
-  submit.textContent = "Authenticating via GitHub…";
-  announce("Checking the repository and commit with GitHub.");
+  submit.textContent = wantsRepair
+    ? "Authenticating via GitHub to prepare pull request…"
+    : "Authenticating via GitHub…";
+  announce(wantsRepair
+    ? "Authenticating with GitHub before preparing the pull request."
+    : "Checking the repository and commit with GitHub.");
 });
 
 // The browser preflight above is the only deliberate cancellation, and always
-// exposes the explicit override. The server still retries a racing write, so a
+// exposes the explicit confirmation. The server still retries a racing write, so a
 // second press after submission starts is harmless.

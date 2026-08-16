@@ -1604,6 +1604,7 @@ function stateGitApi(target, init, { store, written, deleted, refUpdates }) {
 function stubOAuth({
   push,
   files = {},
+  sourceFiles = {},
   login = "someone",
   membership = null,
   membershipStatus = null,
@@ -1652,6 +1653,18 @@ function stubOAuth({
         permissions: { push },
       } : repository;
       return value === null ? new Response("", { status: 404 }) : Response.json(value);
+    }
+    const sourcePrefix = "/repos/example/project/contents/";
+    if (target.pathname.startsWith(sourcePrefix) && method === "GET") {
+      const path = decodeURIComponent(target.pathname.slice(sourcePrefix.length));
+      if (!Object.hasOwn(sourceFiles, path)) return new Response("", { status: 404 });
+      const text = sourceFiles[path];
+      return Response.json({
+        type: "file",
+        encoding: "base64",
+        size: Buffer.byteLength(text),
+        content: Buffer.from(text).toString("base64"),
+      });
     }
     if (target.pathname.includes("/actions/workflows/")) {
       dispatched.push({ path: target.pathname, body: JSON.parse(init.body) });
@@ -1751,14 +1764,14 @@ function currentSubmission(overrides = {}) {
   };
 }
 
-async function callback(nonce, { binding = BINDING, cookies = [] } = {}) {
+async function callback(nonce, { binding = BINDING, cookies = [], env = ENV } = {}) {
   const name = `__Host-palomar_intake_${(await digest(nonce)).slice(0, 16)}`;
   const cookie = [...cookies, ...(binding ? [`${name}=${binding}`] : [])].join("; ");
   return worker.fetch(
     new Request(`https://submit.palomar-registry.org/oauth/callback?code=c&state=${nonce}`, {
       headers: cookie ? { cookie } : {},
     }),
-    ENV,
+    env,
   );
 }
 
@@ -1905,6 +1918,108 @@ test("an active Technical Maintainer's ordinary submission bypasses account limi
     ["ownerslot001", "ownerslot002", record.value.id],
   );
   assert.deepEqual(stub.store.get(ratePathName), rate, "the maintainer backoff was modified");
+});
+
+test("an authenticated preliminary metadata form queues its repair without full verification", async () => {
+  const nonce = "b".repeat(64);
+  const formalization = `
+version: v0.4
+project:
+  authors: [Example Author]
+  license: MIT
+  responsible_maintainers: [Example Maintainer]
+classification:
+  arxiv: [math.LO]
+  msc2020: [03B35]
+sources:
+  - title: Original result
+    type: original-proof
+    relationship: other
+automation:
+  methods:
+    - method: manual
+review:
+  status: self-assessed
+`;
+  const pending = {
+    ...PENDING,
+    preflight_repair: {
+      profile_version: 2,
+      edits: [{ field: "project.name", value: "Example" }],
+    },
+  };
+  const stub = stubOAuth({
+    push: true,
+    files: {
+      [`pending/${await digest(nonce)}.json`]: pending,
+      "index/repairs.json": { schema_version: 1, open: [] },
+    },
+    sourceFiles: { "formalization.yaml": formalization },
+  });
+
+  const response = await callback(nonce, {
+    env: { ...ENV, REPAIR_WORKFLOW: "repairer.yml", VERIFY_WORKFLOW: "submission.yml" },
+  });
+
+  assert.equal(response.status, 303);
+  const state = stub.written.find((item) => item.path.endsWith("/state.json")).value;
+  const repair = stub.store.get(`submissions/${state.id}/repair.json`);
+  assert.equal(state.status, "changes-required");
+  assert.equal(state.failure.profile_version, 2);
+  assert.deepEqual(state.failure.diagnostics.map((item) => item.field), ["project.name"]);
+  assert.deepEqual(state.repair, { revision: repair.revision, status: "queued" });
+  assert.deepEqual(repair.edits, [{ field: "project.name", value: "Example" }]);
+  assert.equal(repair.source.commit, pending.commit);
+  assert.deepEqual(stub.store.get("index/repairs.json").open, [state.id]);
+  assert.deepEqual(stub.store.get("index/inflight.json").open, []);
+  assert.deepEqual(stub.store.get("index/open.json").open, [state.id]);
+  assert.equal(state.dispatch_lease_at, undefined);
+  assert.deepEqual(stub.dispatched.map((item) => item.path), [
+    `/repos/${ENV.STATE_REPO}/actions/workflows/repairer.yml/dispatches`,
+  ]);
+});
+
+test("an early repair cannot authorize a field the exact metadata did not require", async () => {
+  const nonce = "c".repeat(64);
+  const formalization = `
+project:
+  authors: [Example Author]
+  license: MIT
+  responsible_maintainers: [Example Maintainer]
+classification:
+  arxiv: [math.LO]
+  msc2020: [03B35]
+sources:
+  - title: Original result
+    type: original-proof
+    relationship: other
+automation: {methods: [{method: manual}]}
+review: {status: self-assessed}
+`;
+  const stub = stubOAuth({
+    push: true,
+    files: {
+      [`pending/${await digest(nonce)}.json`]: {
+        ...PENDING,
+        preflight_repair: {
+          profile_version: 2,
+          edits: [{ field: "project.license", value: "Apache-2.0" }],
+        },
+      },
+      "index/repairs.json": { schema_version: 1, open: [] },
+    },
+    sourceFiles: { "formalization.yaml": formalization },
+  });
+
+  const response = await callback(nonce);
+
+  assert.equal(response.status, 409);
+  assert.match(await response.text(), /Complete every field currently required/);
+  assert.equal(
+    stub.written.some((item) => item.path.startsWith("submissions/")),
+    false,
+  );
+  assert.deepEqual(stub.dispatched, []);
 });
 
 test("an active Technical Maintainer can run a marked test without push access or rate limits", async () => {

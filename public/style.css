@@ -161,16 +161,22 @@ button[data-busy="true"]::after {
 .diagnostic p { margin: .35rem 0; }
 .diagnostic .location { font-family: var(--mono); }
 #repair-form { margin-top: 1.5rem; border-top: 1px solid var(--line); padding-top: .5rem; }
-#repair-fields .repair-field { margin: 1rem 0; padding: 0 .75rem .75rem;
+:is(#repair-fields, #preflight-repair-fields) .repair-field {
+  margin: 1rem 0; padding: 0 .75rem .75rem;
   border: 2px solid transparent; border-radius: 0; }
-#repair-fields .repair-field[data-needs-action="true"] { border-color: var(--attention); }
-#repair-fields .repair-field :is(input, textarea, select)[aria-invalid="true"] {
+:is(#repair-fields, #preflight-repair-fields) .repair-field[data-needs-action="true"] {
+  border-color: var(--attention); }
+:is(#repair-fields, #preflight-repair-fields) .repair-field :is(input, textarea, select)[aria-invalid="true"] {
   border-color: var(--attention); box-shadow: 0 0 0 1px var(--attention);
 }
 .classification-summary { grid-column: 1 / -1; min-height: 1.4em; }
-#repair-fields .repair-repeatable { margin: .75rem 0; padding: .75rem; border: 1px solid var(--line); }
-#repair-fields .repair-repeatable label { display: block; margin-top: .55rem; }
-#repair-fields .repair-repeatable label > :is(input, textarea, select) { display: block; width: 100%; margin-top: .2rem; }
+:is(#repair-fields, #preflight-repair-fields) .repair-repeatable {
+  margin: .75rem 0; padding: .75rem; border: 1px solid var(--line); }
+:is(#repair-fields, #preflight-repair-fields) .repair-repeatable label {
+  display: block; margin-top: .55rem; }
+:is(#repair-fields, #preflight-repair-fields) .repair-repeatable label > :is(input, textarea, select) {
+  display: block; width: 100%; margin-top: .2rem; }
+#preflight-repair { margin-top: 1.25rem; border-top: 1px solid var(--line); }
 button.compact { margin-top: .6rem; padding: .35rem .65rem; }
 .repair-classification { display: grid; grid-template-columns: minmax(0, 1fr) auto;
   gap: 0 .5rem; align-items: baseline; margin: .4rem 0; }

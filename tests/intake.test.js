@@ -159,9 +159,17 @@ test("the button says what it does", () => {
 test("preliminary-check copy describes the browser and post-authentication work", async () => {
   const script = await readFile(new URL("../public/intake.js", import.meta.url), "utf8");
   assert.match(form, /id="browser-preflight-heading">Preliminary checks<\/h2>/);
+  assert.match(
+    form,
+    /<input type="checkbox" id="browser-preflight-anyway">\s+I want to submit anyway, despite these preliminary checks\./,
+  );
   assert.match(script, /We've completed preliminary checks on your repository layout and metadata, and everything looks good!/);
   assert.match(script, /comparator\.textContent = "comparator"/);
   assert.match(script, /the remaining checks after you click "Authenticate"/);
+  assert.match(form, /Fix <code>formalization\.yaml<\/code> before submitting/);
+  assert.match(form, /name="preflight_repair"/);
+  assert.match(script, /Authenticate via GitHub and prepare pull request/);
+  assert.match(script, /formalizationRepairDraft/);
   assert.doesNotMatch(script, /you can still submit now/);
 });
 
@@ -443,9 +451,10 @@ test("only exact duplicate and explicit preflight review can interrupt the ordin
   // a submission, and changing any part of its identity enables the controls
   // immediately while the replacement lookup is debounced.
   assert.match(script, /browserPreflightResult\.guard/);
-  assert.match(script, /browserPreflightOverride !== fingerprint/);
+  assert.match(script, /!browserPreflightAnyway\.checked/);
   assert.match(script, /event\.preventDefault\(\)/);
   assert.match(script, /browser-preflight-anyway/);
+  assert.doesNotMatch(script, /requestSubmit/);
   assert.match(script, /import\("\/preflight\.js"\)/);
   assert.doesNotMatch(script, /from "\/preflight\.js"/);
   assert.match(script, /remainingHeader === null \? NaN/);

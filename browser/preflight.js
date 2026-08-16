@@ -1,4 +1,4 @@
-import { isMap, isSeq, parseDocument } from "yaml";
+import { isMap, isSeq, parseDocument, stringify } from "yaml";
 
 import policy from "./preflight-policy.json" with { type: "json" };
 
@@ -216,6 +216,181 @@ export function validateFormalization(text, selectedPolicy = policy) {
     }
   }
   return result;
+}
+
+function parsedFormalization(text) {
+  try {
+    const document = parseDocument(text, { merge: false, prettyErrors: false, uniqueKeys: true });
+    if (document.errors.length || containsMergeKey(document.contents)) return null;
+    const data = document.toJS({ maxAliasCount: 100 });
+    return mapping(data) === data ? data : null;
+  } catch {
+    return null;
+  }
+}
+
+function safePeople(value) {
+  if (!Array.isArray(value) || !value.length) return null;
+  const result = value.map((person) => {
+    if (nonempty(person)) return person.trim();
+    return mapping(person) === person && nonempty(person.name) ? person.name.trim() : null;
+  });
+  return result.every(Boolean) ? result : null;
+}
+
+function safeStrings(value) {
+  return Array.isArray(value) && value.length && value.every(nonempty)
+    ? value.map((item) => item.trim())
+    : null;
+}
+
+function safeSource(value, selectedPolicy) {
+  if (mapping(value) !== value || !nonempty(value.title)) return null;
+  const result = { title: value.title.trim() };
+  const authors = safePeople(value.authors ??
+    (value.author === undefined ? undefined : [value.author]));
+  if (authors) result.authors = authors;
+  for (const field of ["id", "location", "license"]) {
+    if (nonempty(value[field])) result[field] = value[field].trim();
+  }
+  if (selectedPolicy.formalization.source_types.includes(value.type)) result.type = value.type;
+  if (selectedPolicy.formalization.source_relationships.includes(value.relationship)) {
+    result.relationship = value.relationship;
+  }
+  if (selectedPolicy.formalization.source_endorsements.includes(value.author_endorsement)) {
+    result.author_endorsement = value.author_endorsement;
+  }
+  return result;
+}
+
+/** Safe, submitter-confirmed prefills for the guided metadata form. */
+export function formalizationRepairDraft(text, selectedPolicy = policy) {
+  const data = parsedFormalization(text);
+  if (!data) return { values: {}, origins: {} };
+  const values = {};
+  const origins = {};
+  const project = mapping(data.project);
+  const artifact = mapping(data.artifact);
+  for (const [field, current, legacy] of [
+    ["project.name", project.name, artifact.name],
+    ["project.license", project.license, artifact.license],
+  ]) {
+    const value = nonempty(current) ? current.trim() : nonempty(legacy) ? legacy.trim() : null;
+    if (value) {
+      values[field] = value;
+      origins[field] = nonempty(current) ? field : `artifact.${field.split(".").at(-1)}`;
+    }
+  }
+  for (const [field, current, legacy, legacyOrigin] of [
+    ["project.authors", project.authors, artifact.authors, "artifact.authors"],
+    ["project.responsible_maintainers", project.responsible_maintainers,
+      project.responsible_maintainer, "project.responsible_maintainer"],
+  ]) {
+    const currentPeople = safePeople(current);
+    const legacyPeople = safePeople(Array.isArray(legacy) ? legacy : legacy === undefined ? legacy : [legacy]);
+    if (currentPeople || legacyPeople) {
+      values[field] = currentPeople ?? legacyPeople;
+      origins[field] = currentPeople ? field : legacyOrigin;
+    }
+  }
+  const classification = mapping(data.classification);
+  for (const name of ["arxiv", "msc2020"]) {
+    const items = safeStrings(classification[name]);
+    if (items) {
+      values[`classification.${name}`] = items;
+      origins[`classification.${name}`] = `classification.${name}`;
+    }
+  }
+  const rawSources = Array.isArray(data.sources) && data.sources.length
+    ? data.sources
+    : mapping(data.source) === data.source ? [data.source] : [];
+  const sources = rawSources.map((item) => safeSource(item, selectedPolicy)).filter(Boolean);
+  if (sources.length) {
+    values.sources = sources;
+    origins.sources = Array.isArray(data.sources) && data.sources.length ? "sources" : "source";
+  }
+  const automation = mapping(data.automation);
+  const rawMethods = Array.isArray(automation.methods) && automation.methods.length
+    ? automation.methods
+    : nonempty(automation.method) ? [automation] : [];
+  const methods = rawMethods.flatMap((raw) => {
+    const item = mapping(raw);
+    if (!nonempty(item.method)) return [];
+    const method = { method: item.method.trim() };
+    if (nonempty(item.framework)) method.framework = item.framework.trim();
+    const models = safeStrings(item.models);
+    if (models) method.models = models;
+    return [method];
+  });
+  if (methods.length) {
+    values["automation.methods"] = methods;
+    origins["automation.methods"] = Array.isArray(automation.methods) && automation.methods.length
+      ? "automation.methods" : "automation.method";
+  }
+  if (nonempty(mapping(data.review).status)) {
+    values["review.status"] = data.review.status.trim();
+    origins["review.status"] = "review.status";
+  }
+  const substantive = mapping(mapping(data.repository).substantive_formalization);
+  if (nonempty(substantive.id) && /^[0-9a-f]{40}$/.test(substantive.revision ?? "")) {
+    values["repository.substantive_formalization"] = {
+      id: substantive.id.trim(), revision: substantive.revision,
+    };
+    origins["repository.substantive_formalization"] =
+      "repository.substantive_formalization";
+  }
+  return { values, origins };
+}
+
+/** Check that a complete guided edit set resolves every portable metadata issue. */
+export function canApplyFormalizationRepair(text, fields) {
+  const data = parsedFormalization(text);
+  if (!data || !Array.isArray(fields) || !fields.length) return false;
+  for (const field of fields) {
+    if (!nonempty(field)) return false;
+    let parent = data;
+    for (const part of field.split(".").slice(0, -1)) {
+      if (parent[part] === undefined || parent[part] === null) {
+        parent = {};
+      } else if (mapping(parent[part]) === parent[part]) {
+        parent = parent[part];
+      } else {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+export function validateFormalizationRepair(text, edits, selectedPolicy = policy) {
+  const data = parsedFormalization(text);
+  if (!data || !Array.isArray(edits) ||
+      !canApplyFormalizationRepair(text, edits.map((item) => item?.field))) {
+    return [diagnostic("formalization.invalid_yaml", "formalization.yaml cannot be repaired safely.")];
+  }
+  const candidate = structuredClone(data);
+  for (const edit of edits) {
+    if (!nonempty(edit?.field)) continue;
+    const parts = edit.field.split(".");
+    let parent = candidate;
+    for (const part of parts.slice(0, -1)) {
+      if (parent[part] === undefined || parent[part] === null) parent[part] = {};
+      parent = parent[part];
+    }
+    parent[parts.at(-1)] = structuredClone(edit.value);
+  }
+  return validateFormalization(stringify(candidate), selectedPolicy);
+}
+
+/** Return guided fields only when they cover every blocking preliminary finding. */
+export function guidedFormalizationDiagnostics(diagnostics) {
+  if (!Array.isArray(diagnostics)) return [];
+  const blocking = diagnostics.filter((item) => !item?.advisory);
+  if (!blocking.length || blocking.some((item) =>
+    item?.code !== "formalization.invalid_field" || !nonempty(item.field))) {
+    return [];
+  }
+  return [...new Map(blocking.map((item) => [item.field, item])).values()];
 }
 
 function jsonTokens(text) {
