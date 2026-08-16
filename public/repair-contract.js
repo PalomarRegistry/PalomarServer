@@ -2,7 +2,6 @@ import {
   AUTOMATION_METHODS,
   SOURCE_ENDORSEMENTS,
   SOURCE_RELATIONSHIPS,
-  SOURCE_TYPES,
 } from "./formalization-profile.js";
 
 export const REPAIR_FIELDS_V1 = new Map([
@@ -72,8 +71,7 @@ function sourceList(value) {
       if (source[field] !== undefined) item[field] = line(source[field], `sources[${index}].${field}`, maximum);
     }
     if (source.type) {
-      if (!SOURCE_TYPES.includes(source.type)) throw new TypeError(`sources[${index}].type is unsupported`);
-      item.type = source.type;
+      item.type = line(source.type, `sources[${index}].type`, 200);
     }
     if (!SOURCE_RELATIONSHIPS.includes(source.relationship)) {
       throw new TypeError(`sources[${index}].relationship is required`);

@@ -129,7 +129,6 @@ export function validateFormalization(text, selectedPolicy = policy) {
   }
 
   const sources = data.sources;
-  const sourceTypes = new Set(selectedPolicy.formalization.source_types);
   const relationships = new Set(selectedPolicy.formalization.source_relationships);
   const endorsements = new Set(selectedPolicy.formalization.source_endorsements);
   addField(result, Array.isArray(sources) && sources.length > 0, "sources", "must be a nonempty list.");
@@ -148,9 +147,9 @@ export function validateFormalization(text, selectedPolicy = policy) {
       if (source.type !== undefined) {
         addField(
           result,
-          sourceTypes.has(source.type),
+          source.type === "" || (nonempty(source.type) && source.type.length <= 200),
           "sources",
-          `entry ${index + 1} has an unsupported type.`,
+          `entry ${index + 1} type must be at most 200 characters when supplied.`,
         );
       }
       if (source.author_endorsement !== undefined) {
