@@ -154,8 +154,9 @@ export function decisionCopy(
     return {
       heading: "This review did not pass",
       intro:
-        "Registration is not offered. Update the repository and submit the corrected commit, " +
-        "or withdraw to close this submission.",
+        "Registration is not offered. Update the repository and submit the corrected commit " +
+        "as a new submission. Leave the existing Palomar ID blank unless this result is " +
+        "already in the public registry, or withdraw to close this submission.",
     };
   }
   if (status === "review-ready") {

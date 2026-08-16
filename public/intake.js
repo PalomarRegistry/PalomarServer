@@ -819,7 +819,7 @@ async function inspectRegistrationTarget() {
   manualRegistration({ hidden: false });
   return registrationState(
     "new",
-    "This looks like a new submission. If you are trying to replace an existing submission, expand this box.",
+    "This looks like a new submission. If this is a new version of a result already in the Palomar Registry, expand this box.",
   );
 }
 

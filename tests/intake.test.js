@@ -428,7 +428,9 @@ test("the registration target appears only for a complete source and states its 
   assert.match(script, /different commit to create a new version with the same Palomar identifier/);
   assert.match(script, /different Comparator configuration path to register a different theorem/);
   assert.match(script, /This submission will create a new version with the same Palomar identifier/);
-  assert.match(script, /This looks like a new submission\. If you are trying to replace an existing submission, expand this box\./);
+  assert.match(form, /Leave this blank when retrying an unsuccessful submission/);
+  assert.match(form, /only to register a new version of a result already in the Palomar Registry/);
+  assert.match(script, /This looks like a new submission\. If this is a new version of a result already in the Palomar Registry, expand this box\./);
   assert.match(script, /manualRegistration\(\{ hidden: false, open: true \}\)/);
   assert.match(script, /mine === registrationToken/);
   assert.doesNotMatch(script, /setCustomValidity/);

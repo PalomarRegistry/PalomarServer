@@ -1153,6 +1153,8 @@ test("every status gets exactly the review and decision controls the server perm
   });
   assert.match(decisionCopy("verifying").intro, /still working/);
   assert.match(decisionCopy("review-ready", { reviewShown: true }).heading, /did not pass/);
+  assert.match(decisionCopy("review-ready", { reviewShown: true }).intro, /as a new submission/);
+  assert.match(decisionCopy("review-ready", { reviewShown: true }).intro, /existing Palomar ID blank/);
   assert.match(decisionCopy("review-ready", { reviewNeedsRerun: true }).heading, /another review/);
   assert.match(decisionCopy("review-ready").intro, /keep trying/);
   assert.match(decisionCopy("review-failed").intro, /close this submission/);
