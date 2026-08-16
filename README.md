@@ -383,7 +383,18 @@ and affected status transitions unavailable until the reviewer or an operator
 restores it.
 
 `index/repairs.json` is a separate durable outbox for submitter-authorized
-metadata repairs. `POST /api/repair` requires the submission capability, the
+metadata repairs. When the browser's current-policy preliminary check finds
+only field-level `formalization.yaml` problems, the intake page renders the
+same complete guided editor before authentication. Its bounded edit payload is
+stored in the private pending intake. After OAuth proves write access, the
+Worker re-reads the file at the exact commit, repeats the portable metadata
+validation, checks that the edits cover every current field problem and produce
+valid portable metadata, then atomically creates a `changes-required`
+submission and queued repair. It dispatches the repair worker instead of the
+full verification workflow; that worker still runs authoritative preparation
+against the generated commit before opening a pull request.
+
+The later `POST /api/repair` path requires the submission capability, the
 digest of the current failure, a `changes-required` record, and fields explicitly
 marked repairable in that failure. It atomically writes the request, its queue
 entry, and the record marker. Profile 2 covers every mechanically required
@@ -395,10 +406,10 @@ roles, and review claims are never inferred. Malformed YAML, non-mapping roots,
 aliases, unsafe paths, and mixed unsupported failures remain manual-only.
 
 `index/rate/<digest>.json` slows down a submitter who keeps starting and never
-finishes. Starting is the expensive act: it dispatches a verification run that
-takes a quarter of an hour of somebody's runners whether or not anything comes
-of it. So the interval is sixty seconds to begin with, doubles every time a
-submission is started, and is put back to that floor only by a completed
+finishes. Starting work is the expensive act: it dispatches either verification
+or an authenticated repair, both of which consume somebody's runners whether or
+not anything comes of them. So the interval is sixty seconds to begin with,
+doubles every time work is started, and is put back to that floor only by a completed
 registration or by one of the first two preparation failures that asks for repository
 changes. Later metadata failures keep the accumulated interval, so the
 correction concession cannot turn repeated preparation work into an unbounded

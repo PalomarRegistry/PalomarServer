@@ -6,9 +6,12 @@ import { gzipSync } from "node:zlib";
 import {
   BROWSER_PREFLIGHT_POLICY,
   duplicateJsonKeys,
+  formalizationRepairDraft,
+  guidedFormalizationDiagnostics,
   inspectTree,
   validateComparator,
   validateFormalization,
+  validateFormalizationRepair,
   validateToolchain,
 } from "../browser/preflight.js";
 
@@ -46,6 +49,43 @@ test("YAML duplicate and merge keys are deterministic failures", () => {
       "formalization.invalid_yaml",
     ]);
   }
+});
+
+test("portable metadata findings drive safe guided prefills and a complete repair", () => {
+  const incomplete = VALID_FORMALIZATION
+    .replace("  name: Example\n", "")
+    .replace("  authors: [Example Author]\n", "") + `
+artifact:
+  name: Legacy example
+  authors: [Legacy Author]
+`;
+  assert.deepEqual(
+    validateFormalization(incomplete).map((item) => item.field),
+    ["project.name", "project.authors"],
+  );
+  const draft = formalizationRepairDraft(incomplete);
+  assert.equal(draft.values["project.name"], "Legacy example");
+  assert.deepEqual(draft.values["project.authors"], ["Legacy Author"]);
+  assert.deepEqual(validateFormalizationRepair(incomplete, [
+    { field: "project.name", value: "Corrected example" },
+    { field: "project.authors", value: ["Correct Author"] },
+  ]), []);
+});
+
+test("guided repair is offered only when it covers every blocking finding", () => {
+  const metadata = {
+    code: "formalization.invalid_field",
+    field: "project.name",
+    summary: "project.name is required",
+  };
+  assert.deepEqual(guidedFormalizationDiagnostics([
+    metadata,
+    { code: "license.missing", summary: "No license file", advisory: true },
+  ]), [metadata]);
+  assert.deepEqual(guidedFormalizationDiagnostics([
+    metadata,
+    { code: "comparator.invalid_json", summary: "Invalid Comparator configuration" },
+  ]), []);
 });
 
 test("the JSON scanner finds duplicate keys only within their object", () => {

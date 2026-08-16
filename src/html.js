@@ -242,10 +242,24 @@ export function intakeForm(
         <p id="browser-preflight-summary" tabindex="-1"></p>
         <ul id="browser-preflight-diagnostics" class="problems"></ul>
         <p id="browser-preflight-deferred" class="hint"></p>
-        <button type="button" class="secondary" id="browser-preflight-anyway" hidden>
-          Submit anyway
-        </button>
+        <section id="preflight-repair" hidden>
+          <h3>Fix <code>formalization.yaml</code> before submitting</h3>
+          <p>
+            Palomar will validate these values after GitHub authentication and
+            prepare a pull request from its repair account. It will never push
+            directly to your repository.
+          </p>
+          <div id="preflight-repair-fields"></div>
+          <p class="hint" id="preflight-repair-status" role="status"></p>
+        </section>
+        <label class="choice" id="browser-preflight-confirmation" hidden>
+          <input type="checkbox" id="browser-preflight-anyway">
+          I want to submit anyway, despite these preliminary checks.
+        </label>
       </section>
+
+      <input type="hidden" id="preflight-repair-request" name="preflight_repair"
+             value="${escape(values.preflight_repair)}">
 
       <button type="submit" id="submission-submit">Authenticate via GitHub and submit</button>
       <p class="hint">

@@ -69,6 +69,42 @@ export async function repository(token, name) {
   return call(token, `/repos/${name}`);
 }
 
+/** Read one bounded UTF-8 file at an exact public repository commit. */
+export async function repositoryTextFile(token, repository, commit, path, maximumBytes) {
+  const encodedPath = path.split("/").map(encodeURIComponent).join("/");
+  const query = new URLSearchParams({ ref: commit });
+  const data = await call(token, `/repos/${repository}/contents/${encodedPath}?${query}`);
+  if (data === null) return null;
+  if (
+    data.type !== "file" || data.encoding !== "base64" ||
+    typeof data.content !== "string" || !Number.isSafeInteger(data.size)
+  ) {
+    throw new GitHubError(422, `${path} was not an inline regular file`);
+  }
+  if (data.size > maximumBytes) {
+    throw new GitHubError(422, `${path} exceeded its ${maximumBytes}-byte limit`);
+  }
+  let binary;
+  try {
+    binary = atob(data.content.replace(/\s/g, ""));
+  } catch {
+    throw new GitHubError(422, `${path} did not contain valid base64`);
+  }
+  if (binary.length !== data.size) {
+    throw new GitHubError(422, `${path} did not match its declared size`);
+  }
+  if (binary.length > maximumBytes) {
+    throw new GitHubError(422, `${path} exceeded its ${maximumBytes}-byte limit`);
+  }
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(
+      Uint8Array.from(binary, (character) => character.charCodeAt(0)),
+    );
+  } catch {
+    throw new GitHubError(422, `${path} was not valid UTF-8`);
+  }
+}
+
 /**
  * Read a JSON file from the state repository.
  *

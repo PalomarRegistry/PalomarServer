@@ -14,6 +14,7 @@ import {
 } from "./submission.js";
 
 const RELATIONSHIPS = new Set(["maintainer", "approved", "technical-test"]);
+export const MAX_PREFLIGHT_REPAIR_BYTES = 64_000;
 // The verifier speaks the long form; the form and the record speak the short.
 const RELATIONSHIP_LABELS = {
   maintainer: "I am a responsible author or maintainer",
@@ -54,6 +55,9 @@ export function validateIntake(fields) {
   const context = String(fields.get("context") ?? "").trim().slice(0, 4000);
   const relationship = String(fields.get("authorization_relationship") ?? "").trim();
   const evidence = String(fields.get("authorization_evidence") ?? "").trim().slice(0, 4000);
+  const rawPreflightRepair = String(fields.get("preflight_repair") ?? "");
+  const preflightRepair = new TextEncoder().encode(rawPreflightRepair).length <= MAX_PREFLIGHT_REPAIR_BYTES
+    ? rawPreflightRepair : "";
 
   const projectPath = repositoryPath(fields, "project_path");
   const configPath = repositoryPath(fields, "comparator_config_path");
@@ -69,6 +73,7 @@ export function validateIntake(fields) {
     project_path: String(fields.get("project_path") ?? ""),
     comparator_config_path: String(fields.get("comparator_config_path") ?? ""),
     formalization_metadata_path: String(fields.get("formalization_metadata_path") ?? ""),
+    ...(preflightRepair ? { preflight_repair: preflightRepair } : {}),
   };
 
   const problems = [];

@@ -23,6 +23,7 @@ import {
   listState,
   readState,
   repository as fetchRepository,
+  repositoryTextFile,
   resolveCommit,
   writeState,
   transactState,
@@ -36,7 +37,7 @@ import {
   rateRecord,
   resetRateRecord,
 } from "./admission-contract.js";
-import { validateIntake } from "./intake-contract.js";
+import { MAX_PREFLIGHT_REPAIR_BYTES, validateIntake } from "./intake-contract.js";
 import {
   bearerToken,
   githubIdentityCookie,
@@ -60,6 +61,13 @@ import {
   repairOpen,
 } from "./state-contract.js";
 import { normalizedQueuedRepairEdits } from "../public/repair-contract.js";
+import {
+  BROWSER_PREFLIGHT_POLICY,
+  canApplyFormalizationRepair,
+  formalizationRepairDraft,
+  validateFormalization,
+  validateFormalizationRepair,
+} from "../browser/preflight.js";
 import arxivCategories from "../public/taxonomies/arxiv-categories.json" with { type: "json" };
 import msc2020Codes from "../public/taxonomies/msc2020-codes.json" with { type: "json" };
 
@@ -146,6 +154,85 @@ function formalizationPath(record) {
   if (explicit) return explicit;
   const project = record.requested_paths?.project_path;
   return project ? `${project}/formalization.yaml` : "formalization.yaml";
+}
+
+async function authoritativeEarlyRepair(env, pending, proof) {
+  const requested = pending.preflight_repair;
+  if (!requested) return null;
+  let edits;
+  try {
+    if (requested.profile_version !== BROWSER_PREFLIGHT_POLICY.formalization_profile_version) {
+      throw new TypeError("the metadata profile changed");
+    }
+    edits = normalizedQueuedRepairEdits(
+      requested.edits,
+      requested.profile_version,
+      REPAIR_TAXONOMIES,
+    );
+  } catch {
+    return { problem: "The saved preliminary metadata repair is malformed or obsolete." };
+  }
+  if (pending.authorization_relationship === "technical-test" || proof?.method === "technical-team-test") {
+    return { problem: "A test submission cannot ask Palomar to open a repair pull request." };
+  }
+  const path = formalizationPath(pending);
+  if (path.split("/").at(-1) !== "formalization.yaml") {
+    return { problem: "The guided repair target must be named formalization.yaml." };
+  }
+  const text = await repositoryTextFile(
+    env.GITHUB_TOKEN,
+    pending.repository,
+    pending.commit,
+    path,
+    BROWSER_PREFLIGHT_POLICY.limits.formalization_bytes,
+  );
+  if (text === null) {
+    return { problem: `${path} no longer exists at the commit selected for repair.` };
+  }
+  const diagnostics = validateFormalization(text, BROWSER_PREFLIGHT_POLICY);
+  if (!diagnostics.length || diagnostics.some((item) =>
+    item.code !== "formalization.invalid_field" || !item.field)) {
+    return {
+      problem: diagnostics.length
+        ? "formalization.yaml cannot be repaired safely with the guided fields."
+        : "formalization.yaml no longer has the problems this repair request described.",
+    };
+  }
+  const required = [...new Set(diagnostics.map((item) => item.field))].sort();
+  const supplied = edits.map((item) => item.field).sort();
+  if (JSON.stringify(required) !== JSON.stringify(supplied)) {
+    return { problem: "Complete every field currently required by formalization.yaml." };
+  }
+  if (!canApplyFormalizationRepair(text, required)) {
+    return { problem: "formalization.yaml has a structure that must be corrected manually first." };
+  }
+  if (validateFormalizationRepair(text, edits, BROWSER_PREFLIGHT_POLICY).length) {
+    return { problem: "Those values do not yet produce valid formalization.yaml metadata." };
+  }
+  const durableDiagnostics = [...new Map(
+    diagnostics.map((item) => [item.field, item]),
+  ).values()].map((item) => ({
+    code: item.code,
+    stage: "formalization",
+    owner: "submitter",
+    summary: item.summary,
+    explanation: item.summary,
+    next_action: "Complete the guided metadata form and let Palomar prepare a pull request.",
+    retryable: false,
+    repairable: true,
+    field: item.field,
+    location: { path },
+  }));
+  return {
+    edits,
+    failure: {
+      schema_version: 1,
+      mode: "preflight",
+      profile_version: BROWSER_PREFLIGHT_POLICY.formalization_profile_version,
+      diagnostics: durableDiagnostics,
+      repair_draft: formalizationRepairDraft(text, BROWSER_PREFLIGHT_POLICY),
+    },
+  };
 }
 
 /** A redundant marker set: losing any one field must not make a test registrable. */
@@ -393,6 +480,34 @@ async function beginSubmission(request, env, { machine = false } = {}) {
 
   if (problems.length) return rejected(...problems);
 
+  let preflightRepair = null;
+  const rawPreflightRepair = machine ? "" : String(form.get("preflight_repair") ?? "");
+  if (rawPreflightRepair) {
+    if (new TextEncoder().encode(rawPreflightRepair).length > MAX_PREFLIGHT_REPAIR_BYTES) {
+      return rejected("The preliminary metadata repair is too large.");
+    }
+    try {
+      const parsed = JSON.parse(rawPreflightRepair);
+      if (
+        !parsed || typeof parsed !== "object" || Array.isArray(parsed) ||
+        parsed.profile_version !== BROWSER_PREFLIGHT_POLICY.formalization_profile_version ||
+        Object.keys(parsed).some((key) => !["profile_version", "edits"].includes(key))
+      ) throw new TypeError("the preliminary metadata repair has an unsupported format");
+      preflightRepair = {
+        profile_version: parsed.profile_version,
+        edits: normalizedQueuedRepairEdits(
+          parsed.edits,
+          parsed.profile_version,
+          REPAIR_TAXONOMIES,
+        ),
+      };
+    } catch (error) {
+      return rejected(error instanceof Error
+        ? `The preliminary metadata repair could not be accepted: ${error.message}.`
+        : "The preliminary metadata repair could not be accepted.");
+    }
+  }
+
   const {
     repository: repositoryName,
     commit,
@@ -403,6 +518,10 @@ async function beginSubmission(request, env, { machine = false } = {}) {
     authorization_evidence: evidence,
   } = submission;
   const technicalTest = relationship === "technical-test";
+
+  if (preflightRepair && technicalTest) {
+    return rejected("A test submission cannot ask Palomar to open a repair pull request.");
+  }
 
   if (machine && technicalTest) {
     return rejected(
@@ -487,6 +606,7 @@ async function beginSubmission(request, env, { machine = false } = {}) {
     requested_paths: requestedPaths,
     authorization_relationship: relationship,
     authorization_evidence: evidence,
+    ...(preflightRepair ? { preflight_repair: preflightRepair } : {}),
     created_at: recordedAt(),
   };
   try {
@@ -1000,6 +1120,16 @@ async function admitSubmission(
     preserveOnRefusal = false,
   },
 ) {
+  const earlyRepair = await authoritativeEarlyRepair(env, pending, proof);
+  if (earlyRepair?.problem) {
+    return {
+      refused: true,
+      retryable: false,
+      status: 409,
+      title: "That metadata repair could not be prepared",
+      detail: [earlyRepair.problem, "Return to the submission form and check the current file."],
+    };
+  }
   const id = newSubmissionId();
   const token = newAccessToken();
   const createdAtMs = Date.now();
@@ -1021,6 +1151,7 @@ async function admitSubmission(
     ? await principalPath(env, proof.principal.id)
     : null;
   const recordPath = statePath(id, "state.json");
+  const repairPath = earlyRepair ? statePath(id, "repair.json") : null;
   const tokenPath = `index/tokens/${tokenSha256}.json`;
   const replacedRecordPath = replaceId ? statePath(replaceId, "state.json") : null;
   const paths = [
@@ -1029,11 +1160,12 @@ async function admitSubmission(
     OPEN_INDEX_PATH,
     recordPath,
     tokenPath,
+    ...(earlyRepair ? [repairPath, REPAIR_INDEX_PATH] : []),
     ...(principalIndexPath ? [principalIndexPath] : []),
     ...(replacedRecordPath ? [replacedRecordPath] : []),
     ...(rate ? [rate] : []),
   ];
-  const record = {
+  const baseRecord = {
     ...newRecord({
       id,
       repositoryName: pending.repository,
@@ -1054,6 +1186,37 @@ async function admitSubmission(
     push_proof: proof,
     created_at: createdAt,
     token_sha256: tokenSha256,
+  };
+  const failureDigest = earlyRepair
+    ? await digest(JSON.stringify(earlyRepair.failure))
+    : null;
+  const repairRevision = earlyRepair
+    ? (await digest(JSON.stringify({ id, failureDigest, edits: earlyRepair.edits }))).slice(0, 16)
+    : null;
+  const repair = earlyRepair ? {
+    schema_version: BROWSER_PREFLIGHT_POLICY.formalization_profile_version,
+    submission_id: id,
+    revision: repairRevision,
+    status: "queued",
+    requested_at: createdAt,
+    source: {
+      repository: pending.repository,
+      commit: pending.commit,
+      formalization_path: formalizationPath(pending),
+    },
+    failure_digest: failureDigest,
+    edits: earlyRepair.edits,
+  } : null;
+  const record = earlyRepair ? {
+    ...baseRecord,
+    status: "changes-required",
+    failure: earlyRepair.failure,
+    repair: { revision: repairRevision, status: "queued" },
+    events: [{ at: createdAt, status: "changes-required",
+      note: "Preliminary metadata repair queued before full verification",
+    }],
+  } : {
+    ...baseRecord,
     // A durable outbox lease. This request owns the first dispatch; if it dies
     // before or after the ambiguous workflow_dispatch response, reconciliation
     // searches for the run and only claims another attempt after the lease.
@@ -1171,18 +1334,22 @@ async function admitSubmission(
           result: { ...admission, retryable: preserveOnRefusal || admission.retryable },
         };
       }
-      if (files[recordPath]?.sha !== null || files[tokenPath]?.sha !== null) {
+      if (
+        files[recordPath]?.sha !== null || files[tokenPath]?.sha !== null ||
+        (repairPath && files[repairPath]?.sha !== null)
+      ) {
         throw new StateContractError("a generated submission identity already exists");
       }
-      const nextInflight = [
-        ...availableInflight,
-        { id, owner, submitter, at: record.created_at },
-      ];
+      const nextInflight = earlyRepair
+        ? availableInflight
+        : [...availableInflight, { id, owner, submitter, at: record.created_at }];
       inflightOpen({ open: nextInflight });
       const nextReviewer = reviewerIds.includes(id)
         ? reviewer.value
         : { ...reviewer.value, open: [...reviewerIds, id] };
       reviewerOpen(nextReviewer);
+      const repairQueue = earlyRepair ? files[REPAIR_INDEX_PATH] : null;
+      const repairs = earlyRepair ? repairOpen(repairQueue?.value) : null;
       const changes = [
         { path: pendingPath, delete: true },
         ...(replaced ? [{ path: replacedRecordPath, value: replaced }] : []),
@@ -1190,6 +1357,10 @@ async function admitSubmission(
         { path: INFLIGHT_INDEX_PATH, value: { open: nextInflight } },
         { path: OPEN_INDEX_PATH, value: nextReviewer },
         { path: tokenPath, value: { id } },
+        ...(earlyRepair ? [
+          { path: repairPath, value: repair },
+          { path: REPAIR_INDEX_PATH, value: { ...repairQueue.value, open: [...repairs, id] } },
+        ] : []),
       ];
       if (principalIndexPath) {
         const current = files[principalIndexPath];
@@ -1227,6 +1398,10 @@ async function admitSubmission(
     throw error;
   }
   if (result.refused) return result;
+  if (earlyRepair) {
+    await dispatchRepairer(env).catch(() => false);
+    return { refused: false, id, token };
+  }
   // `verifying` with no pinned run is the durable dispatch outbox. A failed or
   // ambiguous request does not undo admission: the scheduled lifecycle first
   // searches for a run, then safely retries one that still has none.

@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   authorizationRelationshipLabel,
+  MAX_PREFLIGHT_REPAIR_BYTES,
   validateIntake,
 } from "../src/intake-contract.js";
 
@@ -95,6 +96,20 @@ test("optional prose is trimmed, bounded, and represented consistently", () => {
   assert.equal(result.submission.requested_paths.formalization_metadata_path, null);
   assert.equal(result.values.context, "c".repeat(4000));
   assert.equal(result.values.authorization_evidence, "e".repeat(4000));
+});
+
+test("a preliminary repair survives redisplay only within its private payload bound", () => {
+  const payload = JSON.stringify({ profile_version: 2, edits: [] });
+  assert.equal(
+    validateIntake(fields({ preflight_repair: payload })).values.preflight_repair,
+    payload,
+  );
+  assert.equal(
+    Object.hasOwn(validateIntake(fields({
+      preflight_repair: "x".repeat(MAX_PREFLIGHT_REPAIR_BYTES + 1),
+    })).values, "preflight_repair"),
+    false,
+  );
 });
 
 test("repository paths reject every non-relative spelling without rewriting", () => {
