@@ -93,14 +93,15 @@ test("the intake repair form hides a classification add control at its limit", a
   assert.match(form, /onRowsChanged\(\);\s+validate\(\)/);
 });
 
-test("guided prefills preserve unsupported structured choices for targeted correction", async () => {
-  const invalid = VALID_FORMALIZATION
+test("free-form source types pass while unsupported enumerated choices remain targeted", async () => {
+  const metadata = VALID_FORMALIZATION
     .replace("    type: original-proof", "    type: article")
+    .replace("    relationship: other", "    relationship: formalizes")
     .replace("    - method: manual", "    - method: robot");
-  const diagnostics = validateFormalization(invalid);
-  assert.ok(diagnostics.some((item) => item.summary.includes("unsupported type")));
+  const diagnostics = validateFormalization(metadata);
+  assert.ok(!diagnostics.some((item) => item.summary.includes("type")));
   assert.ok(diagnostics.some((item) => item.summary.includes("unsupported method")));
-  const draft = formalizationRepairDraft(invalid);
+  const draft = formalizationRepairDraft(metadata);
   assert.equal(draft.values.sources[0].type, "article");
   assert.equal(draft.values["automation.methods"][0].method, "robot");
 
@@ -110,7 +111,7 @@ test("guided prefills preserve unsupported structured choices for targeted corre
   );
   assert.match(form, /Unsupported: \$\{selected\}/);
   assert.match(form, /control\.dataset\.originallyInvalid === "true"/);
-  assert.match(form, /Choose a supported source type or Not specified/);
+  assert.match(form, /article, paper, book, formalization/);
 });
 
 test("guided repair is offered only when it covers every blocking finding", () => {

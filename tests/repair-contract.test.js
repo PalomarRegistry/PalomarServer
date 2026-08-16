@@ -12,7 +12,7 @@ test("profile two accepts the complete structured metadata payload", () => {
     { field: "project.authors", value: ["Ada Lovelace"] },
     { field: "project.responsible_maintainers", value: ["Ada Lovelace"] },
     { field: "sources", value: [{
-      title: "Source theorem", type: "paper", relationship: "formalizes",
+      title: "Source theorem", type: "article", relationship: "formalizes",
       authors: ["Emmy Noether"],
     }] },
     { field: "automation.methods", value: [{ method: "agent", models: ["gpt-5"] }] },
@@ -22,6 +22,22 @@ test("profile two accepts the complete structured metadata payload", () => {
     "project.responsible_maintainers", "sources",
   ]);
   assert.equal(edits.find((edit) => edit.field === "project.name").value, "Example");
+  assert.equal(edits.find((edit) => edit.field === "sources").value[0].type, "article");
+});
+
+test("source types are bounded free text", () => {
+  for (const type of ["article", "formalization", "web-discussion", "conversation"]) {
+    const edits = normalizedRepairEdits([{ field: "sources", value: [{
+      title: "Source theorem", type, relationship: "formalizes",
+    }] }], 2);
+    assert.equal(edits[0].value[0].type, type);
+  }
+  assert.throws(
+    () => normalizedRepairEdits([{ field: "sources", value: [{
+      title: "Source theorem", type: "x".repeat(201), relationship: "formalizes",
+    }] }], 2),
+    /200/,
+  );
 });
 
 test("profile two rejects source claims that cannot pass provenance", () => {

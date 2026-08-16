@@ -7,7 +7,6 @@ import {
   safeDraft,
   SOURCE_ENDORSEMENTS,
   SOURCE_RELATIONSHIPS,
-  SOURCE_TYPES,
 } from "./formalization-profile.js";
 import { normalizedRepairEdits } from "./repair-contract.js";
 import { canonicalClassification, classificationProblem, taxonomyIndex } from "./repair-form-contract.js";
@@ -46,6 +45,14 @@ function textControl(name, value = "", { required = false, placeholder = "" } = 
   input.required = required;
   input.maxLength = 2048;
   input.placeholder = placeholder;
+  return input;
+}
+
+function sourceTypeControl(value = "") {
+  const input = textControl("type", value, {
+    placeholder: "article, paper, book, formalization, …",
+  });
+  input.maxLength = 200;
   return input;
 }
 
@@ -220,7 +227,7 @@ export function createPreflightRepairForm({ container, fields, status }) {
     for (const [labelText, control] of [
       ["Title", title],
       ["Authors", authors],
-      ["Type", selectControl("type", SOURCE_TYPES, value.type)],
+      ["Type", sourceTypeControl(value.type)],
       ["Relationship", relationship],
       ["Identifier", textControl("id", value.id, { placeholder: "DOI, arXiv id, URL, or citation" })],
       ["Location", textControl("location", value.location)],
@@ -429,9 +436,6 @@ export function createPreflightRepairForm({ container, fields, status }) {
           } else if (control.dataset.part === "relationship" &&
               !SOURCE_RELATIONSHIPS.includes(control.value)) {
             message = "Choose a supported source relationship.";
-          } else if (control.dataset.part === "type" && control.value &&
-              !SOURCE_TYPES.includes(control.value)) {
-            message = "Choose a supported source type or Not specified.";
           } else if (control.dataset.part === "author_endorsement" && control.value &&
               !SOURCE_ENDORSEMENTS.includes(control.value)) {
             message = "Choose a supported source-author response or Not specified.";

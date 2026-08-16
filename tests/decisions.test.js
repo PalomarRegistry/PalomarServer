@@ -1318,7 +1318,7 @@ test("guided metadata repair renders structured repeatable fields and safe prefi
   assert.match(script, /classification-summary/);
   assert.match(script, /Unsupported: \$\{selected\}/);
   assert.match(script, /control\.dataset\.originallyInvalid === "true"/);
-  assert.match(script, /Choose a supported source type or Not specified/);
+  assert.match(script, /article, paper, book, formalization/);
   assert.match(script, /add\.hidden = !canAddClassification\(field, rows\.children\.length\)/);
   assert.match(script, /validateRepairForm/);
   assert.match(script, /dataset\.needsAction/);

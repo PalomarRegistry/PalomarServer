@@ -10,7 +10,6 @@ import {
   safeDraft,
   SOURCE_ENDORSEMENTS,
   SOURCE_RELATIONSHIPS,
-  SOURCE_TYPES,
 } from "/formalization-profile.js";
 import { normalizedRepairEdits } from "/repair-contract.js";
 import {
@@ -387,6 +386,14 @@ function textControl(name, value = "", { required = false, placeholder = "" } = 
   return input;
 }
 
+function sourceTypeControl(value = "") {
+  const input = textControl("type", value, {
+    placeholder: "article, paper, book, formalization, …",
+  });
+  input.maxLength = 200;
+  return input;
+}
+
 const taxonomies = new Map();
 
 function taxonomy(field) {
@@ -517,7 +524,7 @@ function sourceRow(value = {}, prefilled = false) {
       input.value = (value.authors ?? []).join("\n");
       return input;
     })()],
-    ["Type", selectControl("type", SOURCE_TYPES, value.type)],
+    ["Type", sourceTypeControl(value.type)],
     ["Relationship", relationship],
     ["Identifier", textControl("id", value.id, { placeholder: "DOI, arXiv id, URL, or citation" })],
     ["Location", textControl("location", value.location)],
@@ -803,9 +810,6 @@ function validateRepairField(wrapper) {
         } else if (control.dataset.part === "relationship" &&
             !SOURCE_RELATIONSHIPS.includes(control.value)) {
           message = "Choose a supported source relationship.";
-        } else if (control.dataset.part === "type" && control.value &&
-            !SOURCE_TYPES.includes(control.value)) {
-          message = "Choose a supported source type or Not specified.";
         } else if (control.dataset.part === "author_endorsement" && control.value &&
             !SOURCE_ENDORSEMENTS.includes(control.value)) {
           message = "Choose a supported source-author response or Not specified.";
