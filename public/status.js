@@ -1,6 +1,8 @@
 import { SETTLED, nextPollDelay, pollFailureAction } from "/polling.js";
 import {
   AUTOMATION_METHODS,
+  canAddClassification,
+  classificationMaximum,
   FORMALIZATION_FIELDS,
   FORMALIZATION_PROFILE_VERSION,
   LEGACY_REPAIR_FIELDS,
@@ -365,6 +367,12 @@ function option(value, selected = false) {
 function selectControl(name, values, selected = "") {
   const select = document.createElement("select");
   select.dataset.part = name;
+  if (selected && !values.includes(selected)) {
+    const unsupported = option(selected, true);
+    unsupported.textContent = `Unsupported: ${selected}`;
+    select.append(unsupported);
+    select.dataset.originallyInvalid = "true";
+  }
   for (const value of values) select.append(option(value, value === selected));
   return select;
 }
@@ -430,10 +438,11 @@ function removeRepeatableRow(row, replacement) {
 
 let classificationRowSequence = 0;
 
-function classificationRow(field, value = "") {
+function classificationRow(field, value = "", onRowsChanged = () => {}, prefilled = false) {
   const row = document.createElement("div");
   row.className = "repair-classification";
   const input = textControl("code", value, { required: true });
+  if (prefilled) input.dataset.originallyInvalid = "true";
   const source = taxonomy(field);
   input.setAttribute("list", source.list.id);
   input.setAttribute(
@@ -469,13 +478,15 @@ function classificationRow(field, value = "") {
   const remove = el("button", "Remove");
   remove.type = "button";
   remove.className = "secondary compact";
-  remove.addEventListener("click", () =>
-    removeRepeatableRow(row, () => classificationRow(field)));
+  remove.addEventListener("click", () => {
+    removeRepeatableRow(row, () => classificationRow(field, "", onRowsChanged));
+    onRowsChanged();
+  });
   row.append(input, remove, summary);
   return row;
 }
 
-function sourceRow(value = {}) {
+function sourceRow(value = {}, prefilled = false) {
   const row = document.createElement("fieldset");
   row.className = "repair-repeatable";
   row.dataset.kind = "source";
@@ -492,8 +503,13 @@ function sourceRow(value = {}) {
   row.append(guidance);
   const relationship = selectControl("relationship", ["", ...SOURCE_RELATIONSHIPS], value.relationship);
   relationship.required = true;
+  if (prefilled && !SOURCE_RELATIONSHIPS.includes(value.relationship)) {
+    relationship.dataset.originallyInvalid = "true";
+  }
+  const title = textControl("title", value.title, { required: true });
+  if (prefilled && !title.value.trim()) title.dataset.originallyInvalid = "true";
   for (const [labelText, control] of [
-    ["Title", textControl("title", value.title, { required: true })],
+    ["Title", title],
     ["Authors", (() => {
       const input = document.createElement("textarea");
       input.dataset.part = "authors";
@@ -566,32 +582,42 @@ function appendRepairControl(wrapper, diagnostic, profile, failure) {
     input.maxLength = profile.input === "text" ? 500 : 4000;
     if (input instanceof HTMLTextAreaElement) input.rows = profile.input === "people" ? 3 : 2;
     input.value = Array.isArray(draft) ? draft.join("\n") : draft ?? "";
+    if (!input.value.trim()) input.dataset.originallyInvalid = "true";
     wrapper.append(input);
     return;
   }
   if (profile.input === "text-list") {
     const rows = document.createElement("div");
     rows.dataset.rows = "classifications";
-    for (const value of Array.isArray(draft) && draft.length ? draft : [""]) {
-      rows.append(classificationRow(field, value));
+    const maximum = classificationMaximum(field);
+    let updateAdd = () => {};
+    const values = (Array.isArray(draft) && draft.length ? draft : [""]).slice(0, maximum);
+    for (const value of values) {
+      rows.append(classificationRow(field, value, () => updateAdd(), true));
     }
-    const maximum = field === "classification.arxiv" ? 2 : 8;
     const add = el("button", "Add another classification");
     add.type = "button";
     add.className = "secondary compact";
+    updateAdd = () => {
+      add.hidden = !canAddClassification(field, rows.children.length);
+    };
     add.addEventListener("click", () => {
-      if (rows.children.length < maximum) {
-        rows.append(classificationRow(field));
+      if (canAddClassification(field, rows.children.length)) {
+        rows.append(classificationRow(field, "", () => updateAdd()));
         validateRepairForm();
       }
+      updateAdd();
     });
     wrapper.append(rows, add);
+    updateAdd();
     return;
   }
   if (profile.input === "sources") {
     const rows = document.createElement("div");
     rows.dataset.rows = "sources";
-    for (const value of Array.isArray(draft) && draft.length ? draft : [{}]) rows.append(sourceRow(value));
+    for (const value of Array.isArray(draft) && draft.length ? draft : [{}]) {
+      rows.append(sourceRow(value, true));
+    }
     const add = el("button", "Add another source");
     add.type = "button";
     add.className = "secondary compact";
@@ -620,6 +646,12 @@ function appendRepairControl(wrapper, diagnostic, profile, failure) {
   }
   const repository = textControl("id", draft?.id, { required: true, placeholder: "owner/repository" });
   const revision = textControl("revision", draft?.revision, { required: true, placeholder: "40-character commit" });
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository.value.trim())) {
+    repository.dataset.originallyInvalid = "true";
+  }
+  if (!/^[0-9a-f]{40}$/i.test(revision.value.trim())) {
+    revision.dataset.originallyInvalid = "true";
+  }
   repository.name = `${field}.id`;
   revision.name = `${field}.revision`;
   for (const [labelText, control] of [["Repository", repository], ["Commit", revision]]) {
@@ -697,7 +729,8 @@ function controlValidationMessage(control) {
 function setControlValidity(control, message = "") {
   control.setCustomValidity(message);
   const show = Boolean(message) &&
-    (repairValidationAttempted || control.dataset.touched === "true");
+    (repairValidationAttempted || control.dataset.touched === "true" ||
+      control.dataset.originallyInvalid === "true");
   control.setAttribute("aria-invalid", String(show));
   const visibleMessage = controlValidationMessage(control);
   visibleMessage.textContent = show ? message : "";
@@ -713,8 +746,7 @@ function setGroupProblem(wrapper, message = "") {
     node.setAttribute("role", "status");
     wrapper.append(node);
   }
-  const show = Boolean(message) &&
-    (repairValidationAttempted || wrapper.querySelector('[data-touched="true"]'));
+  const show = Boolean(message);
   node.textContent = show ? message : "";
   node.hidden = !show;
 }
@@ -764,11 +796,21 @@ function validateRepairField(wrapper) {
     const rows = [...wrapper.querySelectorAll('[data-kind="source"]')];
     complete = rows.length > 0;
     for (const row of rows) {
-      for (const control of row.querySelectorAll("[required]")) {
-        const valid = control.value.trim()
-          ? ""
-          : `Enter ${control.dataset.part === "title" ? "a source title" : "the relationship"}.`;
-        complete = setControlValidity(control, valid) && complete;
+      for (const control of row.querySelectorAll("[data-part]")) {
+        let message = "";
+        if (control.dataset.part === "title" && !control.value.trim()) {
+          message = "Enter a source title.";
+        } else if (control.dataset.part === "relationship" &&
+            !SOURCE_RELATIONSHIPS.includes(control.value)) {
+          message = "Choose a supported source relationship.";
+        } else if (control.dataset.part === "type" && control.value &&
+            !SOURCE_TYPES.includes(control.value)) {
+          message = "Choose a supported source type or Not specified.";
+        } else if (control.dataset.part === "author_endorsement" && control.value &&
+            !SOURCE_ENDORSEMENTS.includes(control.value)) {
+          message = "Choose a supported source-author response or Not specified.";
+        }
+        complete = setControlValidity(control, message) && complete;
       }
     }
     let groupProblem = "";
@@ -784,8 +826,10 @@ function validateRepairField(wrapper) {
   } else if (profile.input === "methods") {
     const rows = [...wrapper.querySelectorAll('[data-kind="method"]')];
     complete = rows.length > 0;
-    for (const control of wrapper.querySelectorAll("[required]")) {
-      complete = setControlValidity(control, control.value ? "" : "Choose a method.") && complete;
+    for (const control of wrapper.querySelectorAll('[data-part="method"]')) {
+      const message = AUTOMATION_METHODS.includes(control.value)
+        ? "" : "Choose a supported automation method.";
+      complete = setControlValidity(control, message) && complete;
     }
   } else {
     const repository = wrapper.querySelector('[data-part="id"]');

@@ -72,6 +72,47 @@ artifact:
   ]), []);
 });
 
+test("arXiv classification acceptance is lax while guided prefills remain concise", () => {
+  const invalid = VALID_FORMALIZATION.replace(
+    "  arxiv: [math.LO]",
+    "  arxiv: [math.LO, math.AG, math.GR]",
+  ).replace("  msc2020: [03B35]", "  msc2020: []");
+  assert.deepEqual(validateFormalization(invalid), []);
+  assert.deepEqual(
+    formalizationRepairDraft(invalid).values["classification.arxiv"],
+    ["math.LO", "math.AG"],
+  );
+});
+
+test("the intake repair form hides a classification add control at its limit", async () => {
+  const form = await readFile(
+    new URL("../public/preflight-repair-form.js", import.meta.url),
+    "utf8",
+  );
+  assert.match(form, /add\.hidden = !canAddClassification\(field, rows\.children\.length\)/);
+  assert.match(form, /onRowsChanged\(\);\s+validate\(\)/);
+});
+
+test("guided prefills preserve unsupported structured choices for targeted correction", async () => {
+  const invalid = VALID_FORMALIZATION
+    .replace("    type: original-proof", "    type: article")
+    .replace("    - method: manual", "    - method: robot");
+  const diagnostics = validateFormalization(invalid);
+  assert.ok(diagnostics.some((item) => item.summary.includes("unsupported type")));
+  assert.ok(diagnostics.some((item) => item.summary.includes("unsupported method")));
+  const draft = formalizationRepairDraft(invalid);
+  assert.equal(draft.values.sources[0].type, "article");
+  assert.equal(draft.values["automation.methods"][0].method, "robot");
+
+  const form = await readFile(
+    new URL("../public/preflight-repair-form.js", import.meta.url),
+    "utf8",
+  );
+  assert.match(form, /Unsupported: \$\{selected\}/);
+  assert.match(form, /control\.dataset\.originallyInvalid === "true"/);
+  assert.match(form, /Choose a supported source type or Not specified/);
+});
+
 test("guided repair is offered only when it covers every blocking finding", () => {
   const metadata = {
     code: "formalization.invalid_field",

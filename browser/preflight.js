@@ -1,5 +1,6 @@
 import { isMap, isSeq, parseDocument, stringify } from "yaml";
 
+import { AUTOMATION_METHODS, classificationMaximum } from "../public/formalization-profile.js";
 import policy from "./preflight-policy.json" with { type: "json" };
 
 export const BROWSER_PREFLIGHT_POLICY = policy;
@@ -114,12 +115,16 @@ export function validateFormalization(text, selectedPolicy = policy) {
     const field = `classification.${name}`;
     const values = classification[name];
     const [minimum, maximum] = selectedPolicy.formalization.classification_cardinality[name];
+    const acceptedValues = values === undefined && minimum === 0 ? [] : values;
+    const withinMaximum = maximum === null || acceptedValues?.length <= maximum;
     addField(
       result,
-      Array.isArray(values) && values.length >= minimum && values.length <= maximum &&
-        values.every(nonempty) && new Set(values).size === values.length,
+      Array.isArray(acceptedValues) && acceptedValues.length >= minimum && withinMaximum &&
+        acceptedValues.every(nonempty) && new Set(acceptedValues).size === acceptedValues.length,
       field,
-      `must contain ${minimum}–${maximum} distinct codes.`,
+      maximum === null
+        ? `must contain at least ${minimum} distinct code.`
+        : `must contain ${minimum}–${maximum} distinct codes.`,
     );
   }
 
@@ -180,6 +185,19 @@ export function validateFormalization(text, selectedPolicy = policy) {
     "automation.methods",
     "must be a nonempty list whose entries name a method.",
   );
+  if (Array.isArray(methods)) {
+    methods.forEach((raw, index) => {
+      const method = mapping(raw).method;
+      if (nonempty(method)) {
+        addField(
+          result,
+          AUTOMATION_METHODS.includes(method.trim()),
+          "automation.methods",
+          `entry ${index + 1} has an unsupported method.`,
+        );
+      }
+    });
+  }
   addField(
     result,
     nonempty(mapping(data.review).status),
@@ -244,27 +262,24 @@ function safeStrings(value) {
     : null;
 }
 
-function safeSource(value, selectedPolicy) {
-  if (mapping(value) !== value || !nonempty(value.title)) return null;
-  const result = { title: value.title.trim() };
+function safeSource(value) {
+  if (mapping(value) !== value) return {};
+  const result = {};
+  if (nonempty(value.title)) result.title = value.title.trim();
   const authors = safePeople(value.authors ??
     (value.author === undefined ? undefined : [value.author]));
   if (authors) result.authors = authors;
   for (const field of ["id", "location", "license"]) {
     if (nonempty(value[field])) result[field] = value[field].trim();
   }
-  if (selectedPolicy.formalization.source_types.includes(value.type)) result.type = value.type;
-  if (selectedPolicy.formalization.source_relationships.includes(value.relationship)) {
-    result.relationship = value.relationship;
-  }
-  if (selectedPolicy.formalization.source_endorsements.includes(value.author_endorsement)) {
-    result.author_endorsement = value.author_endorsement;
+  for (const field of ["type", "relationship", "author_endorsement"]) {
+    if (nonempty(value[field])) result[field] = value[field].trim();
   }
   return result;
 }
 
 /** Safe, submitter-confirmed prefills for the guided metadata form. */
-export function formalizationRepairDraft(text, selectedPolicy = policy) {
+export function formalizationRepairDraft(text) {
   const data = parsedFormalization(text);
   if (!data) return { values: {}, origins: {} };
   const values = {};
@@ -297,14 +312,15 @@ export function formalizationRepairDraft(text, selectedPolicy = policy) {
   for (const name of ["arxiv", "msc2020"]) {
     const items = safeStrings(classification[name]);
     if (items) {
-      values[`classification.${name}`] = items;
-      origins[`classification.${name}`] = `classification.${name}`;
+      const field = `classification.${name}`;
+      values[field] = items.slice(0, classificationMaximum(field));
+      origins[field] = field;
     }
   }
   const rawSources = Array.isArray(data.sources) && data.sources.length
     ? data.sources
     : mapping(data.source) === data.source ? [data.source] : [];
-  const sources = rawSources.map((item) => safeSource(item, selectedPolicy)).filter(Boolean);
+  const sources = rawSources.map((item) => safeSource(item));
   if (sources.length) {
     values.sources = sources;
     origins.sources = Array.isArray(data.sources) && data.sources.length ? "sources" : "source";

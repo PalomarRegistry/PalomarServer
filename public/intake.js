@@ -1129,7 +1129,7 @@ async function inspectBrowserPreflight() {
       ? {
           profile_version: selectedPolicy.formalization_profile_version,
           diagnostics: repairDiagnostics,
-          repair_draft: formalizationRepairDraft(content.formalization, selectedPolicy),
+          repair_draft: formalizationRepairDraft(content.formalization),
         }
       : null;
     const guard = policyCurrent && diagnostics.some((item) => !item.advisory);

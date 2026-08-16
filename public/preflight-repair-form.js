@@ -1,5 +1,7 @@
 import {
   AUTOMATION_METHODS,
+  canAddClassification,
+  classificationMaximum,
   FORMALIZATION_FIELDS,
   lines,
   safeDraft,
@@ -27,6 +29,12 @@ function option(value, selected = false) {
 function selectControl(name, values, selected = "") {
   const select = document.createElement("select");
   select.dataset.part = name;
+  if (selected && !values.includes(selected)) {
+    const unsupported = option(selected, true);
+    unsupported.textContent = `Unsupported: ${selected}`;
+    select.append(unsupported);
+    select.dataset.originallyInvalid = "true";
+  }
   for (const value of values) select.append(option(value, value === selected));
   return select;
 }
@@ -108,7 +116,9 @@ export function createPreflightRepairForm({ container, fields, status }) {
 
   function setValidity(control, message = "") {
     control.setCustomValidity(message);
-    const show = Boolean(message) && (attempted || control.dataset.touched === "true");
+    const show = Boolean(message) && (
+      attempted || control.dataset.touched === "true" || control.dataset.originallyInvalid === "true"
+    );
     control.setAttribute("aria-invalid", String(show));
     const visible = validationMessage(control);
     visible.textContent = show ? message : "";
@@ -124,15 +134,16 @@ export function createPreflightRepairForm({ container, fields, status }) {
       node.setAttribute("role", "status");
       wrapper.append(node);
     }
-    const show = Boolean(message) && (attempted || wrapper.querySelector('[data-touched="true"]'));
+    const show = Boolean(message);
     node.textContent = show ? message : "";
     node.hidden = !show;
   }
 
-  function classificationRow(field, value = "") {
+  function classificationRow(field, value = "", onRowsChanged = () => {}, prefilled = false) {
     const row = document.createElement("div");
     row.className = "repair-classification";
     const input = textControl("code", value, { required: true });
+    if (prefilled) input.dataset.originallyInvalid = "true";
     const source = taxonomy(field);
     input.setAttribute("list", source.list.id);
     input.setAttribute(
@@ -170,14 +181,17 @@ export function createPreflightRepairForm({ container, fields, status }) {
     remove.addEventListener("click", () => {
       const rows = row.parentElement;
       row.remove();
-      if (rows && !rows.children.length) rows.append(classificationRow(field));
+      if (rows && !rows.children.length) {
+        rows.append(classificationRow(field, "", onRowsChanged));
+      }
+      onRowsChanged();
       validate();
     });
     row.append(input, remove, summary);
     return row;
   }
 
-  function sourceRow(value = {}) {
+  function sourceRow(value = {}, prefilled = false) {
     const row = document.createElement("fieldset");
     row.className = "repair-repeatable";
     row.dataset.kind = "source";
@@ -194,12 +208,17 @@ export function createPreflightRepairForm({ container, fields, status }) {
     row.append(guidance);
     const relationship = selectControl("relationship", ["", ...SOURCE_RELATIONSHIPS], value.relationship);
     relationship.required = true;
+    if (prefilled && !SOURCE_RELATIONSHIPS.includes(value.relationship)) {
+      relationship.dataset.originallyInvalid = "true";
+    }
+    const title = textControl("title", value.title, { required: true });
+    if (prefilled && !title.value.trim()) title.dataset.originallyInvalid = "true";
     const authors = document.createElement("textarea");
     authors.dataset.part = "authors";
     authors.rows = 2;
     authors.value = (value.authors ?? []).join("\n");
     for (const [labelText, control] of [
-      ["Title", textControl("title", value.title, { required: true })],
+      ["Title", title],
       ["Authors", authors],
       ["Type", selectControl("type", SOURCE_TYPES, value.type)],
       ["Relationship", relationship],
@@ -280,24 +299,34 @@ export function createPreflightRepairForm({ container, fields, status }) {
       input.maxLength = profile.input === "text" ? 500 : 4000;
       if (input instanceof HTMLTextAreaElement) input.rows = 3;
       input.value = Array.isArray(draft) ? draft.join("\n") : draft ?? "";
+      if (!input.value.trim()) input.dataset.originallyInvalid = "true";
       wrapper.append(input);
       return;
     }
     if (profile.input === "text-list") {
       const rows = document.createElement("div");
       rows.dataset.rows = "classifications";
-      for (const value of Array.isArray(draft) && draft.length ? draft : [""]) {
-        rows.append(classificationRow(field, value));
+      const maximum = classificationMaximum(field);
+      let updateAdd = () => {};
+      const values = (Array.isArray(draft) && draft.length ? draft : [""]).slice(0, maximum);
+      for (const value of values) {
+        rows.append(classificationRow(field, value, () => updateAdd(), true));
       }
-      const maximum = field === "classification.arxiv" ? 2 : 8;
       const add = el("button", "Add another classification");
       add.type = "button";
       add.className = "secondary compact";
+      updateAdd = () => {
+        add.hidden = !canAddClassification(field, rows.children.length);
+      };
       add.addEventListener("click", () => {
-        if (rows.children.length < maximum) rows.append(classificationRow(field));
+        if (canAddClassification(field, rows.children.length)) {
+          rows.append(classificationRow(field, "", () => updateAdd()));
+        }
+        updateAdd();
         validate();
       });
       wrapper.append(rows, add);
+      updateAdd();
       return;
     }
     if (profile.input === "sources" || profile.input === "methods") {
@@ -306,7 +335,7 @@ export function createPreflightRepairForm({ container, fields, status }) {
       const draftRows = Array.isArray(draft) && draft.length
         ? draft : profile.input === "methods" ? [{ method: "manual" }] : [{}];
       for (const value of draftRows) {
-        rows.append(profile.input === "sources" ? sourceRow(value) : methodRow(value));
+        rows.append(profile.input === "sources" ? sourceRow(value, true) : methodRow(value));
       }
       const add = el("button", profile.input === "sources" ? "Add another source" : "Add another method");
       add.type = "button";
@@ -320,6 +349,12 @@ export function createPreflightRepairForm({ container, fields, status }) {
     }
     const repository = textControl("id", draft?.id, { required: true, placeholder: "owner/repository" });
     const revision = textControl("revision", draft?.revision, { required: true, placeholder: "40-character commit" });
+    if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository.value.trim())) {
+      repository.dataset.originallyInvalid = "true";
+    }
+    if (!/^[0-9a-f]{40}$/i.test(revision.value.trim())) {
+      revision.dataset.originallyInvalid = "true";
+    }
     for (const [labelText, control] of [["Repository", repository], ["Commit", revision]]) {
       const label = el("label", labelText);
       label.append(control);
@@ -383,6 +418,35 @@ export function createPreflightRepairForm({ container, fields, status }) {
       complete = setValidity(input, input.value.trim() ? "" : "Complete this field.");
     } else if (profile.input === "text-list") {
       complete = validateClassification(wrapper, field);
+    } else if (profile.input === "sources") {
+      const rows = [...wrapper.querySelectorAll('[data-kind="source"]')];
+      complete = rows.length > 0;
+      for (const row of rows) {
+        for (const control of row.querySelectorAll("[data-part]")) {
+          let message = "";
+          if (control.dataset.part === "title" && !control.value.trim()) {
+            message = "Enter a source title.";
+          } else if (control.dataset.part === "relationship" &&
+              !SOURCE_RELATIONSHIPS.includes(control.value)) {
+            message = "Choose a supported source relationship.";
+          } else if (control.dataset.part === "type" && control.value &&
+              !SOURCE_TYPES.includes(control.value)) {
+            message = "Choose a supported source type or Not specified.";
+          } else if (control.dataset.part === "author_endorsement" && control.value &&
+              !SOURCE_ENDORSEMENTS.includes(control.value)) {
+            message = "Choose a supported source-author response or Not specified.";
+          }
+          complete = setValidity(control, message) && complete;
+        }
+      }
+    } else if (profile.input === "methods") {
+      const rows = [...wrapper.querySelectorAll('[data-kind="method"]')];
+      complete = rows.length > 0;
+      for (const control of wrapper.querySelectorAll('[data-part="method"]')) {
+        const message = AUTOMATION_METHODS.includes(control.value)
+          ? "" : "Choose a supported automation method.";
+        complete = setValidity(control, message) && complete;
+      }
     } else {
       for (const control of wrapper.querySelectorAll("[required]")) {
         complete = setValidity(control, control.value.trim() ? "" : "Complete this field.") && complete;

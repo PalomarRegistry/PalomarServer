@@ -47,7 +47,18 @@ export function lines(value) {
   return String(value ?? "").split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
 }
 
+export function classificationMaximum(field) {
+  return field === "classification.arxiv" ? 2 : 8;
+}
+
+export function canAddClassification(field, count) {
+  return count < classificationMaximum(field);
+}
+
 export function safeDraft(failure, field) {
   const values = failure?.repair_draft?.values;
-  return values && Object.hasOwn(values, field) ? values[field] : undefined;
+  const value = values && Object.hasOwn(values, field) ? values[field] : undefined;
+  return Array.isArray(value) && field.startsWith("classification.")
+    ? value.slice(0, classificationMaximum(field))
+    : value;
 }

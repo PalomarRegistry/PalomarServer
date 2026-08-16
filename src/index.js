@@ -230,7 +230,7 @@ async function authoritativeEarlyRepair(env, pending, proof) {
       mode: "preflight",
       profile_version: BROWSER_PREFLIGHT_POLICY.formalization_profile_version,
       diagnostics: durableDiagnostics,
-      repair_draft: formalizationRepairDraft(text, BROWSER_PREFLIGHT_POLICY),
+      repair_draft: formalizationRepairDraft(text),
     },
   };
 }
