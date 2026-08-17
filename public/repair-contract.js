@@ -28,6 +28,14 @@ function line(value, field, maximum = 500) {
   return text;
 }
 
+function text(value, field, maximum = 10_000) {
+  const result = typeof value === "string" ? value.trim() : "";
+  if (!result || result.length > maximum) {
+    throw new TypeError(`${field} must contain at most ${maximum} characters`);
+  }
+  return result;
+}
+
 function lineList(value, field, maximum = 100) {
   if (!Array.isArray(value) || value.length < 1 || value.length > maximum) {
     throw new TypeError(`${field} must contain between one and ${maximum} values`);
@@ -61,7 +69,7 @@ function sourceList(value) {
   if (!Array.isArray(value) || value.length < 1 || value.length > 20) {
     throw new TypeError("sources must contain between one and twenty entries");
   }
-  const allowed = ["title", "authors", "id", "type", "location", "relationship", "license", "author_endorsement"];
+  const allowed = ["title", "authors", "id", "type", "location", "relationship", "note", "license", "author_endorsement"];
   const result = value.map((source, index) => {
     if (!exact(source, allowed)) throw new TypeError(`sources[${index}] contains unsupported fields`);
     const item = { title: line(source.title, `sources[${index}].title`) };
@@ -73,6 +81,7 @@ function sourceList(value) {
       item.type = line(source.type, `sources[${index}].type`, 200);
     }
     item.relationship = line(source.relationship, `sources[${index}].relationship`);
+    if (source.note) item.note = text(source.note, `sources[${index}].note`);
     if (source.author_endorsement) {
       item.author_endorsement = line(
         source.author_endorsement,

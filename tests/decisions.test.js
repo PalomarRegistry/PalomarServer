@@ -1316,7 +1316,7 @@ test("guided metadata repair renders structured repeatable fields and safe prefi
   assert.match(script, /taxonomies\/\$\{name\}\.json/);
   assert.match(script, /item\.label = summary/);
   assert.match(script, /classification-summary/);
-  assert.match(profile, /AI-assisted/);
+  assert.match(profile, /SOURCE_ENDORSEMENT_SUGGESTIONS/);
   assert.match(script, /control\.dataset\.originallyInvalid === "true"/);
   assert.match(script, /article, paper, book, formalization/);
   assert.match(script, /add\.hidden = !canAddClassification\(field, rows\.children\.length\)/);

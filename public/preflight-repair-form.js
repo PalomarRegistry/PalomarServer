@@ -188,7 +188,7 @@ export function createPreflightRepairForm({ container, fields, status }) {
         "formalizes follows it, adapts changes it, independently-proves reaches the same result, " +
         "background supplies context, and other covers an original proof or another relationship. " +
         "Source-author response records whether an author was contacted or involved; leave it " +
-        "unspecified when it does not apply.",
+        "unspecified when it does not apply. Use Source note to explain an other category.",
     );
     guidance.className = "hint";
     row.append(guidance);
@@ -212,6 +212,15 @@ export function createPreflightRepairForm({ container, fields, status }) {
       ["Authors", authors],
       ["Type", sourceTypeControl(value.type)],
       ["Relationship", relationship],
+      ["Source note", (() => {
+        const input = document.createElement("textarea");
+        input.dataset.part = "note";
+        input.rows = 3;
+        input.maxLength = 10_000;
+        input.placeholder = "Explain relationship or source-author response: other";
+        input.value = value.note ?? "";
+        return input;
+      })()],
       ["Identifier", textControl("id", value.id, { placeholder: "DOI, arXiv id, URL, or citation" })],
       ["Location", textControl("location", value.location)],
       ["License", textControl("license", value.license)],
@@ -247,9 +256,9 @@ export function createPreflightRepairForm({ container, fields, status }) {
     row.append(el("legend", "Method"));
     const guidance = el(
       "p",
-      "Describe how the work was produced. Common descriptions include manual for work written without generative assistance, copilot for interactive " +
+      "Choose the closest production category: manual for work written without generative assistance, copilot for interactive " +
         "suggestions, agent for a directed coding agent, autonomous for an independently run " +
-        "system, or other. Framework and model names are optional provenance details.",
+        "system, or other. Framework and model names carry the exact provenance detail.",
     );
     guidance.className = "hint";
     row.append(guidance);
