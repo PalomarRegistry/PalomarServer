@@ -5,9 +5,23 @@ export const LEGACY_REPAIR_FIELDS = new Set([
   "classification.msc2020", "review.status",
 ]);
 
-export const SOURCE_RELATIONSHIPS = ["formalizes", "adapts", "independently-proves", "background", "other"];
-export const SOURCE_ENDORSEMENTS = ["", "participated", "endorsed", "no-response", "not-contacted", "declined", "n/a"];
-export const AUTOMATION_METHODS = ["manual", "copilot", "agent", "autonomous", "other"];
+export const SOURCE_RELATIONSHIP_SUGGESTIONS = [
+  "formalizes", "adapts", "independently-proves", "background", "other",
+];
+export const SOURCE_ENDORSEMENT_SUGGESTIONS = [
+  "participated", "endorsed", "no-response", "not-contacted", "declined", "n/a",
+];
+export const AUTOMATION_METHOD_SUGGESTIONS = [
+  "manual", "copilot", "agent", "autonomous", "AI-assisted", "other",
+];
+export const SUBSTANTIVE_SOURCE_RELATIONSHIPS = new Set([
+  "formalizes", "adapts", "independently-proves",
+]);
+
+/** Map free-form source descriptions into the closed public provenance categories. */
+export function sourceRelationshipCategory(value) {
+  return SOURCE_RELATIONSHIP_SUGGESTIONS.includes(value) ? value : "other";
+}
 
 export const FORMALIZATION_FIELDS = Object.freeze({
   "project.name": {
@@ -32,7 +46,7 @@ export const FORMALIZATION_FIELDS = Object.freeze({
     label: "Mathematical sources", description: "Every source needs a title and an accurate relationship to the formalized result. Source type is optional free text; original-proof is reserved for results first presented by the formalization.", input: "sources",
   },
   "automation.methods": {
-    label: "Automation methods", description: "Describe each distinct way the formalization was produced; use manual when appropriate.", input: "methods",
+    label: "Automation methods", description: "Describe each distinct way the formalization was produced in your own words.", input: "methods",
   },
   "review.status": {
     label: "Review status", description: "This describes the review process you have already undertaken for this repository; it is not a Palomar endorsement.", input: "text",

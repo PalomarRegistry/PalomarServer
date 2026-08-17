@@ -40,6 +40,31 @@ test("source types are bounded free text", () => {
   );
 });
 
+test("descriptive source and automation values are bounded free text", () => {
+  const edits = normalizedRepairEdits([
+    { field: "sources", value: [
+      { title: "Source theorem", relationship: "formalizes" },
+      {
+        title: "Informal notes",
+        type: "private correspondence",
+        relationship: "suggested the key lemma",
+        author_endorsement: "reviewed an early draft",
+      },
+    ] },
+    { field: "automation.methods", value: [{ method: "AI-assisted" }] },
+  ], 2);
+  assert.equal(edits[0].value[0].method, "AI-assisted");
+  assert.equal(edits[1].value[1].relationship, "suggested the key lemma");
+  assert.equal(edits[1].value[1].author_endorsement, "reviewed an early draft");
+
+  const original = normalizedRepairEdits([{ field: "sources", value: [{
+    title: "Original result",
+    type: "original-proof",
+    relationship: "first presented in this formalization",
+  }] }], 2);
+  assert.equal(original[0].value[0].relationship, "first presented in this formalization");
+});
+
 test("profile two rejects source claims that cannot pass provenance", () => {
   assert.throws(
     () => normalizedRepairEdits([{ field: "sources", value: [{

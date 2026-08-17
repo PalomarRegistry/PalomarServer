@@ -1,7 +1,6 @@
 import {
-  AUTOMATION_METHODS,
-  SOURCE_ENDORSEMENTS,
-  SOURCE_RELATIONSHIPS,
+  sourceRelationshipCategory,
+  SUBSTANTIVE_SOURCE_RELATIONSHIPS,
 } from "./formalization-profile.js";
 
 export const REPAIR_FIELDS_V1 = new Map([
@@ -73,27 +72,27 @@ function sourceList(value) {
     if (source.type) {
       item.type = line(source.type, `sources[${index}].type`, 200);
     }
-    if (!SOURCE_RELATIONSHIPS.includes(source.relationship)) {
-      throw new TypeError(`sources[${index}].relationship is required`);
-    }
-    item.relationship = source.relationship;
+    item.relationship = line(source.relationship, `sources[${index}].relationship`);
     if (source.author_endorsement) {
-      if (!SOURCE_ENDORSEMENTS.includes(source.author_endorsement)) {
-        throw new TypeError(`sources[${index}].author_endorsement is unsupported`);
-      }
-      item.author_endorsement = source.author_endorsement;
+      item.author_endorsement = line(
+        source.author_endorsement,
+        `sources[${index}].author_endorsement`,
+        100,
+      );
     }
     return item;
   });
   const original = result.some((item) => item.type === "original-proof");
-  const substantive = new Set(["formalizes", "adapts", "independently-proves"]);
-  if (original && result.some((item) => substantive.has(item.relationship))) {
+  if (original && result.some((item) =>
+    SUBSTANTIVE_SOURCE_RELATIONSHIPS.has(sourceRelationshipCategory(item.relationship)))) {
     throw new TypeError("original-proof cannot be combined with a substantive source relationship");
   }
-  if (original && result.some((item) => item.type === "original-proof" && item.relationship !== "other")) {
+  if (original && result.some((item) =>
+    item.type === "original-proof" && sourceRelationshipCategory(item.relationship) !== "other")) {
     throw new TypeError("original-proof sources must use relationship other");
   }
-  if (!original && !result.some((item) => substantive.has(item.relationship))) {
+  if (!original && !result.some((item) =>
+    SUBSTANTIVE_SOURCE_RELATIONSHIPS.has(sourceRelationshipCategory(item.relationship)))) {
     throw new TypeError("source-based results need a formalizes, adapts, or independently-proves source");
   }
   return result;
@@ -108,7 +107,6 @@ function methodList(value) {
       throw new TypeError(`automation.methods[${index}] contains unsupported fields`);
     }
     const name = line(method.method, `automation.methods[${index}].method`);
-    if (!AUTOMATION_METHODS.includes(name)) throw new TypeError(`${name} is not a supported automation method`);
     const result = { method: name };
     if (method.framework !== undefined) result.framework = line(method.framework, `automation.methods[${index}].framework`);
     if (method.models !== undefined) result.models = lineList(method.models, `automation.methods[${index}].models`);

@@ -1,6 +1,6 @@
 import { SETTLED, nextPollDelay, pollFailureAction } from "/polling.js";
 import {
-  AUTOMATION_METHODS,
+  AUTOMATION_METHOD_SUGGESTIONS,
   canAddClassification,
   classificationMaximum,
   FORMALIZATION_FIELDS,
@@ -8,8 +8,8 @@ import {
   LEGACY_REPAIR_FIELDS,
   lines,
   safeDraft,
-  SOURCE_ENDORSEMENTS,
-  SOURCE_RELATIONSHIPS,
+  SOURCE_ENDORSEMENT_SUGGESTIONS,
+  SOURCE_RELATIONSHIP_SUGGESTIONS,
 } from "/formalization-profile.js";
 import { normalizedRepairEdits } from "/repair-contract.js";
 import {
@@ -355,27 +355,6 @@ function diagnosticHeading(diagnostic) {
   return heading;
 }
 
-function option(value, selected = false) {
-  const node = document.createElement("option");
-  node.value = value;
-  node.textContent = value || "Not specified";
-  node.selected = selected;
-  return node;
-}
-
-function selectControl(name, values, selected = "") {
-  const select = document.createElement("select");
-  select.dataset.part = name;
-  if (selected && !values.includes(selected)) {
-    const unsupported = option(selected, true);
-    unsupported.textContent = `Unsupported: ${selected}`;
-    select.append(unsupported);
-    select.dataset.originallyInvalid = "true";
-  }
-  for (const value of values) select.append(option(value, value === selected));
-  return select;
-}
-
 function textControl(name, value = "", { required = false, placeholder = "" } = {}) {
   const input = document.createElement("input");
   input.dataset.part = name;
@@ -508,9 +487,13 @@ function sourceRow(value = {}, prefilled = false) {
   );
   guidance.className = "hint";
   row.append(guidance);
-  const relationship = selectControl("relationship", ["", ...SOURCE_RELATIONSHIPS], value.relationship);
+  const relationship = textControl("relationship", value.relationship, {
+    required: true,
+    placeholder: SOURCE_RELATIONSHIP_SUGGESTIONS.join(", "),
+  });
+  relationship.maxLength = 500;
   relationship.required = true;
-  if (prefilled && !SOURCE_RELATIONSHIPS.includes(value.relationship)) {
+  if (prefilled && !relationship.value.trim()) {
     relationship.dataset.originallyInvalid = "true";
   }
   const title = textControl("title", value.title, { required: true });
@@ -529,7 +512,13 @@ function sourceRow(value = {}, prefilled = false) {
     ["Identifier", textControl("id", value.id, { placeholder: "DOI, arXiv id, URL, or citation" })],
     ["Location", textControl("location", value.location)],
     ["License", textControl("license", value.license)],
-    ["Source-author response", selectControl("author_endorsement", SOURCE_ENDORSEMENTS, value.author_endorsement)],
+    ["Source-author response", (() => {
+      const input = textControl("author_endorsement", value.author_endorsement, {
+        placeholder: SOURCE_ENDORSEMENT_SUGGESTIONS.join(", "),
+      });
+      input.maxLength = 100;
+      return input;
+    })()],
   ]) {
     const label = el("label", labelText);
     label.append(control);
@@ -550,13 +539,17 @@ function methodRow(value = {}) {
   row.append(el("legend", "Method"));
   const guidance = el(
     "p",
-    "Choose manual for work written without generative assistance, copilot for interactive " +
+    "Describe how the work was produced. Common descriptions include manual for work written without generative assistance, copilot for interactive " +
       "suggestions, agent for a directed coding agent, autonomous for an independently run " +
       "system, or other. Framework and model names are optional provenance details.",
   );
   guidance.className = "hint";
   row.append(guidance);
-  const method = selectControl("method", AUTOMATION_METHODS, value.method);
+  const method = textControl("method", value.method, {
+    required: true,
+    placeholder: AUTOMATION_METHOD_SUGGESTIONS.join(", "),
+  });
+  method.maxLength = 500;
   method.required = true;
   const framework = textControl("framework", value.framework, { placeholder: "Optional framework or tool" });
   const models = document.createElement("textarea");
@@ -807,12 +800,8 @@ function validateRepairField(wrapper) {
         let message = "";
         if (control.dataset.part === "title" && !control.value.trim()) {
           message = "Enter a source title.";
-        } else if (control.dataset.part === "relationship" &&
-            !SOURCE_RELATIONSHIPS.includes(control.value)) {
-          message = "Choose a supported source relationship.";
-        } else if (control.dataset.part === "author_endorsement" && control.value &&
-            !SOURCE_ENDORSEMENTS.includes(control.value)) {
-          message = "Choose a supported source-author response or Not specified.";
+        } else if (control.dataset.part === "relationship" && !control.value.trim()) {
+          message = "Describe the source relationship.";
         }
         complete = setControlValidity(control, message) && complete;
       }
@@ -831,8 +820,7 @@ function validateRepairField(wrapper) {
     const rows = [...wrapper.querySelectorAll('[data-kind="method"]')];
     complete = rows.length > 0;
     for (const control of wrapper.querySelectorAll('[data-part="method"]')) {
-      const message = AUTOMATION_METHODS.includes(control.value)
-        ? "" : "Choose a supported automation method.";
+      const message = control.value.trim() ? "" : "Describe the automation method.";
       complete = setControlValidity(control, message) && complete;
     }
   } else {

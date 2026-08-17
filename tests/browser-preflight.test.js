@@ -93,25 +93,38 @@ test("the intake repair form hides a classification add control at its limit", a
   assert.match(form, /onRowsChanged\(\);\s+validate\(\)/);
 });
 
-test("free-form source types pass while unsupported enumerated choices remain targeted", async () => {
+test("descriptive formalization metadata accepts bounded free text", async () => {
   const metadata = VALID_FORMALIZATION
     .replace("    type: original-proof", "    type: article")
-    .replace("    relationship: other", "    relationship: formalizes")
-    .replace("    - method: manual", "    - method: robot");
+    .replace("    relationship: other", "    relationship: extends with a new proof")
+    .replace("    type: article", "    type: article\n    author_endorsement: discussed by email")
+    .replace("    - method: manual", "    - method: AI-assisted");
   const diagnostics = validateFormalization(metadata);
   assert.ok(!diagnostics.some((item) => item.summary.includes("type")));
-  assert.ok(diagnostics.some((item) => item.summary.includes("unsupported method")));
+  assert.ok(!diagnostics.some((item) => item.summary.includes("unsupported")));
+  // A free-form relationship has the provenance meaning of `other`, so a
+  // source-based result still needs one source with a substantive category.
+  assert.ok(diagnostics.some((item) => item.summary.includes("source-based results need")));
   const draft = formalizationRepairDraft(metadata);
   assert.equal(draft.values.sources[0].type, "article");
-  assert.equal(draft.values["automation.methods"][0].method, "robot");
+  assert.equal(draft.values.sources[0].relationship, "extends with a new proof");
+  assert.equal(draft.values.sources[0].author_endorsement, "discussed by email");
+  assert.equal(draft.values["automation.methods"][0].method, "AI-assisted");
 
   const form = await readFile(
     new URL("../public/preflight-repair-form.js", import.meta.url),
     "utf8",
   );
-  assert.match(form, /Unsupported: \$\{selected\}/);
   assert.match(form, /control\.dataset\.originallyInvalid === "true"/);
   assert.match(form, /article, paper, book, formalization/);
+});
+
+test("an unfamiliar source relationship has the provenance meaning of other", () => {
+  const metadata = VALID_FORMALIZATION.replace(
+    "    relationship: other",
+    "    relationship: first presented in this formalization",
+  );
+  assert.deepEqual(validateFormalization(metadata), []);
 });
 
 test("guided repair is offered only when it covers every blocking finding", () => {

@@ -1,6 +1,9 @@
 import { isMap, isSeq, parseDocument, stringify } from "yaml";
 
-import { AUTOMATION_METHODS, classificationMaximum } from "../public/formalization-profile.js";
+import {
+  classificationMaximum,
+  SUBSTANTIVE_SOURCE_RELATIONSHIPS,
+} from "../public/formalization-profile.js";
 import policy from "./preflight-policy.json" with { type: "json" };
 
 export const BROWSER_PREFLIGHT_POLICY = policy;
@@ -129,8 +132,9 @@ export function validateFormalization(text, selectedPolicy = policy) {
   }
 
   const sources = data.sources;
-  const relationships = new Set(selectedPolicy.formalization.source_relationships);
-  const endorsements = new Set(selectedPolicy.formalization.source_endorsements);
+  const relationshipCategories = new Set(
+    selectedPolicy.formalization.source_relationship_categories,
+  );
   addField(result, Array.isArray(sources) && sources.length > 0, "sources", "must be a nonempty list.");
   if (Array.isArray(sources) && sources.length) {
     let original = false;
@@ -140,9 +144,9 @@ export function validateFormalization(text, selectedPolicy = policy) {
       addField(result, nonempty(source.title), "sources", `entry ${index + 1} needs a title.`);
       addField(
         result,
-        relationships.has(source.relationship),
+        nonempty(source.relationship) && source.relationship.trim().length <= 500,
         "sources",
-        `entry ${index + 1} has an unsupported relationship.`,
+        `entry ${index + 1} relationship must be at most 500 characters.`,
       );
       if (source.type !== undefined) {
         addField(
@@ -155,14 +159,19 @@ export function validateFormalization(text, selectedPolicy = policy) {
       if (source.author_endorsement !== undefined) {
         addField(
           result,
-          endorsements.has(source.author_endorsement),
+          source.author_endorsement === "" ||
+            (nonempty(source.author_endorsement) && source.author_endorsement.trim().length <= 100),
           "sources",
-          `entry ${index + 1} has an unsupported author endorsement.`,
+          `entry ${index + 1} author endorsement must be at most 100 characters.`,
         );
       }
+      const relationshipText = source.relationship?.trim();
+      const relationship = relationshipCategories.has(relationshipText)
+        ? relationshipText
+        : "other";
       original ||= source.type === "original-proof";
-      substantive ||= ["formalizes", "adapts", "independently-proves"].includes(source.relationship);
-      if (source.type === "original-proof" && source.relationship !== "other") {
+      substantive ||= SUBSTANTIVE_SOURCE_RELATIONSHIPS.has(relationship);
+      if (source.type === "original-proof" && relationship !== "other") {
         addField(result, false, "sources", "original-proof entries must use relationship other.");
       }
     });
@@ -180,23 +189,10 @@ export function validateFormalization(text, selectedPolicy = policy) {
   addField(
     result,
     Array.isArray(methods) && methods.length > 0 && methods.every((item) =>
-      mapping(item) === item && nonempty(item.method)),
+      mapping(item) === item && nonempty(item.method) && item.method.trim().length <= 500),
     "automation.methods",
-    "must be a nonempty list whose entries name a method.",
+    "must be a nonempty list whose entries name a method in at most 500 characters.",
   );
-  if (Array.isArray(methods)) {
-    methods.forEach((raw, index) => {
-      const method = mapping(raw).method;
-      if (nonempty(method)) {
-        addField(
-          result,
-          AUTOMATION_METHODS.includes(method.trim()),
-          "automation.methods",
-          `entry ${index + 1} has an unsupported method.`,
-        );
-      }
-    });
-  }
   addField(
     result,
     nonempty(mapping(data.review).status),
