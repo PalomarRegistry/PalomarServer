@@ -14,9 +14,7 @@
   },
   "formalization": {
     "repository_roles": ["substantive-development", "thin-wrapper"],
-    "source_relationships": ["adapts", "background", "formalizes", "independently-proves", "other"],
-    "source_endorsements": ["declined", "endorsed", "n/a", "no-response", "not-contacted", "participated"],
-    "related_relationships": ["adapts", "builds-on", "independent", "other", "supersedes"],
+    "source_relationship_categories": ["adapts", "background", "formalizes", "independently-proves", "other"],
     "classification_cardinality": {"arxiv": [1, null], "msc2020": [0, 8]}
   },
   "comparator": {
