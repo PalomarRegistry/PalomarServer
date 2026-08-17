@@ -48,6 +48,7 @@ test("descriptive source and automation values are bounded free text", () => {
         title: "Informal notes",
         type: "private correspondence",
         relationship: "suggested the key lemma",
+        note: "The source supplied an idea, not the theorem.\nThis exact nuance is retained.",
         author_endorsement: "reviewed an early draft",
       },
     ] },
@@ -55,6 +56,7 @@ test("descriptive source and automation values are bounded free text", () => {
   ], 2);
   assert.equal(edits[0].value[0].method, "AI-assisted");
   assert.equal(edits[1].value[1].relationship, "suggested the key lemma");
+  assert.match(edits[1].value[1].note, /exact nuance is retained/);
   assert.equal(edits[1].value[1].author_endorsement, "reviewed an early draft");
 
   const original = normalizedRepairEdits([{ field: "sources", value: [{

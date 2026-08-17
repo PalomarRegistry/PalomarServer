@@ -9,10 +9,10 @@ export const SOURCE_RELATIONSHIP_SUGGESTIONS = [
   "formalizes", "adapts", "independently-proves", "background", "other",
 ];
 export const SOURCE_ENDORSEMENT_SUGGESTIONS = [
-  "participated", "endorsed", "no-response", "not-contacted", "declined", "n/a",
+  "participated", "endorsed", "no-response", "not-contacted", "declined", "n/a", "other",
 ];
 export const AUTOMATION_METHOD_SUGGESTIONS = [
-  "manual", "copilot", "agent", "autonomous", "AI-assisted", "other",
+  "manual", "copilot", "agent", "autonomous", "other",
 ];
 export const SUBSTANTIVE_SOURCE_RELATIONSHIPS = new Set([
   "formalizes", "adapts", "independently-proves",
@@ -46,7 +46,7 @@ export const FORMALIZATION_FIELDS = Object.freeze({
     label: "Mathematical sources", description: "Every source needs a title and an accurate relationship to the formalized result. Source type is optional free text; original-proof is reserved for results first presented by the formalization.", input: "sources",
   },
   "automation.methods": {
-    label: "Automation methods", description: "Describe each distinct way the formalization was produced in your own words.", input: "methods",
+    label: "Automation methods", description: "Choose the closest standard production category; Palomar also accepts unfamiliar wording at intake.", input: "methods",
   },
   "review.status": {
     label: "Review status", description: "This describes the review process you have already undertaken for this repository; it is not a Palomar endorsement.", input: "text",

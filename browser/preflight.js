@@ -165,6 +165,14 @@ export function validateFormalization(text, selectedPolicy = policy) {
           `entry ${index + 1} author endorsement must be at most 100 characters.`,
         );
       }
+      if (source.note !== undefined) {
+        addField(
+          result,
+          source.note === "" || (nonempty(source.note) && source.note.trim().length <= 10_000),
+          "sources",
+          `entry ${index + 1} note must be at most 10000 characters.`,
+        );
+      }
       const relationshipText = source.relationship?.trim();
       const relationship = relationshipCategories.has(relationshipText)
         ? relationshipText
@@ -267,8 +275,12 @@ function safeSource(value) {
   for (const field of ["id", "location", "license"]) {
     if (nonempty(value[field])) result[field] = value[field].trim();
   }
-  for (const field of ["type", "relationship", "author_endorsement"]) {
-    if (nonempty(value[field])) result[field] = value[field].trim();
+  for (const [field, maximum] of [
+    ["type", 200], ["relationship", 500], ["note", 10_000], ["author_endorsement", 100],
+  ]) {
+    if (nonempty(value[field]) && value[field].trim().length <= maximum) {
+      result[field] = value[field].trim();
+    }
   }
   return result;
 }

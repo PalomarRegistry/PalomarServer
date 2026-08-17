@@ -97,7 +97,10 @@ test("descriptive formalization metadata accepts bounded free text", async () =>
   const metadata = VALID_FORMALIZATION
     .replace("    type: original-proof", "    type: article")
     .replace("    relationship: other", "    relationship: extends with a new proof")
-    .replace("    type: article", "    type: article\n    author_endorsement: discussed by email")
+    .replace(
+      "    type: article",
+      "    type: article\n    note: Suggested the key lemma.\n    author_endorsement: discussed by email",
+    )
     .replace("    - method: manual", "    - method: AI-assisted");
   const diagnostics = validateFormalization(metadata);
   assert.ok(!diagnostics.some((item) => item.summary.includes("type")));
@@ -108,6 +111,7 @@ test("descriptive formalization metadata accepts bounded free text", async () =>
   const draft = formalizationRepairDraft(metadata);
   assert.equal(draft.values.sources[0].type, "article");
   assert.equal(draft.values.sources[0].relationship, "extends with a new proof");
+  assert.equal(draft.values.sources[0].note, "Suggested the key lemma.");
   assert.equal(draft.values.sources[0].author_endorsement, "discussed by email");
   assert.equal(draft.values["automation.methods"][0].method, "AI-assisted");
 
