@@ -301,13 +301,46 @@ function comparatorLikelihood(path) {
  * Likely names come first, while dependencies and symlinks are excluded for
  * the same reasons they are excluded from automatic layout detection.
  */
+export function comparatorConfigurationCandidates(entries) {
+  const candidates = new Map();
+  for (const entry of repositoryFiles(entries)) {
+    const path = entry.path;
+    if (
+      typeof path !== "string" || !/\.json$/i.test(path) ||
+      normalizeRepositoryPath(path) !== path ||
+      (entry.mode && !/^100\d{3}$/.test(entry.mode))
+    ) continue;
+    if (!candidates.has(path)) candidates.set(path, entry);
+  }
+  return [...candidates.values()].sort((left, right) =>
+    comparatorLikelihood(left.path) - comparatorLikelihood(right.path) ||
+    comparePaths(left.path, right.path));
+}
+
+/** Metadata candidates retained within the browser discovery workload. */
+export function boundedComparatorConfigurationCandidates(entries, {
+  maximumFileBytes = 1_048_576,
+  maximumFiles = 64,
+  maximumTotalBytes = 8 * 1_048_576,
+} = {}) {
+  const eligible = comparatorConfigurationCandidates(entries).filter((entry) => {
+    const size = Number(entry.size ?? 0);
+    return Number.isSafeInteger(size) && size >= 0 && size <= maximumFileBytes;
+  });
+  const candidates = [];
+  let bytes = 0;
+  for (const entry of eligible) {
+    const size = Number(entry.size ?? 0);
+    if (candidates.length >= maximumFiles) break;
+    if (bytes + size > maximumTotalBytes) continue;
+    candidates.push(entry);
+    bytes += size;
+  }
+  return { candidates, complete: candidates.length === eligible.length };
+}
+
 export function comparatorConfigurationPaths(entries) {
-  return [...new Set(repositoryFiles(entries)
-    .map((entry) => entry.path)
-    .filter((path) => typeof path === "string" && /\.json$/i.test(path) &&
-      normalizeRepositoryPath(path) === path))]
-    .sort((left, right) =>
-      comparatorLikelihood(left) - comparatorLikelihood(right) || comparePaths(left, right));
+  return comparatorConfigurationCandidates(entries).map((entry) => entry.path);
 }
 
 /** A bounded native-datalist window; every candidate remains reachable by typing. */

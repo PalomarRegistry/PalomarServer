@@ -132,17 +132,14 @@ export function intakeForm(
       <label for="comparator_config_path">Comparator configuration</label>
       <input id="comparator_config_path" name="comparator_config_path" required
              autocomplete="off" list="comparator-config-suggestions"
-             aria-describedby="comparator_config_path-hint"
+             aria-describedby="comparator_config_path-hint comparator-config-multiple"
              placeholder="comparator.json" value="${escape(values.comparator_config_path)}">
-      <datalist id="comparator-config-suggestions"><option value="comparator.json"></option></datalist>
+      <datalist id="comparator-config-suggestions"></datalist>
       <p class="hint" id="comparator_config_path-hint">
         <span class="field-status" id="comparator_config_path-status" aria-hidden="true"></span>
-        <span id="comparator_config_path-message">Type a repository-relative path or choose a JSON file found at this commit.
-        <code>comparator.json</code> is available immediately as the conventional default;
-        type to narrow the suggestions, or continue typing any other path.
-        One Palomar entry records this configuration and every declaration it
-        selects. Submit another configuration separately.</span>
+        <span id="comparator_config_path-message">Choose a detected Comparator configuration or enter its repository-relative path. Palomar checks the selected file at this commit.</span>
       </p>
+      <p class="hint warning" id="comparator-config-multiple" hidden>This repository contains multiple Comparator configurations. Palomar normally expects one per repository. Choose which configuration this entry should verify; <code>project.description</code> describes the repository’s formalization as a whole.</p>
 
       <details id="layout" class="disclosure"${layoutOpen ? " open" : ""}
                data-layout="${layoutOpen ? "custom" : "unchecked"}">
@@ -243,13 +240,13 @@ export function intakeForm(
         <ul id="browser-preflight-diagnostics" class="problems"></ul>
         <section id="preflight-description" class="registry-description-preview" hidden>
           <h3>Registry preview</h3>
-          <p class="hint">Readers will see this description beneath the entry title.</p>
+          <p class="hint">Readers will see this project-wide description beneath the entry title.</p>
           <blockquote id="preflight-description-text"></blockquote>
           <p class="hint" id="preflight-description-source"></p>
-          <div id="preflight-description-declarations" hidden>
-            <p class="hint">It should identify the mathematical content selected by:</p>
+          <details id="preflight-description-declarations" hidden>
+            <summary id="preflight-description-declaration-summary"></summary>
             <ul id="preflight-description-declaration-list"></ul>
-          </div>
+          </details>
           <button type="button" class="secondary compact" id="preflight-description-edit">
             Edit description
           </button>

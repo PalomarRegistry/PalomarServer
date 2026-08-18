@@ -5,7 +5,8 @@ export const SECURITY_HEADERS = {
   // browser. The answers are hints only; the Server checks them again.
   "content-security-policy":
     "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; " +
-    "connect-src 'self' https://api.github.com https://data.palomar-registry.org; " +
+    "connect-src 'self' https://api.github.com https://raw.githubusercontent.com " +
+    "https://data.palomar-registry.org; " +
     "base-uri 'none'; form-action 'self' https://github.com; frame-ancestors 'none'",
   "referrer-policy": "no-referrer",
   "x-content-type-options": "nosniff",

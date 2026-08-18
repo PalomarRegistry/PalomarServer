@@ -29,7 +29,7 @@ export const FORMALIZATION_FIELDS = Object.freeze({
   },
   "project.description": {
     label: "Project description",
-      description: "A concise public account of the mathematical content and principal results selected by the submitted Comparator configuration.",
+    description: "A concise public account of the mathematical content and principal results of the formalization as a whole.",
     input: "prose",
   },
   "project.authors": {

@@ -171,6 +171,8 @@ test("preliminary-check copy describes the browser and post-authentication work"
   assert.match(form, /name="preflight_repair"/);
   assert.match(form, /id="preflight-description"/);
   assert.match(form, /Registry preview/);
+  assert.match(form, /project-wide description beneath the entry title/);
+  assert.match(form, /id="preflight-description-declaration-summary"/);
   assert.match(form, /id="preflight-description-edit">\s+Edit description/);
   assert.match(script, /Authenticate via GitHub and prepare pull request/);
   assert.match(script, /formalizationDescription/);
@@ -240,7 +242,11 @@ test("the browser's own validation accepts whatever the normaliser accepts", asy
 
 test("every live-checked field names the element that describes it", () => {
   for (const id of ["repository", "commit", "comparator_config_path", "existing_id"]) {
-    assert.match(form, new RegExp(`aria-describedby="${id}-hint"`), `${id} is undescribed`);
+    assert.match(
+      form,
+      new RegExp(`aria-describedby="${id}-hint(?: [^"]+)?"`),
+      `${id} is undescribed`,
+    );
     assert.match(form, new RegExp(`id="${id}-status"`), `${id} has no status slot`);
   }
 });
@@ -256,18 +262,21 @@ test("the Comparator path check reports a missing file without blocking submissi
   assert.doesNotMatch(script, /setCustomValidity/);
 });
 
-test("the Comparator path field filters every JSON file without taking over the input", async () => {
+test("the Comparator path field offers only content-classified configurations", async () => {
   const script = await readFile(new URL("../public/intake.js", import.meta.url), "utf8");
   const {
+    boundedComparatorConfigurationCandidates,
+    comparatorConfigurationCandidates,
     comparatorConfigurationPaths,
     comparatorPathSuggestions,
   } = await import("../public/normalize.js");
 
   assert.match(form, /id="comparator_config_path" name="comparator_config_path" required\s+autocomplete="off" list="comparator-config-suggestions"/);
-  assert.match(form, /<datalist id="comparator-config-suggestions"><option value="comparator\.json"><\/option><\/datalist>/);
-  assert.match(form, /Type a repository-relative path or choose a JSON file found at this commit/);
-  assert.match(form, /<code>comparator\.json<\/code> is available immediately as the conventional default/);
-  assert.match(form, /type to narrow the suggestions, or continue typing any other path/);
+  assert.match(form, /<datalist id="comparator-config-suggestions"><\/datalist>/);
+  assert.match(form, /Choose a detected Comparator configuration or enter its repository-relative path/);
+  assert.match(form, /id="comparator-config-multiple" hidden/);
+  assert.match(form, /Palomar normally expects one per repository/);
+  assert.doesNotMatch(form, /Submit another configuration separately/);
 
   const entries = [
     "lake-manifest.json",
@@ -298,20 +307,39 @@ test("the Comparator path field filters every JSON file without taking over the 
   ]);
   assert.deepEqual(comparatorPathSuggestions(paths, "json", 2), paths.slice(0, 2));
   assert.deepEqual(comparatorPathSuggestions(paths, "json", -1), []);
+  assert.deepEqual(
+    comparatorConfigurationCandidates(entries).map((entry) => entry.path),
+    paths,
+  );
+  const bounded = boundedComparatorConfigurationCandidates([
+    { path: "comparator.json", type: "blob", mode: "100644", size: 20 },
+    { path: "other.json", type: "blob", mode: "100644", size: 20 },
+    { path: "large.json", type: "blob", mode: "100644", size: 101 },
+  ], { maximumFileBytes: 100, maximumFiles: 1, maximumTotalBytes: 100 });
+  assert.deepEqual(bounded.candidates.map((entry) => entry.path), ["comparator.json"]);
+  assert.equal(bounded.complete, false);
 
-  // The tree enriches only the datalist. It never writes a suggestion into
-  // the editable field, and path validation remains on its independent timer.
+  // Classification, not a filename, earns a datalist entry. It is progressive,
+  // has no elapsed-time deadline, and never takes ownership back from a user.
   const render = script.slice(
     script.indexOf("function renderComparatorSuggestions"),
     script.indexOf("function resetComparatorSuggestions"),
   );
   assert.match(render, /option\.value = path/);
   assert.doesNotMatch(render, /configPath\.value\s*=/);
+  const discovery = script.slice(
+    script.indexOf("async function discoverComparatorConfigurations"),
+    script.indexOf("let comparatorPathToken"),
+  );
+  assert.match(script, /raw\.githubusercontent\.com/);
+  assert.match(discovery, /validateComparator\(text, selectedPolicy\)\.length === 0/);
+  assert.match(discovery, /await Promise\.all/);
+  assert.doesNotMatch(discovery, /setTimeout|Promise\.race/);
   assert.match(script, /input === configPath && input\.dataset\.userOwned === "true"/);
   assert.match(script, /if \(input === configPath\) input\.dataset\.userOwned = "true"/);
   assert.match(script, /describedLayout\?\.name === name && describedLayout\.sha === sha/);
   assert.match(script, /function invalidateLayout\(\)/);
-  assert.match(script, /setComparatorSuggestions\(tree\.tree\);\s+describeTreeLayout\(tree\.tree\)/);
+  assert.match(script, /void discoverComparatorConfigurations\(name, sha, tree\.tree\)/);
   assert.match(script, /scheduleComparatorPathLookup\(\)/);
 });
 
@@ -394,14 +422,13 @@ test("the form still works without the script", () => {
   assert.doesNotMatch(form, /Technical\s+Maintainer membership for a marked test/);
 });
 
-test("the policy reaches exactly the two origins the form looks things up on", async () => {
+test("the policy reaches exactly the origins the form looks things up on", async () => {
   const response = await worker.fetch(
     new Request("https://submit.palomar-registry.org/"),
     ENV,
   );
   const policy = response.headers.get("content-security-policy");
-  assert.match(policy, /connect-src 'self' https:\/\/api\.github\.com https:\/\/data\.palomar-registry\.org;/);
-  assert.doesNotMatch(policy, /raw\.githubusercontent\.com/);
+  assert.match(policy, /connect-src 'self' https:\/\/api\.github\.com https:\/\/raw\.githubusercontent\.com https:\/\/data\.palomar-registry\.org;/);
   assert.match(policy, /default-src 'none'/);
   assert.match(policy, /form-action 'self'/);
 });
@@ -413,6 +440,7 @@ test("the script never sends what the submitter typed anywhere but those origins
   for (const destination of destinations) {
     assert.ok(
       /api\.github\.com/.test(destination) ||
+        /raw\.githubusercontent\.com/.test(destination) ||
         destination === '"/api/submissions"' ||
         /^`\$\{REGISTRY_VERSIONS\}\$\{value\}\.json`$/.test(destination) ||
         destination === "`${REGISTRY_DATA}${path}`",
@@ -786,7 +814,7 @@ test("a project that is not at the repository root can be submitted", async () =
     assert.match(form, new RegExp(`name="${name}"`), `the form cannot say ${name}`);
   }
   assert.match(form, /name="comparator_config_path" required/);
-  assert.match(form, /One\s+Palomar entry records this configuration/);
+  assert.match(form, /Palomar checks the selected file at this commit/);
 });
 
 test("a submission must select one Comparator configuration explicitly", async () => {
