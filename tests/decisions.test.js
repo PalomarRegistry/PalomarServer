@@ -1279,11 +1279,25 @@ test("structured metadata failures are concise and identify fields as code", asy
   assert.match(script, /diagnostic\.location\?\.path === "formalization\.yaml"/);
   assert.match(script, /el\("code", "formalization\.yaml"\)/);
   assert.match(script, /file in the repository, and resubmit using the updated commit/);
+  // That copy is for metadata problems; a Lean or Comparator failure is not
+  // fixed by editing formalization.yaml.
+  assert.match(script, /item\.owner === "submitter" && item\.stage === "formalization"/);
   assert.doesNotMatch(script, /Each item below says what needs changing/);
   assert.doesNotMatch(script, /Update the repository and submit the corrected commit/);
   assert.doesNotMatch(script, /Who can fix this:/);
   assert.match(script, /View the pull request\./);
   assert.doesNotMatch(script, /Open the pull request\./);
+});
+
+test("a quoted tool failure keeps its lines", async () => {
+  const script = await readFile(new URL("../public/status.js", import.meta.url), "utf8");
+  const css = await readFile(new URL("../public/style.css", import.meta.url), "utf8");
+  // The verifier quotes the Lean or Comparator lines that named the failure, so
+  // the page has to render them as output rather than collapse them to prose.
+  assert.match(script, /output\.className = "tool-output"/);
+  assert.match(script, /output\.textContent = body/);
+  assert.match(css, /\.tool-output \{[^}]*white-space: pre-wrap/s);
+  assert.match(css, /\.tool-output \{[^}]*font-family: var\(--mono\)/s);
 });
 
 test("every status-script element is present in the status page", async () => {
