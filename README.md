@@ -23,7 +23,7 @@ assume:
 - **Public from the moment you submit:** the repository, commit, and selected
   Comparator configuration path.
   Verification runs in a public Actions workflow whose logs are public.
-- **Never public unless the author registers:** the review, the decision, and
+- **Never public unless the author registers:** the review, its findings, and
   the submitter's identity.
 - **"Private" means not public, not confidential.** Reviews are readable by
   operators, GitHub, and the model provider, and are kept indefinitely.
@@ -206,11 +206,11 @@ Registration is the submitter's decision and nobody else's. `/register` records
 consent together with the digest of the review the submitter was shown, and the
 reviewer refuses to register anything whose bytes differ, so a revised review
 needs fresh consent rather than inheriting the old. Withdrawing before consent
-leaves no public trace of the review or the decision. After consent, the reviewer
+leaves no public trace of the review or its findings. After consent, the reviewer
 still refuses to merge a withdrawn record, but source-preservation or rendering
-work that already started may remain public. Only an accepted review under the
-current review contract can be registered; an older in-flight review must be
-rerun. A technical-team test can reach the same accepted-review screen, but its
+work that already started may remain public. Registration requires a current
+review that identified no blocking problem; an older in-flight review must be
+rerun. A technical-team test can reach the same review screen, but its
 registration control is disabled with an explanation. `/register` and the
 reviewer independently refuse it, and State validation reports any test record
 edited by hand to carry consent or registration state. Test submissions also

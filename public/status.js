@@ -157,7 +157,7 @@ function paragraphs(heading, items) {
 
 let reviewShown = false;
 let reviewNeedsRerun = false;
-let reviewPassed = false;
+let reviewAllowsRegistration = false;
 let registrationStarted = false;
 let decisionInFlight = false;
 // The digest of the review on the page, sent back with a registration so that
@@ -167,7 +167,7 @@ let reviewDigest = null;
 function resetReview() {
   reviewShown = false;
   reviewNeedsRerun = false;
-  reviewPassed = false;
+  reviewAllowsRegistration = false;
   reviewDigest = null;
   reviewSummary.replaceChildren();
   reviewBody.replaceChildren();
@@ -205,7 +205,7 @@ async function showReview({ registered = false, expectedDigest = null } = {}) {
       ),
     );
     reviewSection.hidden = false;
-    reviewPassed = false;
+    reviewAllowsRegistration = false;
     return true;
   }
   if (!response.ok) {
@@ -219,11 +219,16 @@ async function showReview({ registered = false, expectedDigest = null } = {}) {
   }
   reviewNeedsRerun = false;
   reviewShown = true;
-  reviewPassed = review.passed === true;
+  reviewAllowsRegistration = review.blocking_problems_identified === false;
   reviewDigest = review.review_sha256 ?? null;
   reviewSummary.replaceChildren();
   reviewBody.replaceChildren();
-  row("Decision", review.passed ? "Passed" : "Did not pass", reviewSummary);
+  const reviewStatus = review.blocking_problems_identified
+    ? "Problems were identified."
+    : review.has_nonblocking_warnings
+      ? "No blocking problems were identified."
+      : "No problems were identified.";
+  row("Automated review", reviewStatus, reviewSummary);
   row("Reviewed", review.reviewed_at ?? "", reviewSummary);
   row("Reviewer models", (review.reviewer_models ?? []).join(", "), reviewSummary);
   // No scores. They decide the outcome and are kept with the record, and the
@@ -297,7 +302,7 @@ withdrawButton?.addEventListener("click", () =>
         "merged, but source-preservation or rendering work that already started may remain " +
         "public. Withdraw?"
       : "Withdrawing ends this submission. Nothing about the review or the " +
-        "decision becomes public. Withdraw?",
+        "findings become public. Withdraw?",
   ),
 );
 
@@ -1267,7 +1272,7 @@ async function poll() {
   if (data.registration_consent) registrationStarted = true;
   const effectiveConsent = data.registration_consent === true || registrationStarted;
   let presentation = statusPresentation(data.status, {
-    reviewPassed,
+    reviewAllowsRegistration,
     registrationConsent: effectiveConsent,
   });
 
@@ -1283,7 +1288,7 @@ async function poll() {
   } else if (presentation.review === "interactive") {
     await showReview();
     presentation = statusPresentation(data.status, {
-      reviewPassed,
+      reviewAllowsRegistration,
       registrationConsent: effectiveConsent,
     });
     if (effectiveConsent) {
@@ -1299,7 +1304,7 @@ async function poll() {
   }
   decisionSection.hidden = !presentation.register && !presentation.withdraw;
   const copy = decisionCopy(data.status, {
-    reviewPassed,
+    reviewAllowsRegistration,
     registrationConsent: effectiveConsent,
     reviewShown,
     reviewNeedsRerun,
@@ -1320,14 +1325,14 @@ async function poll() {
     : defaultRegisterWarning;
   if (presentation.register && testSubmission) {
     decisionIntro.textContent =
-      "This test has reached the point where an ordinary accepted submission could be registered.";
+      "This test has reached the point where an ordinary submission with no identified blocking problem could be registered.";
     registerWarning.textContent =
       "Registration would be allowed here if this were not a test submission. " +
       "Tests can exercise review, but they cannot enter the public registry.";
   }
   if (!effectiveConsent) {
     withdrawWarning.textContent =
-      "Withdrawing ends this submission. Nothing about the review or decision becomes public.";
+      "Withdrawing ends this submission. Nothing about the review or its findings becomes public.";
   }
   if (data.status === "registered" && data.registered_url) {
     row("Registry record", link(data.registered_url, data.registered_url));

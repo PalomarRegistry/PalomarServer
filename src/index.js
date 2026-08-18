@@ -2481,7 +2481,7 @@ export default {
       }
       if (request.method === "GET" && url.pathname === "/api/review") {
         // The submitter sees the outcome and useful prose, but not the internal
-        // three-way decision, scores, pass records, or finding severities.
+        // three-way outcome, scores, check records, or finding severities.
         const entry = await caller(env, request);
         if (entry instanceof Response) return entry;
         const review = await readState(env, statePath(entry.record.id, "review.json"));
@@ -2523,8 +2523,8 @@ export default {
         }
         const review = await readState(env, statePath(entry.record.id, "review.json"));
         if (!isCurrentReview(review.value, entry.record.id)) return obsoleteReview();
-        if (review.value.decision !== "accept") {
-          return json({ error: "only an accepted review can be registered" }, 409);
+        if (review.value.outcome !== "neutral") {
+          return json({ error: "a review that identified blocking problems cannot be registered" }, 409);
         }
         // Consent is to the review the submitter has in front of them. The
         // reviewer refuses to register anything whose digest differs, so a

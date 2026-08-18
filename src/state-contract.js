@@ -17,8 +17,8 @@ const SUBMISSION_ID_RE = /^[0-9a-z]{12}$/;
 // evolving ordinary and managed-user naming rules after proof has succeeded.
 const GITHUB_LOGIN_RE = /^[A-Za-z0-9_-]{1,39}$/;
 const UTC_SECONDS_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
-const CURRENT_REVIEW_SCHEMA_VERSION = 2;
-const REVIEW_DECISIONS = new Set(["accept", "revise", "reject"]);
+const CURRENT_REVIEW_SCHEMA_VERSION = 3;
+const REVIEW_OUTCOMES = new Set(["neutral", "revision_required", "rejected"]);
 
 // Also raised by the lifecycle boundary when an I/O result cannot satisfy this
 // contract, so every caller can keep one fail-closed error type.
@@ -153,15 +153,17 @@ export function repairOpen(value) {
 
 export function isCurrentReview(review, submissionId) {
   return plainObject(review) && review.schema_version === CURRENT_REVIEW_SCHEMA_VERSION &&
-    review.submission_id === submissionId && REVIEW_DECISIONS.has(review.decision);
+    review.submission_id === submissionId && REVIEW_OUTCOMES.has(review.outcome);
 }
 
 /** Fields from a private mechanical review that its submitter may see. */
 export function submitterReview(review) {
+  const comments = review.warnings ?? [];
   return {
-    passed: review.decision === "accept",
+    blocking_problems_identified: review.outcome !== "neutral",
+    has_nonblocking_warnings: review.outcome === "neutral" && comments.length > 0,
     summary: review.summary,
-    comments: review.warnings ?? [],
+    comments,
     requested_changes: review.requested_changes ?? [],
     reviewed_at: review.reviewed_at,
     reviewer_models: review.reviewer_models ?? [],
