@@ -160,6 +160,9 @@ button[data-busy="true"]::after {
   font-family: var(--mono); font-size: .85em; font-weight: 600;
   letter-spacing: .01em; background: var(--shade); }
 .diagnostic p { margin: .35rem 0; }
+.tool-output { margin: .35rem 0; padding: .5rem .6rem; overflow-x: auto;
+  font-family: var(--mono); font-size: .85em; white-space: pre-wrap;
+  overflow-wrap: anywhere; background: var(--shade); }
 .diagnostic .location { font-family: var(--mono); }
 #repair-form { margin-top: 1.5rem; border-top: 1px solid var(--line); padding-top: .5rem; }
 :is(#repair-fields, #preflight-repair-fields) .repair-field {

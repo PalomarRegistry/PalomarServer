@@ -947,7 +947,20 @@ function showStructuredFailure(data) {
       ? formalizationDiagnosticText(diagnostic.summary, diagnostic.field)
       : diagnostic.summary;
     if (explanation && explanation !== summary) {
-      article.append(el("p", explanation));
+      // A quoted tool failure is program output, not prose. Its line breaks are
+      // the difference between a readable error and one long run-on sentence,
+      // and the summary already stands above it as the heading.
+      const body = explanation.startsWith(summary)
+        ? explanation.slice(summary.length).trim()
+        : explanation;
+      if (body.includes("\n")) {
+        const output = document.createElement("pre");
+        output.className = "tool-output";
+        output.textContent = body;
+        article.append(output);
+      } else if (body) {
+        article.append(el("p", body));
+      }
     }
     if (diagnostic.owner !== "submitter") {
       article.append(el("p", "Palomar must fix this."));
@@ -961,7 +974,13 @@ function showStructuredFailure(data) {
   }
   if (data.repair && !shown.length) {
     failureIntro.textContent = "Palomar's metadata repair result is shown below.";
-  } else if (shown.length && diagnostics.every((item) => item.owner === "submitter")) {
+  } else if (
+    // Only metadata problems are fixed by editing `formalization.yaml`. Saying
+    // so about a Lean or Comparator failure sends the submitter to the wrong
+    // file, which is what a comparator failure used to do.
+    shown.length &&
+    diagnostics.every((item) => item.owner === "submitter" && item.stage === "formalization")
+  ) {
     failureIntro.replaceChildren(
       "Update the ",
       el("code", "formalization.yaml"),
