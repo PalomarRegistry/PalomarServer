@@ -98,6 +98,12 @@ export function validateFormalization(text, selectedPolicy = policy) {
   const result = [];
   const project = mapping(data.project);
   addField(result, nonempty(project.name), "project.name", "must be a nonempty string.");
+  addField(
+    result,
+    nonempty(project.description) && project.description.trim().length <= 10_000,
+    "project.description",
+    "must be a nonempty string of at most 10000 characters.",
+  );
   addField(result, people(project.authors), "project.authors", "must be a nonempty list of people.");
   addField(result, nonempty(project.license), "project.license", "must be a nonempty string.");
   const maintainers = project.responsible_maintainers ??
@@ -250,6 +256,41 @@ function parsedFormalization(text) {
   }
 }
 
+/** Resolve the public project description while preserving legacy provenance for migration UI. */
+export function formalizationDescription(text) {
+  const data = parsedFormalization(text);
+  if (!data) return null;
+  const project = mapping(data.project);
+  for (const [value, origin] of [
+    [project.description, "project.description"],
+    [project.short_description, "project.short_description"],
+    [mapping(data.result).statement, "result.statement"],
+    [project.name, "project.name"],
+  ]) {
+    if (nonempty(value)) {
+      return {
+        text: value.trim().slice(0, 10_000),
+        origin,
+        dedicated: origin === "project.description",
+      };
+    }
+  }
+  return null;
+}
+
+/** Names whose mathematical content the description must orient a reader toward. */
+export function comparatorDeclarations(text) {
+  try {
+    const data = JSON.parse(text);
+    if (mapping(data) !== data) return [];
+    return [...(Array.isArray(data.theorem_names) ? data.theorem_names : []),
+      ...(Array.isArray(data.definition_names) ? data.definition_names : [])]
+      .filter(nonempty).map((item) => item.trim());
+  } catch {
+    return [];
+  }
+}
+
 function safePeople(value) {
   if (!Array.isArray(value) || !value.length) return null;
   const result = value.map((person) => {
@@ -301,6 +342,18 @@ export function formalizationRepairDraft(text) {
     if (value) {
       values[field] = value;
       origins[field] = nonempty(current) ? field : `artifact.${field.split(".").at(-1)}`;
+    }
+  }
+  for (const [candidate, origin] of [
+    [project.description, "project.description"],
+    [project.short_description, "project.short_description"],
+    [mapping(data.result).statement, "result.statement"],
+    [project.name, "project.name"],
+  ]) {
+    if (nonempty(candidate)) {
+      values["project.description"] = candidate.trim().slice(0, 10_000);
+      origins["project.description"] = origin;
+      break;
     }
   }
   for (const [field, current, legacy, legacyOrigin] of [

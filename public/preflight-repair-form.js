@@ -3,6 +3,7 @@ import {
   canAddClassification,
   classificationMaximum,
   FORMALIZATION_FIELDS,
+  FORMALIZATION_PROFILE_VERSION,
   lines,
   safeDraft,
   SOURCE_ENDORSEMENT_SUGGESTIONS,
@@ -41,6 +42,7 @@ export function createPreflightRepairForm({ container, fields, status }) {
   let sequence = 0;
   let active = false;
   let attempted = false;
+  let intent = null;
 
   function setStatus(message = "") {
     status.textContent = message;
@@ -300,12 +302,12 @@ export function createPreflightRepairForm({ container, fields, status }) {
     const profile = FORMALIZATION_FIELDS[field];
     const draft = safeDraft(failure, field);
     wrapper.dataset.field = field;
-    if (["text", "people"].includes(profile.input)) {
+    if (["text", "prose", "people"].includes(profile.input)) {
       const input = profile.input === "text" ? document.createElement("input") : document.createElement("textarea");
       input.name = field;
       input.dataset.inputType = profile.input;
       input.required = true;
-      input.maxLength = profile.input === "text" ? 500 : 4000;
+      input.maxLength = profile.input === "text" ? 500 : profile.input === "prose" ? 10_000 : 4000;
       if (input instanceof HTMLTextAreaElement) input.rows = 3;
       input.value = Array.isArray(draft) ? draft.join("\n") : draft ?? "";
       if (!input.value.trim()) input.dataset.originallyInvalid = "true";
@@ -391,7 +393,7 @@ export function createPreflightRepairForm({ container, fields, status }) {
       return { field, value: [...wrapper.querySelectorAll('[data-part="code"]')]
         .map((input) => input.value.trim()).filter(Boolean) };
     }
-    if (profile.input === "text") {
+    if (profile.input === "text" || profile.input === "prose") {
       return { field, value: wrapper.querySelector("[name]").value.trim() };
     }
     if (profile.input === "sources" || profile.input === "methods") {
@@ -422,7 +424,7 @@ export function createPreflightRepairForm({ container, fields, status }) {
     const field = wrapper.dataset.field;
     const profile = FORMALIZATION_FIELDS[field];
     let complete = true;
-    if (["text", "people"].includes(profile.input)) {
+    if (["text", "prose", "people"].includes(profile.input)) {
       const input = wrapper.querySelector("[name]");
       complete = setValidity(input, input.value.trim() ? "" : "Complete this field.");
     } else if (profile.input === "text-list") {
@@ -456,7 +458,7 @@ export function createPreflightRepairForm({ container, fields, status }) {
     let problem = "";
     if (complete) {
       try {
-        normalizedRepairEdits([edit(wrapper)], 2);
+        normalizedRepairEdits([edit(wrapper)], FORMALIZATION_PROFILE_VERSION);
       } catch (error) {
         problem = error instanceof Error ? error.message : "Check this field.";
         complete = false;
@@ -490,11 +492,13 @@ export function createPreflightRepairForm({ container, fields, status }) {
     clear() {
       active = false;
       attempted = false;
+      intent = null;
       fields.replaceChildren();
       container.hidden = true;
       setStatus();
     },
-    render(failure, restoredEdits = []) {
+    render(failure, restoredEdits = [], options = {}) {
+      intent = options.intent ?? null;
       const restored = Object.fromEntries(
         (Array.isArray(restoredEdits) ? restoredEdits : [])
           .filter((item) => item?.field && Object.hasOwn(item, "value"))
@@ -554,10 +558,14 @@ export function createPreflightRepairForm({ container, fields, status }) {
       try {
         const edits = normalizedRepairEdits(
           [...fields.querySelectorAll(".repair-field")].map(edit),
-          2,
+          FORMALIZATION_PROFILE_VERSION,
         );
         setStatus();
-        return JSON.stringify({ profile_version: 2, edits });
+        return JSON.stringify({
+          profile_version: FORMALIZATION_PROFILE_VERSION,
+          ...(intent ? { intent } : {}),
+          edits,
+        });
       } catch (error) {
         setStatus(error instanceof Error ? error.message : "Check the metadata fields.");
         return null;

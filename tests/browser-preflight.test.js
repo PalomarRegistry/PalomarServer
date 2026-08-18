@@ -5,7 +5,9 @@ import { gzipSync } from "node:zlib";
 
 import {
   BROWSER_PREFLIGHT_POLICY,
+  comparatorDeclarations,
   duplicateJsonKeys,
+  formalizationDescription,
   formalizationRepairDraft,
   guidedFormalizationDiagnostics,
   inspectTree,
@@ -19,6 +21,7 @@ const VALID_FORMALIZATION = `
 version: v0.4
 project:
   name: Example
+  description: A formalization of the example result.
   authors: [Example Author]
   license: MIT
   responsible_maintainers: [Example Maintainer]
@@ -38,6 +41,27 @@ review:
 
 test("portable metadata validation accepts the current minimal contract", () => {
   assert.deepEqual(validateFormalization(VALID_FORMALIZATION), []);
+});
+
+test("preflight exposes the exact public description and Comparator result names", () => {
+  assert.deepEqual(formalizationDescription(VALID_FORMALIZATION), {
+    text: "A formalization of the example result.",
+    origin: "project.description",
+    dedicated: true,
+  });
+  assert.deepEqual(comparatorDeclarations(JSON.stringify({
+    theorem_names: ["Example.main", "Example.corollary"],
+    definition_names: ["Example.input"],
+  })), ["Example.main", "Example.corollary", "Example.input"]);
+
+  const legacy = VALID_FORMALIZATION
+    .replace("  description: A formalization of the example result.\n", "")
+    .replace("  name: Example\n", "  name: Example\n  short_description: Earlier summary.\n");
+  assert.deepEqual(formalizationDescription(legacy), {
+    text: "Earlier summary.",
+    origin: "project.short_description",
+    dedicated: false,
+  });
 });
 
 test("YAML duplicate and merge keys are deterministic failures", () => {

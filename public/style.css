@@ -178,6 +178,11 @@ button[data-busy="true"]::after {
 :is(#repair-fields, #preflight-repair-fields) .repair-repeatable label > :is(input, textarea, select) {
   display: block; width: 100%; margin-top: .2rem; }
 #preflight-repair { margin-top: 1.25rem; border-top: 1px solid var(--line); }
+.registry-description-preview { margin: 1.25rem 0; padding: 1rem;
+  border: 1px solid var(--line); background: var(--shade); }
+.registry-description-preview blockquote { margin: .75rem 0; padding-left: 1rem;
+  border-left: .25rem solid var(--accent); white-space: pre-line; }
+.registry-description-preview ul { margin-top: .35rem; }
 button.compact { margin-top: .6rem; padding: .35rem .65rem; }
 .repair-classification { display: grid; grid-template-columns: minmax(0, 1fr) auto;
   gap: 0 .5rem; align-items: baseline; margin: .4rem 0; }

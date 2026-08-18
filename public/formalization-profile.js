@@ -1,5 +1,5 @@
-/** Presentation and payload contract mirrored from PalomarSubmission profile v2. */
-export const FORMALIZATION_PROFILE_VERSION = 2;
+/** Presentation and payload contract mirrored from PalomarSubmission profile v3. */
+export const FORMALIZATION_PROFILE_VERSION = 3;
 export const LEGACY_REPAIR_FIELDS = new Set([
   "project.name", "project.license", "classification.arxiv",
   "classification.msc2020", "review.status",
@@ -26,6 +26,11 @@ export function sourceRelationshipCategory(value) {
 export const FORMALIZATION_FIELDS = Object.freeze({
   "project.name": {
     label: "Project name", description: "The name of the formalized result or project.", input: "text",
+  },
+  "project.description": {
+    label: "Project description",
+      description: "A concise public account of the mathematical content and principal results selected by the submitted Comparator configuration.",
+    input: "prose",
   },
   "project.authors": {
     label: "Project authors", description: "People who authored the formalization. Palomar does not infer authorship.", input: "people",

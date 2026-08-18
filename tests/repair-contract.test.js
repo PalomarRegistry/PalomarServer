@@ -25,6 +25,24 @@ test("profile two accepts the complete structured metadata payload", () => {
   assert.equal(edits.find((edit) => edit.field === "sources").value[0].type, "article");
 });
 
+test("profile three adds a bounded multiline project description", () => {
+  assert.deepEqual(normalizedRepairEdits([{
+    field: "project.description",
+    value: "  A theorem about configurations.\nIt proves the selected extremal result.  ",
+  }], 3), [{
+    field: "project.description",
+    value: "A theorem about configurations.\nIt proves the selected extremal result.",
+  }]);
+  assert.throws(
+    () => normalizedRepairEdits([{ field: "project.description", value: "Description" }], 2),
+    /unsupported/,
+  );
+  assert.throws(
+    () => normalizedRepairEdits([{ field: "project.description", value: "x".repeat(10_001) }], 3),
+    /10000/,
+  );
+});
+
 test("source types are bounded free text", () => {
   for (const type of ["article", "formalization", "web-discussion", "conversation"]) {
     const edits = normalizedRepairEdits([{ field: "sources", value: [{

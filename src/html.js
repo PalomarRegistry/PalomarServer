@@ -241,10 +241,23 @@ export function intakeForm(
         <h2 id="browser-preflight-heading">Preliminary checks</h2>
         <p id="browser-preflight-summary" tabindex="-1"></p>
         <ul id="browser-preflight-diagnostics" class="problems"></ul>
+        <section id="preflight-description" class="registry-description-preview" hidden>
+          <h3>Registry preview</h3>
+          <p class="hint">Readers will see this description beneath the entry title.</p>
+          <blockquote id="preflight-description-text"></blockquote>
+          <p class="hint" id="preflight-description-source"></p>
+          <div id="preflight-description-declarations" hidden>
+            <p class="hint">It should identify the mathematical content selected by:</p>
+            <ul id="preflight-description-declaration-list"></ul>
+          </div>
+          <button type="button" class="secondary compact" id="preflight-description-edit">
+            Edit description
+          </button>
+        </section>
         <p id="browser-preflight-deferred" class="hint"></p>
         <section id="preflight-repair" hidden>
-          <h3>Fix <code>formalization.yaml</code> before submitting</h3>
-          <p>
+          <h3 id="preflight-repair-heading">Fix <code>formalization.yaml</code> before submitting</h3>
+          <p id="preflight-repair-copy">
             Palomar will validate these values after GitHub authentication and
             prepare a pull request from its repair account. It will never push
             directly to your repository.
