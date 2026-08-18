@@ -16,7 +16,7 @@
  */
 
 import {
-  comparatorConfigurationPaths,
+  boundedComparatorConfigurationCandidates,
   comparatorPathSuggestions,
   defaultCommitSuggestion,
   exactRegistration,
@@ -474,8 +474,14 @@ const projectPath = document.getElementById("project_path");
 const configPath = comparatorConfig.input;
 const metadataPath = document.getElementById("formalization_metadata_path");
 const comparatorSuggestionList = document.getElementById("comparator-config-suggestions");
-const DEFAULT_COMPARATOR_PATH = "comparator.json";
-let comparatorPaths = [DEFAULT_COMPARATOR_PATH];
+const comparatorMultiple = document.getElementById("comparator-config-multiple");
+const COMPARATOR_DISCOVERY_CONCURRENCY = 6;
+let comparatorPaths = [];
+let comparatorCandidateOrder = [];
+let comparatorConfirmed = new Set();
+let comparatorDiscoverySettled = false;
+let comparatorDiscoveryToken = 0;
+let comparatorDiscoveryController;
 
 /**
  * Keep only a small matching window in the DOM. The complete candidate list
@@ -494,16 +500,109 @@ function renderComparatorSuggestions() {
 }
 
 function resetComparatorSuggestions() {
-  comparatorPaths = [DEFAULT_COMPARATOR_PATH];
+  comparatorPaths = [];
+  comparatorCandidateOrder = [];
+  comparatorConfirmed = new Set();
+  comparatorDiscoverySettled = false;
+  if (comparatorMultiple) comparatorMultiple.hidden = true;
   renderComparatorSuggestions();
 }
 
-function setComparatorSuggestions(entries) {
-  const found = comparatorConfigurationPaths(entries);
-  comparatorPaths = found.includes(DEFAULT_COMPARATOR_PATH)
-    ? found
-    : [DEFAULT_COMPARATOR_PATH, ...found];
+function cancelComparatorDiscovery() {
+  comparatorDiscoveryToken += 1;
+  comparatorDiscoveryController?.abort();
+  comparatorDiscoveryController = undefined;
+}
+
+function refreshComparatorDiscovery() {
+  comparatorPaths = comparatorCandidateOrder.filter((path) => comparatorConfirmed.has(path));
   renderComparatorSuggestions();
+  const multiple = comparatorPaths.length >= 2;
+  if (comparatorMultiple) comparatorMultiple.hidden = !multiple;
+  if (multiple) {
+    autofill(configPath, "");
+  } else if (comparatorPaths.length === 1) {
+    autofill(configPath, comparatorPaths[0]);
+  }
+  if (describedLayout?.entries) {
+    describeTreeLayout(describedLayout.entries);
+    scheduleBrowserPreflight();
+  }
+}
+
+async function exactCommitRawText(repositoryName, sha, path, maximumBytes, signal) {
+  const [owner, repositoryNameOnly] = repositoryName.split("/");
+  const encodedPath = path.split("/").map(encodeURIComponent).join("/");
+  try {
+    const response = await fetch(
+      `https://raw.githubusercontent.com/${encodeURIComponent(owner)}/${encodeURIComponent(repositoryNameOnly)}/${sha}/${encodedPath}`,
+      { signal },
+    );
+    if (!response.ok) return null;
+    const declared = Number(response.headers.get("content-length"));
+    if (Number.isFinite(declared) && declared > maximumBytes) return null;
+    const bytes = await response.arrayBuffer();
+    if (bytes.byteLength > maximumBytes) return null;
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    return null;
+  }
+}
+
+async function discoverComparatorConfigurations(name, sha, entries) {
+  const mine = ++comparatorDiscoveryToken;
+  comparatorDiscoveryController?.abort();
+  const controller = new AbortController();
+  comparatorDiscoveryController = controller;
+  resetComparatorSuggestions();
+  try {
+    const {
+      BROWSER_PREFLIGHT_POLICY: selectedPolicy,
+      validateComparator,
+    } = await loadBrowserPreflight();
+    if (mine !== comparatorDiscoveryToken || controller.signal.aborted) return;
+    const { candidates } = boundedComparatorConfigurationCandidates(entries, {
+      maximumFileBytes: selectedPolicy.limits.configuration_bytes,
+    });
+    comparatorCandidateOrder = candidates.map((entry) => entry.path);
+    let cursor = 0;
+    const worker = async () => {
+      while (mine === comparatorDiscoveryToken && !controller.signal.aborted) {
+        const index = cursor;
+        cursor += 1;
+        if (index >= candidates.length) return;
+        const candidate = candidates[index];
+        const text = await exactCommitRawText(
+          name,
+          sha,
+          candidate.path,
+          selectedPolicy.limits.configuration_bytes,
+          controller.signal,
+        );
+        if (
+          mine === comparatorDiscoveryToken && !controller.signal.aborted &&
+          text !== null && validateComparator(text, selectedPolicy).length === 0
+        ) {
+          comparatorConfirmed.add(candidate.path);
+          refreshComparatorDiscovery();
+        }
+      }
+    };
+    await Promise.all(Array.from(
+      { length: Math.min(COMPARATOR_DISCOVERY_CONCURRENCY, candidates.length) },
+      worker,
+    ));
+    if (mine !== comparatorDiscoveryToken || controller.signal.aborted) return;
+    comparatorDiscoverySettled = true;
+    refreshComparatorDiscovery();
+  } catch {
+    if (mine === comparatorDiscoveryToken && !controller.signal.aborted) {
+      comparatorDiscoverySettled = true;
+      refreshComparatorDiscovery();
+    }
+  } finally {
+    if (mine === comparatorDiscoveryToken) comparatorDiscoveryController = undefined;
+  }
 }
 
 let comparatorPathToken = 0;
@@ -899,6 +998,7 @@ const preflightDescription = document.getElementById("preflight-description");
 const preflightDescriptionText = document.getElementById("preflight-description-text");
 const preflightDescriptionSource = document.getElementById("preflight-description-source");
 const preflightDescriptionDeclarations = document.getElementById("preflight-description-declarations");
+const preflightDescriptionDeclarationSummary = document.getElementById("preflight-description-declaration-summary");
 const preflightDescriptionDeclarationList = document.getElementById("preflight-description-declaration-list");
 const preflightDescriptionEdit = document.getElementById("preflight-description-edit");
 const preflightRepairHeading = document.getElementById("preflight-repair-heading");
@@ -964,7 +1064,10 @@ function renderDescriptionPreview(result) {
     description.dedicated ? "" : ". Editing will add project.description rather than overwrite the fallback.",
   );
   const declarations = Array.isArray(result.declarations) ? result.declarations : [];
-  if (preflightDescriptionDeclarations && preflightDescriptionDeclarationList) {
+  if (
+    preflightDescriptionDeclarations && preflightDescriptionDeclarationSummary &&
+    preflightDescriptionDeclarationList
+  ) {
     preflightDescriptionDeclarationList.replaceChildren(...declarations.map((name) => {
       const row = document.createElement("li");
       const code = document.createElement("code");
@@ -972,7 +1075,14 @@ function renderDescriptionPreview(result) {
       row.append(code);
       return row;
     }));
+    const selected = document.createElement("code");
+    selected.textContent = result.comparatorPath || "the selected configuration";
+    preflightDescriptionDeclarationSummary.replaceChildren(
+      `This entry will verify ${declarations.length} ${declarations.length === 1 ? "declaration" : "declarations"} selected by `,
+      selected,
+    );
     preflightDescriptionDeclarations.hidden = declarations.length === 0;
+    preflightDescriptionDeclarations.open = false;
   }
   if (preflightDescriptionEdit) {
     preflightDescriptionEdit.hidden =
@@ -998,7 +1108,7 @@ function editDescription() {
   if (preflightRepairHeading) preflightRepairHeading.textContent = "Edit the project description";
   if (preflightRepairCopy) {
     preflightRepairCopy.textContent =
-      "Palomar will add or update project.description after GitHub authentication and prepare a pull request. It will never push directly to your repository.";
+      "This edits project.description for the formalization as a whole. After GitHub authentication, Palomar will prepare a pull request and will never push directly to your repository.";
   }
   setSubmissionAction({ repair: true });
   document.querySelector('#preflight-repair-fields [data-field="project.description"] textarea')?.focus();
@@ -1228,6 +1338,7 @@ async function inspectBrowserPreflight() {
         ? formalizationDescription(content.formalization) : null,
       declarations: content.comparator
         ? comparatorDeclarations(content.comparator) : [],
+      comparatorPath: input.comparator,
     });
     announce(diagnostics.length
       ? `The browser check found ${diagnostics.length} possible ${diagnostics.length === 1 ? "problem" : "problems"}.`
@@ -1264,16 +1375,32 @@ function scheduleBrowserPreflight() {
 function invalidateLayout() {
   layoutToken += 1;
   describedLayout = null;
+  cancelComparatorDiscovery();
   resetComparatorSuggestions();
   clearSuggestions();
   scheduleBrowserPreflight();
 }
 
 function describeTreeLayout(entries) {
+  if (!configPath?.value) {
+    layout.open = true;
+    summarize("custom");
+    if (comparatorPaths.length >= 2) {
+      return say("Choose which detected Comparator configuration this entry should verify.");
+    }
+    if (comparatorPaths.length === 1) {
+      return say("Choose the detected Comparator configuration or enter another repository-relative path.");
+    }
+    if (!comparatorDiscoverySettled) {
+      return say("Looking for Comparator configurations at this commit…");
+    }
+    return say("No valid Comparator configuration was detected. Enter its repository-relative path.");
+  }
   const where = locateProject(entries, configPath?.value);
   if (where.found) autofill(configPath, where.config);
 
   if (where.found && !where.project && !where.metadata) {
+    layout.open = false;
     summarize("ok");
     return say("The project is at the repository root, which is what Palomar expects.", true);
   }
@@ -1311,6 +1438,7 @@ async function describeLayout(name, sha) {
   const mine = ++layoutToken;
   const current = () => mine === layoutToken;
   describedLayout = null;
+  cancelComparatorDiscovery();
   resetComparatorSuggestions();
   clearSuggestions();
   if (!name || !sha) return;
@@ -1345,8 +1473,8 @@ async function describeLayout(name, sha) {
     return say("This repository is too large for GitHub to list in one request, so the layout was not checked. Fill these in if the project is not at the root.");
   }
   describedLayout = { name, sha, entries: tree.tree };
-  setComparatorSuggestions(tree.tree);
   describeTreeLayout(tree.tree);
+  void discoverComparatorConfigurations(name, sha, tree.tree);
   scheduleBrowserPreflight();
 }
 

@@ -384,9 +384,10 @@ restores it.
 
 `index/repairs.json` is a separate durable outbox for submitter-authorized
 metadata repairs. A successful current-policy preliminary check first renders
-the exact `project.description` that registration would use as the public
-abstract, together with the declarations selected by `comparator.json`. It is
-read-only until the submitter chooses **Edit description**. That choice opens
+the exact project-wide `project.description` that registration would use as the
+public abstract, with the selected Comparator configuration and its declarations
+shown separately. It is read-only until the submitter chooses **Edit
+description**. That choice opens
 the same authenticated pull-request path, restricted to the one description
 field. When preliminary checks instead find only field-level
 `formalization.yaml` problems, the intake page renders the complete guided
