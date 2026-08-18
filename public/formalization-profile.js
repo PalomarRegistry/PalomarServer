@@ -1,5 +1,5 @@
-/** Presentation and payload contract mirrored from PalomarSubmission profile v3. */
-export const FORMALIZATION_PROFILE_VERSION = 3;
+/** Presentation and payload contract mirrored from PalomarSubmission profile v4. */
+export const FORMALIZATION_PROFILE_VERSION = 4;
 export const LEGACY_REPAIR_FIELDS = new Set([
   "project.name", "project.license", "classification.arxiv",
   "classification.msc2020", "review.status",
@@ -48,7 +48,7 @@ export const FORMALIZATION_FIELDS = Object.freeze({
     label: "MSC 2020 classifications", description: "Between one and eight official MSC 2020 codes.", input: "text-list",
   },
   sources: {
-    label: "Mathematical sources", description: "Every source needs a title and an accurate relationship to the formalized result. Source type is optional free text; original-proof is reserved for results first presented by the formalization.", input: "sources",
+    label: "Mathematical sources", description: "Every source needs a title and an accurate relationship to the formalized result. Use named contributor roles for non-author credits. Source type is optional free text; original-proof is reserved for results first presented by the formalization.", input: "sources",
   },
   "automation.methods": {
     label: "Automation methods", description: "Choose the closest standard production category; Palomar also accepts unfamiliar wording at intake.", input: "methods",
@@ -63,6 +63,24 @@ export const FORMALIZATION_FIELDS = Object.freeze({
 
 export function lines(value) {
   return String(value ?? "").split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
+}
+
+export function sourceContributorLines(value) {
+  return lines(value).map((credit) => {
+    const separator = credit.indexOf("|");
+    return separator < 0
+      ? { name: credit, role: "" }
+      : {
+        name: credit.slice(0, separator).trim(),
+        role: credit.slice(separator + 1).trim(),
+      };
+  });
+}
+
+export function sourceContributorText(value) {
+  return (value ?? [])
+    .map((contributor) => `${contributor.name} | ${contributor.role}`)
+    .join("\n");
 }
 
 export function classificationMaximum(field) {

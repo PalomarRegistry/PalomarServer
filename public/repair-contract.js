@@ -18,6 +18,7 @@ export const REPAIR_FIELDS_V3 = new Map([
   ...REPAIR_FIELDS_V2,
   ["project.description", "prose"],
 ]);
+export const REPAIR_FIELDS_V4 = new Map(REPAIR_FIELDS_V3);
 
 function exact(value, keys) {
   return value && typeof value === "object" && !Array.isArray(value) &&
@@ -69,15 +70,33 @@ function classificationList(value, field, maximum, taxonomy) {
   return result;
 }
 
-function sourceList(value) {
+function sourceList(value, allowContributors) {
   if (!Array.isArray(value) || value.length < 1 || value.length > 20) {
     throw new TypeError("sources must contain between one and twenty entries");
   }
-  const allowed = ["title", "authors", "id", "type", "location", "relationship", "note", "license", "author_endorsement"];
+  const allowed = [
+    "title", "authors", ...(allowContributors ? ["contributors"] : []),
+    "id", "type", "location", "relationship", "note", "license", "author_endorsement",
+  ];
   const result = value.map((source, index) => {
     if (!exact(source, allowed)) throw new TypeError(`sources[${index}] contains unsupported fields`);
     const item = { title: line(source.title, `sources[${index}].title`) };
     if (source.authors !== undefined) item.authors = lineList(source.authors, `sources[${index}].authors`);
+    if (source.contributors !== undefined) {
+      if (!Array.isArray(source.contributors)) {
+        throw new TypeError(`sources[${index}].contributors must be a list`);
+      }
+      item.contributors = source.contributors.map((contributor, position) => {
+        const field = `sources[${index}].contributors[${position}]`;
+        if (!exact(contributor, ["name", "role"])) {
+          throw new TypeError(`${field} must contain only name and role`);
+        }
+        return {
+          name: line(contributor.name, `${field}.name`),
+          role: line(contributor.role, `${field}.role`, 200),
+        };
+      });
+    }
     for (const [field, maximum] of [["id", 2048], ["location", 1000], ["license", 500]]) {
       if (source[field] !== undefined) item[field] = line(source[field], `sources[${index}].${field}`, maximum);
     }
@@ -128,9 +147,11 @@ function methodList(value) {
 }
 
 export function normalizedRepairEdits(value, profileVersion = 1, taxonomies = {}) {
-  const fields = profileVersion === 3
-    ? REPAIR_FIELDS_V3
-    : profileVersion === 2 ? REPAIR_FIELDS_V2 : REPAIR_FIELDS_V1;
+  const fields = profileVersion === 4
+    ? REPAIR_FIELDS_V4
+    : profileVersion === 3
+      ? REPAIR_FIELDS_V3
+      : profileVersion === 2 ? REPAIR_FIELDS_V2 : REPAIR_FIELDS_V1;
   if (!Array.isArray(value) || value.length < 1 || value.length > fields.size) {
     throw new TypeError(`edits must contain between one and ${fields.size} repairable fields`);
   }
@@ -148,7 +169,7 @@ export function normalizedRepairEdits(value, profileVersion = 1, taxonomies = {}
       normalized = classificationList(edit.value, field, maximum, taxonomies[field]);
     }
     else if (kind === "people") normalized = lineList(edit.value, field);
-    else if (kind === "sources") normalized = sourceList(edit.value);
+    else if (kind === "sources") normalized = sourceList(edit.value, profileVersion >= 4);
     else if (kind === "methods") normalized = methodList(edit.value);
     else {
       if (!exact(edit.value, ["id", "revision"]) || !/^[0-9a-f]{40}$/.test(edit.value.revision ?? "")) {

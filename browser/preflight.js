@@ -31,6 +31,14 @@ function people(value) {
     nonempty(person) || (mapping(person) === person && nonempty(person.name)));
 }
 
+function sourceContributors(value) {
+  return Array.isArray(value) && value.every((contributor) =>
+    mapping(contributor) === contributor &&
+    nonempty(contributor.name) &&
+    nonempty(contributor.role) &&
+    contributor.role.trim().length <= 200);
+}
+
 function addField(result, condition, field, requirement) {
   if (!condition) {
     result.push(diagnostic(
@@ -148,6 +156,14 @@ export function validateFormalization(text, selectedPolicy = policy) {
     sources.forEach((raw, index) => {
       const source = mapping(raw);
       addField(result, nonempty(source.title), "sources", `entry ${index + 1} needs a title.`);
+      if (source.contributors !== undefined) {
+        addField(
+          result,
+          sourceContributors(source.contributors),
+          "sources",
+          `entry ${index + 1} contributors must each have a name and role of at most 200 characters.`,
+        );
+      }
       addField(
         result,
         nonempty(source.relationship) && source.relationship.trim().length <= 500,
@@ -313,6 +329,18 @@ function safeSource(value) {
   const authors = safePeople(value.authors ??
     (value.author === undefined ? undefined : [value.author]));
   if (authors) result.authors = authors;
+  if (Array.isArray(value.contributors)) {
+    const contributors = value.contributors.flatMap((contributor) => {
+      if (
+        mapping(contributor) !== contributor ||
+        !nonempty(contributor.name) ||
+        !nonempty(contributor.role) ||
+        contributor.role.trim().length > 200
+      ) return [];
+      return [{ name: contributor.name.trim(), role: contributor.role.trim() }];
+    });
+    if (contributors.length) result.contributors = contributors;
+  }
   for (const field of ["id", "location", "license"]) {
     if (nonempty(value[field])) result[field] = value[field].trim();
   }
