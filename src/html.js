@@ -101,7 +101,7 @@ export function intakeForm(
       <p>
         The submitted repository, commit, and Comparator configuration path are
         permanently recorded in public, as is any approval evidence you write.
-        The automated review and decision become
+        The automated review and its findings become
         public only after you have seen them, and decided to complete the registration.
         The <a href="${escape(env.SITE_URL)}/privacy.html">privacy policy</a>
         says what else is kept, for how long, and how to ask about it.
@@ -441,7 +441,7 @@ export function statusPage(env) {
         append-only.
       </p>
       <p class="hint" id="withdraw-warning">
-        Withdrawing ends this submission. Nothing about the review or decision
+        Withdrawing ends this submission. Nothing about the review or its findings
         becomes public.
       </p>
     </div>

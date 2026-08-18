@@ -77,13 +77,13 @@ const WAITING_MESSAGES = {
   "preflight-reporting":
     "Preflight finished and Palomar is preparing a complete, actionable explanation.",
   verifying:
-    "Palomar is preparing and mechanically checking the repository. If verification and review pass, " +
+    "Palomar is preparing and mechanically checking the repository. If verification succeeds and the review identifies no blocking problems, " +
     "the option to register will appear on this page.",
   "awaiting-review":
-    "Mechanical verification passed and the automated review has been queued. If the " +
-    "review passes, the option to register will appear here.",
+    "Mechanical verification succeeded and the automated review has been queued. If the " +
+    "review identifies no blocking problems, the option to register will appear here.",
   reviewing:
-    "The automated review is running. If it passes, the option to register will appear here.",
+    "The automated review is running. If it identifies no blocking problems, the option to register will appear here.",
   "verification-reporting":
     "Mechanical verification finished and Palomar is preparing a complete explanation.",
 };
@@ -93,32 +93,32 @@ export function waitingMessage(status) {
   return WAITING_MESSAGES[status] ?? null;
 }
 
-/** The review and decision controls that belong to one current status. */
+/** The review and submitter-action controls that belong to one current status. */
 export function statusPresentation(
   status,
-  { reviewPassed = false, registrationConsent = false } = {},
+  { reviewAllowsRegistration = false, registrationConsent = false } = {},
 ) {
   const review = status === "review-ready" || status === "registration-paused"
     ? "interactive"
     : status === "registered" ? "read-only" : "hidden";
   return {
     review,
-    register: status === "review-ready" && reviewPassed && !registrationConsent,
+    register: status === "review-ready" && reviewAllowsRegistration && !registrationConsent,
     withdraw: WITHDRAWABLE.has(status),
   };
 }
 
-/** The heading and explanation above whichever decision controls are shown. */
+/** The heading and explanation above whichever submitter controls are shown. */
 export function decisionCopy(
   status,
   {
-    reviewPassed = false,
+    reviewAllowsRegistration = false,
     registrationConsent = false,
     reviewShown = false,
     reviewNeedsRerun = false,
   } = {},
 ) {
-  const presentation = statusPresentation(status, { reviewPassed, registrationConsent });
+  const presentation = statusPresentation(status, { reviewAllowsRegistration, registrationConsent });
   if (presentation.register) {
     return {
       heading: "Your decision",
@@ -150,9 +150,9 @@ export function decisionCopy(
         "withdraw only if you want to cancel the submission.",
     };
   }
-  if (status === "review-ready" && reviewShown && !reviewPassed) {
+  if (status === "review-ready" && reviewShown && !reviewAllowsRegistration) {
     return {
-      heading: "This review did not pass",
+      heading: "Problems were identified",
       intro:
         "Registration is not offered. Update the repository and submit the corrected commit " +
         "as a new submission. Leave the existing Palomar ID blank unless this result is " +

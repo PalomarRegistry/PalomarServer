@@ -95,14 +95,14 @@ async function fixture(overrides = {}, reviewOverrides = {}) {
     [`index/tokens/${await tokenDigest(ENV, TOKEN)}.json`]: { id: record.id },
     [statePath(record.id, "state.json")]: record,
     [statePath(record.id, "review.json")]: {
-      schema_version: 2,
+      schema_version: 3,
       submission_id: record.id,
-      decision: "accept",
+      outcome: "neutral",
       summary: "An example review.",
       scores: {},
       warnings: [],
       requested_changes: [],
-      passes: [],
+      checks: [],
       ...reviewOverrides,
     },
   };
@@ -129,7 +129,7 @@ test("the review is delivered only to whoever holds the access token", async () 
   assert.equal(held.status, 200);
   assert.equal(held.headers.get("cache-control"), "no-store");
   assert.equal(held.headers.get("vary"), "authorization");
-  assert.equal((await held.json()).passed, true);
+  assert.equal((await held.json()).blocking_problems_identified, false);
 
   const anonymous = await worker.fetch(request("/api/review", "GET", ""), ENV);
   assert.equal(anonymous.status, 404);
@@ -142,21 +142,21 @@ test("the review is delivered only to whoever holds the access token", async () 
 });
 
 test("the submitter review exposes only a binary outcome and useful prose", async () => {
-  for (const [decision, passed] of [["accept", true], ["revise", false], ["reject", false]]) {
+  for (const [outcome, blocking] of [["neutral", false], ["revision_required", true], ["rejected", true]]) {
     stubState(await fixture({}, {
-      decision,
+      outcome,
       scores: { notability: 4 },
       warnings: ["Useful context.", "A substantive criticism."],
-      passes: [{ scores: { notability: 4 }, findings: [{ severity: "info" }] }],
+      checks: [{ scores: { notability: 4 }, findings: [{ severity: "info" }] }],
     }));
     const response = await worker.fetch(request("/api/review"), ENV);
     assert.equal(response.status, 200);
     const delivered = await response.json();
     assert.deepEqual(delivered.comments, ["Useful context.", "A substantive criticism."]);
-    assert.equal(delivered.passed, passed);
-    assert.equal(Object.hasOwn(delivered, "decision"), false);
+    assert.equal(delivered.blocking_problems_identified, blocking);
+    assert.equal(Object.hasOwn(delivered, "outcome"), false);
     assert.equal(Object.hasOwn(delivered, "scores"), false);
-    assert.equal(Object.hasOwn(delivered, "passes"), false);
+    assert.equal(Object.hasOwn(delivered, "checks"), false);
   }
 });
 
@@ -172,7 +172,8 @@ test("the review route composes the public projection with its reviewed digest",
   const response = await worker.fetch(request("/api/review"), ENV);
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), {
-    passed: true,
+    blocking_problems_identified: false,
+    has_nonblocking_warnings: false,
     summary: "Ready to register.",
     comments: [],
     requested_changes: [],
@@ -212,12 +213,12 @@ test("consent cannot be given before there is a review to consent to", async () 
   assert.equal(written.length, 0);
 });
 
-test("only an accepted review can be registered", async () => {
-  for (const decision of ["revise", "reject"]) {
-    const { written } = stubState(await fixture({}, { decision }));
+test("a review with blocking problems cannot be registered", async () => {
+  for (const outcome of ["revision_required", "rejected"]) {
+    const { written } = stubState(await fixture({}, { outcome }));
     const response = await worker.fetch(request("/register", "POST"), ENV);
     assert.equal(response.status, 409);
-    assert.match((await response.json()).error, /only an accepted review/);
+    assert.match((await response.json()).error, /identified blocking problems/);
     assert.equal(written.length, 0);
   }
 });
@@ -243,8 +244,8 @@ test("the status page explains an obsolete review and keeps polling for its reru
   assert.match(script, /&& !reviewNeedsRerun/);
 });
 
-test("an unknown review decision is not delivered", async () => {
-  stubState(await fixture({}, { decision: "unknown" }));
+test("an unknown review outcome is not delivered", async () => {
+  stubState(await fixture({}, { outcome: "unknown" }));
   const response = await worker.fetch(request("/api/review"), ENV);
   assert.equal(response.status, 409);
 });
@@ -1123,16 +1124,16 @@ test("every status gets exactly the review and decision controls the server perm
     assert.deepEqual(statusPresentation(status), presentation, status);
     assert.equal(presentation.withdraw, !CLOSED.has(status), `${status} withdrawal drift`);
   }
-  assert.deepEqual(statusPresentation("review-ready", { reviewPassed: true }), {
+  assert.deepEqual(statusPresentation("review-ready", { reviewAllowsRegistration: true }), {
     review: "interactive", register: true, withdraw: true,
   });
   assert.deepEqual(statusPresentation("review-ready", {
-    reviewPassed: true,
+    reviewAllowsRegistration: true,
     registrationConsent: true,
   }), {
     review: "interactive", register: false, withdraw: true,
   });
-  assert.deepEqual(statusPresentation("registered", { reviewPassed: true }), {
+  assert.deepEqual(statusPresentation("registered", { reviewAllowsRegistration: true }), {
     review: "read-only", register: false, withdraw: false,
   });
   assert.deepEqual(statusPresentation("unknown"), {
@@ -1147,12 +1148,15 @@ test("every status gets exactly the review and decision controls the server perm
     assert.equal(waitingMessage(status), null, status);
   }
 
-  assert.deepEqual(decisionCopy("review-ready", { reviewPassed: true }), {
+  assert.deepEqual(decisionCopy("review-ready", { reviewAllowsRegistration: true }), {
     heading: "Your decision",
     intro: "Read the automated review above, then choose whether to register or withdraw this submission.",
   });
   assert.match(decisionCopy("verifying").intro, /still working/);
-  assert.match(decisionCopy("review-ready", { reviewShown: true }).heading, /did not pass/);
+  assert.equal(
+    decisionCopy("review-ready", { reviewShown: true }).heading,
+    "Problems were identified",
+  );
   assert.match(decisionCopy("review-ready", { reviewShown: true }).intro, /as a new submission/);
   assert.match(decisionCopy("review-ready", { reviewShown: true }).intro, /existing Palomar ID blank/);
   assert.match(decisionCopy("review-ready", { reviewNeedsRerun: true }).heading, /another review/);

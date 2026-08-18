@@ -82,15 +82,15 @@ test("the repair outbox is a strict unique submission-id queue", () => {
   assert.throws(() => repairOpen({ open: [] }), StateContractError);
 });
 
-test("only a matching current review and decision passes the review contract", () => {
-  const review = { schema_version: 2, submission_id: ID, decision: "accept" };
+test("only a matching current review outcome passes the review contract", () => {
+  const review = { schema_version: 3, submission_id: ID, outcome: "neutral" };
   assert.equal(isCurrentReview(review, ID), true);
   for (const candidate of [
     null,
     [],
     { ...review, schema_version: 1 },
     { ...review, submission_id: "b1b2c3d4e5f6" },
-    { ...review, decision: "unknown" },
+    { ...review, outcome: "unknown" },
   ]) {
     assert.equal(isCurrentReview(candidate, ID), false);
   }
@@ -98,16 +98,17 @@ test("only a matching current review and decision passes the review contract", (
 
 test("the submitter projection is an explicit review-field allowlist", () => {
   assert.deepEqual(submitterReview({
-    decision: "revise",
+    outcome: "revision_required",
     summary: "Needs another pass.",
     warnings: ["One warning."],
     requested_changes: ["One change."],
     reviewed_at: "2026-08-01T00:00:00Z",
     reviewer_models: ["model-a"],
     scores: { quality: 4 },
-    passes: [{ private: true }],
+    checks: [{ private: true }],
   }), {
-    passed: false,
+    blocking_problems_identified: true,
+    has_nonblocking_warnings: false,
     summary: "Needs another pass.",
     comments: ["One warning."],
     requested_changes: ["One change."],
@@ -115,8 +116,9 @@ test("the submitter projection is an explicit review-field allowlist", () => {
     reviewer_models: ["model-a"],
   });
 
-  assert.deepEqual(submitterReview({ decision: "accept" }), {
-    passed: true,
+  assert.deepEqual(submitterReview({ outcome: "neutral" }), {
+    blocking_problems_identified: false,
+    has_nonblocking_warnings: false,
     summary: undefined,
     comments: [],
     requested_changes: [],

@@ -139,9 +139,10 @@ GitHub.
 
 A submission is settled at `registered`, `withdrawn`, `verification-failed`,
 `review-failed`, or `dispatch-lost`. `GET /api/review` tells you whether the
-review passed and what it asked for; it does not tell you whether the decision
-was `revise` or `reject`, and reading `"passed": false` as either would be
-reading something that is not there. If `requested_changes` describes something
+automated review identified blocking problems and what it asked for; it does
+not distinguish a request for revision from rejection, and inferring either
+from `"blocking_problems_identified": true` would add information that is not
+there. If `requested_changes` describes something
 you and your user can correct, correct it and submit the corrected commit as a
 new submission. Settled means there is nothing useful to poll for; it does not
 mean every decision is closed. A submitter may still withdraw a `review-failed`
