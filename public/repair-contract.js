@@ -14,6 +14,10 @@ export const REPAIR_FIELDS_V2 = new Map([
   ["sources", "sources"], ["automation.methods", "methods"],
   ["repository.substantive_formalization", "substantive-repository"],
 ]);
+export const REPAIR_FIELDS_V3 = new Map([
+  ...REPAIR_FIELDS_V2,
+  ["project.description", "prose"],
+]);
 
 function exact(value, keys) {
   return value && typeof value === "object" && !Array.isArray(value) &&
@@ -124,7 +128,9 @@ function methodList(value) {
 }
 
 export function normalizedRepairEdits(value, profileVersion = 1, taxonomies = {}) {
-  const fields = profileVersion === 2 ? REPAIR_FIELDS_V2 : REPAIR_FIELDS_V1;
+  const fields = profileVersion === 3
+    ? REPAIR_FIELDS_V3
+    : profileVersion === 2 ? REPAIR_FIELDS_V2 : REPAIR_FIELDS_V1;
   if (!Array.isArray(value) || value.length < 1 || value.length > fields.size) {
     throw new TypeError(`edits must contain between one and ${fields.size} repairable fields`);
   }
@@ -136,6 +142,7 @@ export function normalizedRepairEdits(value, profileVersion = 1, taxonomies = {}
     seen.add(field);
     let normalized;
     if (kind === "text") normalized = line(edit.value, field);
+    else if (kind === "prose") normalized = text(edit.value, field);
     else if (kind === "list") {
       const maximum = field === "classification.arxiv" ? 2 : 8;
       normalized = classificationList(edit.value, field, maximum, taxonomies[field]);

@@ -895,6 +895,14 @@ const browserPreflightDiagnostics = document.getElementById("browser-preflight-d
 const browserPreflightDeferred = document.getElementById("browser-preflight-deferred");
 const browserPreflightConfirmation = document.getElementById("browser-preflight-confirmation");
 const browserPreflightAnyway = document.getElementById("browser-preflight-anyway");
+const preflightDescription = document.getElementById("preflight-description");
+const preflightDescriptionText = document.getElementById("preflight-description-text");
+const preflightDescriptionSource = document.getElementById("preflight-description-source");
+const preflightDescriptionDeclarations = document.getElementById("preflight-description-declarations");
+const preflightDescriptionDeclarationList = document.getElementById("preflight-description-declaration-list");
+const preflightDescriptionEdit = document.getElementById("preflight-description-edit");
+const preflightRepairHeading = document.getElementById("preflight-repair-heading");
+const preflightRepairCopy = document.getElementById("preflight-repair-copy");
 const preflightRepairRequest = document.getElementById("preflight-repair-request");
 let redisplayedPreflightRepair = preflightRepairRequest?.value ?? "";
 let redisplayedPreflightRepairFingerprint = null;
@@ -938,6 +946,66 @@ function exactCommitFile(repositoryName, sha, path) {
   return `https://github.com/${repositoryName}/blob/${sha}/${encoded}`;
 }
 
+function renderDescriptionPreview(result) {
+  if (!preflightDescription || !preflightDescriptionText || !preflightDescriptionSource) return;
+  const description = result.description;
+  if (!description) {
+    preflightDescription.hidden = true;
+    return;
+  }
+  preflightDescription.hidden = false;
+  preflightDescriptionText.textContent = description.text;
+  preflightDescriptionSource.replaceChildren();
+  const source = document.createElement("code");
+  source.textContent = `formalization.yaml → ${description.origin}`;
+  preflightDescriptionSource.append(
+    description.dedicated ? "Source: " : "No project.description was supplied; this preview falls back to ",
+    source,
+    description.dedicated ? "" : ". Editing will add project.description rather than overwrite the fallback.",
+  );
+  const declarations = Array.isArray(result.declarations) ? result.declarations : [];
+  if (preflightDescriptionDeclarations && preflightDescriptionDeclarationList) {
+    preflightDescriptionDeclarationList.replaceChildren(...declarations.map((name) => {
+      const row = document.createElement("li");
+      const code = document.createElement("code");
+      code.textContent = name;
+      row.append(code);
+      return row;
+    }));
+    preflightDescriptionDeclarations.hidden = declarations.length === 0;
+  }
+  if (preflightDescriptionEdit) {
+    preflightDescriptionEdit.hidden =
+      result.outcome !== "passed" || result.policyCurrent !== true || Boolean(result.repairFailure);
+  }
+}
+
+function editDescription() {
+  const result = browserPreflightResult;
+  if (
+    !result?.description || result.outcome !== "passed" ||
+    result.policyCurrent !== true || !preflightRepairController
+  ) return;
+  const failure = {
+    profile_version: result.profileVersion,
+    diagnostics: [{ field: "project.description" }],
+    repair_draft: {
+      values: { "project.description": result.description.text },
+      origins: { "project.description": result.description.origin },
+    },
+  };
+  if (!preflightRepairController.render(failure, [], { intent: "description" })) return;
+  if (preflightRepairHeading) preflightRepairHeading.textContent = "Edit the project description";
+  if (preflightRepairCopy) {
+    preflightRepairCopy.textContent =
+      "Palomar will add or update project.description after GitHub authentication and prepare a pull request. It will never push directly to your repository.";
+  }
+  setSubmissionAction({ repair: true });
+  document.querySelector('#preflight-repair-fields [data-field="project.description"] textarea')?.focus();
+}
+
+preflightDescriptionEdit?.addEventListener("click", editDescription);
+
 function renderBrowserPreflight(result) {
   browserPreflightResult = result;
   if (
@@ -952,6 +1020,16 @@ function renderBrowserPreflight(result) {
   preflightRepairController?.clear();
   if (preflightRepairRequest) preflightRepairRequest.value = "";
   setSubmissionAction();
+  if (preflightRepairHeading) {
+    const code = document.createElement("code");
+    code.textContent = "formalization.yaml";
+    preflightRepairHeading.replaceChildren("Fix ", code, " before submitting");
+  }
+  if (preflightRepairCopy) {
+    preflightRepairCopy.textContent =
+      "Palomar will validate these values after GitHub authentication and prepare a pull request from its repair account. It will never push directly to your repository.";
+  }
+  renderDescriptionPreview(result);
   if (result.outcome === "checking") {
     browserPreflightSummary.textContent = "Checking the files at this commit…";
     browserPreflightDeferred.textContent = "You can submit while this check is running.";
@@ -1091,6 +1169,8 @@ async function inspectBrowserPreflight() {
     const {
       BROWSER_PREFLIGHT_POLICY: selectedPolicy,
       canApplyFormalizationRepair,
+      comparatorDeclarations,
+      formalizationDescription,
       formalizationRepairDraft,
       guidedFormalizationDiagnostics,
       inspectTree,
@@ -1143,6 +1223,11 @@ async function inspectBrowserPreflight() {
       policyCurrent,
       guard,
       repairFailure,
+      profileVersion: selectedPolicy.formalization_profile_version,
+      description: content.formalization
+        ? formalizationDescription(content.formalization) : null,
+      declarations: content.comparator
+        ? comparatorDeclarations(content.comparator) : [],
     });
     announce(diagnostics.length
       ? `The browser check found ${diagnostics.length} possible ${diagnostics.length === 1 ? "problem" : "problems"}.`

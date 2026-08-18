@@ -169,7 +169,13 @@ test("preliminary-check copy describes the browser and post-authentication work"
   assert.match(script, /the remaining checks after you click "Authenticate"/);
   assert.match(form, /Fix <code>formalization\.yaml<\/code> before submitting/);
   assert.match(form, /name="preflight_repair"/);
+  assert.match(form, /id="preflight-description"/);
+  assert.match(form, /Registry preview/);
+  assert.match(form, /id="preflight-description-edit">\s+Edit description/);
   assert.match(script, /Authenticate via GitHub and prepare pull request/);
+  assert.match(script, /formalizationDescription/);
+  assert.match(script, /comparatorDeclarations/);
+  assert.match(script, /intent: "description"/);
   assert.match(script, /formalizationRepairDraft/);
   assert.doesNotMatch(script, /you can still submit now/);
   assert.match(css, /\[hidden\] \{ display: none !important; \}/);

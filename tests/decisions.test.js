@@ -1302,9 +1302,9 @@ test("guided metadata repair renders structured repeatable fields and safe prefi
   const msc2020 = JSON.parse(await readFile(
     new URL("../public/taxonomies/msc2020-codes.json", import.meta.url), "utf8",
   ));
-  assert.match(profile, /FORMALIZATION_PROFILE_VERSION = 2/);
+  assert.match(profile, /FORMALIZATION_PROFILE_VERSION = 3/);
   for (const field of [
-    "project.authors", "project.responsible_maintainers", "sources",
+    "project.description", "project.authors", "project.responsible_maintainers", "sources",
     "automation.methods", "repository.substantive_formalization",
   ]) assert.match(profile, new RegExp(field.replaceAll(".", "\\.")));
   assert.match(script, /safeDraft\(failure, field\)/);
@@ -1929,6 +1929,7 @@ test("an authenticated preliminary metadata form queues its repair without full 
   const formalization = `
 version: v0.4
 project:
+  description: A formalization of the example result.
   authors: [Example Author]
   license: MIT
   responsible_maintainers: [Example Maintainer]
@@ -1948,7 +1949,7 @@ review:
   const pending = {
     ...PENDING,
     preflight_repair: {
-      profile_version: 2,
+      profile_version: 3,
       edits: [{ field: "project.name", value: "Example" }],
     },
   };
@@ -1969,7 +1970,7 @@ review:
   const state = stub.written.find((item) => item.path.endsWith("/state.json")).value;
   const repair = stub.store.get(`submissions/${state.id}/repair.json`);
   assert.equal(state.status, "changes-required");
-  assert.equal(state.failure.profile_version, 2);
+  assert.equal(state.failure.profile_version, 3);
   assert.deepEqual(state.failure.diagnostics.map((item) => item.field), ["project.name"]);
   assert.deepEqual(state.repair, { revision: repair.revision, status: "queued" });
   assert.deepEqual(repair.edits, [{ field: "project.name", value: "Example" }]);
@@ -1987,6 +1988,7 @@ test("an early repair cannot authorize a field the exact metadata did not requir
   const nonce = "c".repeat(64);
   const formalization = `
 project:
+  description: A formalization of the example result.
   authors: [Example Author]
   license: MIT
   responsible_maintainers: [Example Maintainer]
@@ -2006,7 +2008,7 @@ review: {status: self-assessed}
       [`pending/${await digest(nonce)}.json`]: {
         ...PENDING,
         preflight_repair: {
-          profile_version: 2,
+          profile_version: 3,
           edits: [{ field: "project.license", value: "Apache-2.0" }],
         },
       },
@@ -2024,6 +2026,63 @@ review: {status: self-assessed}
     false,
   );
   assert.deepEqual(stub.dispatched, []);
+});
+
+test("editing a successful preflight description queues only that voluntary pull request", async () => {
+  const nonce = "d".repeat(64);
+  const formalization = `
+version: v0.4
+project:
+  name: Example
+  description: A formalization of the example result.
+  authors: [Example Author]
+  license: MIT
+  responsible_maintainers: [Example Maintainer]
+classification:
+  arxiv: [math.LO]
+  msc2020: [03B35]
+sources:
+  - title: Original result
+    type: original-proof
+    relationship: other
+automation: {methods: [{method: manual}]}
+review: {status: self-assessed}
+`;
+  const pending = {
+    ...PENDING,
+    preflight_repair: {
+      profile_version: 3,
+      intent: "description",
+      edits: [{
+        field: "project.description",
+        value: "A formalization proving the Comparator-selected example theorem.",
+      }],
+    },
+  };
+  const stub = stubOAuth({
+    push: true,
+    files: {
+      [`pending/${await digest(nonce)}.json`]: pending,
+      "index/repairs.json": { schema_version: 1, open: [] },
+    },
+    sourceFiles: { "formalization.yaml": formalization },
+  });
+
+  const response = await callback(nonce, {
+    env: { ...ENV, REPAIR_WORKFLOW: "repairer.yml", VERIFY_WORKFLOW: "submission.yml" },
+  });
+
+  assert.equal(response.status, 303);
+  const state = stub.written.find((item) => item.path.endsWith("/state.json")).value;
+  const repair = stub.store.get(`submissions/${state.id}/repair.json`);
+  assert.equal(state.status, "changes-required");
+  assert.deepEqual(state.failure.diagnostics.map((item) => item.field), [
+    "project.description",
+  ]);
+  assert.deepEqual(repair.edits, pending.preflight_repair.edits);
+  assert.deepEqual(stub.dispatched.map((item) => item.path), [
+    `/repos/${ENV.STATE_REPO}/actions/workflows/repairer.yml/dispatches`,
+  ]);
 });
 
 test("an active Technical Maintainer can run a marked test without push access or rate limits", async () => {

@@ -160,6 +160,7 @@ async function authoritativeEarlyRepair(env, pending, proof) {
   const requested = pending.preflight_repair;
   if (!requested) return null;
   let edits;
+  const intent = requested.intent ?? null;
   try {
     if (requested.profile_version !== BROWSER_PREFLIGHT_POLICY.formalization_profile_version) {
       throw new TypeError("the metadata profile changed");
@@ -190,6 +191,39 @@ async function authoritativeEarlyRepair(env, pending, proof) {
     return { problem: `${path} no longer exists at the commit selected for repair.` };
   }
   const diagnostics = validateFormalization(text, BROWSER_PREFLIGHT_POLICY);
+  if (intent === "description") {
+    if (
+      diagnostics.length || edits.length !== 1 ||
+      edits[0].field !== "project.description"
+    ) {
+      return { problem: "The project description can be edited here only after preflight passes." };
+    }
+    if (validateFormalizationRepair(text, edits, BROWSER_PREFLIGHT_POLICY).length) {
+      return { problem: "That text does not produce valid formalization.yaml metadata." };
+    }
+    const item = {
+      code: "formalization.description_edit",
+      stage: "formalization",
+      owner: "submitter",
+      summary: "The submitter chose to revise the public project description.",
+      explanation: "The preflight description editor requested this change.",
+      next_action: "Apply the submitter-authorized project.description edit.",
+      retryable: false,
+      repairable: true,
+      field: "project.description",
+      location: { path },
+    };
+    return {
+      edits,
+      failure: {
+        schema_version: 1,
+        mode: "preflight",
+        profile_version: BROWSER_PREFLIGHT_POLICY.formalization_profile_version,
+        diagnostics: [item],
+        repair_draft: formalizationRepairDraft(text),
+      },
+    };
+  }
   if (!diagnostics.length || diagnostics.some((item) =>
     item.code !== "formalization.invalid_field" || !item.field)) {
     return {
@@ -491,10 +525,12 @@ async function beginSubmission(request, env, { machine = false } = {}) {
       if (
         !parsed || typeof parsed !== "object" || Array.isArray(parsed) ||
         parsed.profile_version !== BROWSER_PREFLIGHT_POLICY.formalization_profile_version ||
-        Object.keys(parsed).some((key) => !["profile_version", "edits"].includes(key))
+        Object.keys(parsed).some((key) => !["profile_version", "intent", "edits"].includes(key)) ||
+        (parsed.intent !== undefined && parsed.intent !== "description")
       ) throw new TypeError("the preliminary metadata repair has an unsupported format");
       preflightRepair = {
         profile_version: parsed.profile_version,
+        ...(parsed.intent ? { intent: parsed.intent } : {}),
         edits: normalizedQueuedRepairEdits(
           parsed.edits,
           parsed.profile_version,
@@ -2545,7 +2581,8 @@ export default {
           return json({ error: "a test submission does not open repair pull requests" }, 409);
         }
         const body = await request.json().catch(() => null);
-        const profileVersion = body?.profile_version === 2 ? 2 : 1;
+        const profileVersion = [1, 2, 3].includes(body?.profile_version)
+          ? body.profile_version : 1;
         let edits;
         try {
           edits = normalizedQueuedRepairEdits(body?.edits, profileVersion, REPAIR_TAXONOMIES);
@@ -2595,7 +2632,7 @@ export default {
             }
             const completeGuidedFailure = diagnostics.length > 0 && diagnostics.every((item) =>
               item?.owner === "submitter" && item?.repairable === true && allowed.has(item.field));
-            if (profileVersion === 2 && (
+            if (profileVersion >= 2 && (
               !completeGuidedFailure || edits.length !== allowed.size
             )) {
               return { changes: [], message: "", result: { error: "complete every field in the guided metadata repair", status: 409 } };

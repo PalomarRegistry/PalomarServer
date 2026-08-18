@@ -383,22 +383,30 @@ and affected status transitions unavailable until the reviewer or an operator
 restores it.
 
 `index/repairs.json` is a separate durable outbox for submitter-authorized
-metadata repairs. When the browser's current-policy preliminary check finds
-only field-level `formalization.yaml` problems, the intake page renders the
-same complete guided editor before authentication. Its bounded edit payload is
+metadata repairs. A successful current-policy preliminary check first renders
+the exact `project.description` that registration would use as the public
+abstract, together with the declarations selected by `comparator.json`. It is
+read-only until the submitter chooses **Edit description**. That choice opens
+the same authenticated pull-request path, restricted to the one description
+field. When preliminary checks instead find only field-level
+`formalization.yaml` problems, the intake page renders the complete guided
+editor before authentication. Its bounded edit payload is
 stored in the private pending intake. After OAuth proves write access, the
 Worker re-reads the file at the exact commit, repeats the portable metadata
-validation, checks that the edits cover every current field problem and produce
-valid portable metadata, then atomically creates a `changes-required`
-submission and queued repair. It dispatches the repair worker instead of the
-full verification workflow; that worker still runs authoritative preparation
-against the generated commit before opening a pull request.
+validation, checks either that the edits cover every current field problem or
+that the voluntary request changes only `project.description`, and verifies
+that they produce valid portable metadata. It then atomically creates a
+`changes-required` submission and queued repair. It dispatches the repair
+worker instead of the full verification workflow; that worker still runs
+authoritative preparation against the generated commit before opening a pull
+request.
 
 The later `POST /api/repair` path requires the submission capability, the
 digest of the current failure, a `changes-required` record, and fields explicitly
 marked repairable in that failure. It atomically writes the request, its queue
-entry, and the record marker. Profile 2 covers every mechanically required
-metadata field, including structured people, source, and automation lists, and
+entry, and the record marker. Profile 3 covers every mechanically required
+metadata field, including the multiline project description and structured
+people, source, and automation lists, and
 requires one complete submitter-confirmed payload before it queues a pull
 request. Safe values from an older metadata shape may be shown as editable
 prefills, but classifications, maintainers, source relationships, repository
