@@ -5,6 +5,10 @@ import {
   normalizedQueuedRepairEdits,
   normalizedRepairEdits,
 } from "../public/repair-contract.js";
+import {
+  sourceContributorLines,
+  sourceContributorText,
+} from "../public/formalization-profile.js";
 
 test("profile two accepts the complete structured metadata payload", () => {
   const edits = normalizedRepairEdits([
@@ -41,6 +45,61 @@ test("profile three adds a bounded multiline project description", () => {
     () => normalizedRepairEdits([{ field: "project.description", value: "x".repeat(10_001) }], 3),
     /10000/,
   );
+});
+
+test("profile four adds structured non-author source credits", () => {
+  const edits = normalizedRepairEdits([{
+    field: "sources",
+    value: [{
+      title: "Source theorem",
+      authors: ["Emmy Noether"],
+      contributors: [
+        { name: "Wilhelm Magnus", role: "problem-proposer" },
+        { name: "Evgenii Khukhro", role: "editor" },
+      ],
+      relationship: "formalizes",
+    }],
+  }], 4);
+  assert.deepEqual(edits[0].value[0].contributors, [
+    { name: "Wilhelm Magnus", role: "problem-proposer" },
+    { name: "Evgenii Khukhro", role: "editor" },
+  ]);
+  assert.throws(
+    () => normalizedRepairEdits([{
+      field: "sources",
+      value: [{
+        title: "Source theorem",
+        contributors: [{ name: "Wilhelm Magnus", role: "problem-proposer" }],
+        relationship: "formalizes",
+      }],
+    }], 3),
+    /unsupported/,
+  );
+  assert.throws(
+    () => normalizedRepairEdits([{
+      field: "sources",
+      value: [{
+        title: "Source theorem",
+        contributors: [{ name: "Wilhelm Magnus" }],
+        relationship: "formalizes",
+      }],
+    }], 4),
+    /name and role|one line/,
+  );
+});
+
+test("source contributor controls round-trip names and free-form roles", () => {
+  const contributors = [
+    { name: "Wilhelm Magnus", role: "problem-proposer" },
+    { name: "Evgenii Khukhro", role: "editor | coordinating editor" },
+  ];
+  assert.deepEqual(
+    sourceContributorLines(sourceContributorText(contributors)),
+    contributors,
+  );
+  assert.deepEqual(sourceContributorLines("Missing role"), [
+    { name: "Missing role", role: "" },
+  ]);
 });
 
 test("source types are bounded free text", () => {

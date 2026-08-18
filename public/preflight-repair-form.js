@@ -6,6 +6,8 @@ import {
   FORMALIZATION_PROFILE_VERSION,
   lines,
   safeDraft,
+  sourceContributorLines,
+  sourceContributorText,
   SOURCE_ENDORSEMENT_SUGGESTIONS,
   SOURCE_RELATIONSHIP_SUGGESTIONS,
 } from "./formalization-profile.js";
@@ -209,9 +211,15 @@ export function createPreflightRepairForm({ container, fields, status }) {
     authors.dataset.part = "authors";
     authors.rows = 2;
     authors.value = (value.authors ?? []).join("\n");
+    const contributors = document.createElement("textarea");
+    contributors.dataset.part = "contributors";
+    contributors.rows = 2;
+    contributors.placeholder = "Name | role (one credit per line)";
+    contributors.value = sourceContributorText(value.contributors);
     for (const [labelText, control] of [
       ["Title", title],
       ["Authors", authors],
+      ["Other source credits", contributors],
       ["Type", sourceTypeControl(value.type)],
       ["Relationship", relationship],
       ["Source note", (() => {
@@ -376,8 +384,10 @@ export function createPreflightRepairForm({ container, fields, status }) {
   function rowValue(row) {
     const value = {};
     for (const control of row.querySelectorAll("[data-part]")) {
-      const item = ["authors", "models"].includes(control.dataset.part)
-        ? lines(control.value) : control.value.trim();
+      const item = control.dataset.part === "contributors"
+        ? sourceContributorLines(control.value)
+        : ["authors", "models"].includes(control.dataset.part)
+          ? lines(control.value) : control.value.trim();
       if (Array.isArray(item) ? item.length : item) value[control.dataset.part] = item;
     }
     return value;

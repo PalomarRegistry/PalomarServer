@@ -8,6 +8,8 @@ import {
   LEGACY_REPAIR_FIELDS,
   lines,
   safeDraft,
+  sourceContributorLines,
+  sourceContributorText,
   SOURCE_ENDORSEMENT_SUGGESTIONS,
   SOURCE_RELATIONSHIP_SUGGESTIONS,
 } from "/formalization-profile.js";
@@ -512,6 +514,14 @@ function sourceRow(value = {}, prefilled = false) {
       input.value = (value.authors ?? []).join("\n");
       return input;
     })()],
+    ["Other source credits", (() => {
+      const input = document.createElement("textarea");
+      input.dataset.part = "contributors";
+      input.rows = 2;
+      input.placeholder = "Name | role (one credit per line)";
+      input.value = sourceContributorText(value.contributors);
+      return input;
+    })()],
     ["Type", sourceTypeControl(value.type)],
     ["Relationship", relationship],
     ["Source note", (() => {
@@ -678,8 +688,10 @@ function appendRepairControl(wrapper, diagnostic, profile, failure) {
 function rowValue(row) {
   const value = {};
   for (const control of row.querySelectorAll("[data-part]")) {
-    const item = control.dataset.part === "authors" || control.dataset.part === "models"
-      ? lines(control.value) : control.value.trim();
+    const item = control.dataset.part === "contributors"
+      ? sourceContributorLines(control.value)
+      : control.dataset.part === "authors" || control.dataset.part === "models"
+        ? lines(control.value) : control.value.trim();
     if (Array.isArray(item) ? item.length : item) value[control.dataset.part] = item;
   }
   return value;

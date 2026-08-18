@@ -1306,7 +1306,7 @@ test("guided metadata repair renders structured repeatable fields and safe prefi
   const msc2020 = JSON.parse(await readFile(
     new URL("../public/taxonomies/msc2020-codes.json", import.meta.url), "utf8",
   ));
-  assert.match(profile, /FORMALIZATION_PROFILE_VERSION = 3/);
+  assert.match(profile, /FORMALIZATION_PROFILE_VERSION = 4/);
   for (const field of [
     "project.description", "project.authors", "project.responsible_maintainers", "sources",
     "automation.methods", "repository.substantive_formalization",
@@ -1953,7 +1953,7 @@ review:
   const pending = {
     ...PENDING,
     preflight_repair: {
-      profile_version: 3,
+      profile_version: 4,
       edits: [{ field: "project.name", value: "Example" }],
     },
   };
@@ -1974,7 +1974,7 @@ review:
   const state = stub.written.find((item) => item.path.endsWith("/state.json")).value;
   const repair = stub.store.get(`submissions/${state.id}/repair.json`);
   assert.equal(state.status, "changes-required");
-  assert.equal(state.failure.profile_version, 3);
+  assert.equal(state.failure.profile_version, 4);
   assert.deepEqual(state.failure.diagnostics.map((item) => item.field), ["project.name"]);
   assert.deepEqual(state.repair, { revision: repair.revision, status: "queued" });
   assert.deepEqual(repair.edits, [{ field: "project.name", value: "Example" }]);
@@ -2012,7 +2012,7 @@ review: {status: self-assessed}
       [`pending/${await digest(nonce)}.json`]: {
         ...PENDING,
         preflight_repair: {
-          profile_version: 3,
+          profile_version: 4,
           edits: [{ field: "project.license", value: "Apache-2.0" }],
         },
       },
@@ -2055,7 +2055,7 @@ review: {status: self-assessed}
   const pending = {
     ...PENDING,
     preflight_repair: {
-      profile_version: 3,
+      profile_version: 4,
       intent: "description",
       edits: [{
         field: "project.description",

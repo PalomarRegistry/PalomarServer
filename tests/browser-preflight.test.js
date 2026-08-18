@@ -43,6 +43,24 @@ test("portable metadata validation accepts the current minimal contract", () => 
   assert.deepEqual(validateFormalization(VALID_FORMALIZATION), []);
 });
 
+test("source contributor roles survive validation and guided repair", () => {
+  const metadata = VALID_FORMALIZATION.replace(
+    "    relationship: other",
+    "    contributors:\n      - name: Wilhelm Magnus\n        role: problem-proposer\n" +
+      "      - name: Evgenii Khukhro\n        role: editor\n    relationship: other",
+  );
+  assert.deepEqual(validateFormalization(metadata), []);
+  assert.deepEqual(formalizationRepairDraft(metadata).values.sources[0].contributors, [
+    { name: "Wilhelm Magnus", role: "problem-proposer" },
+    { name: "Evgenii Khukhro", role: "editor" },
+  ]);
+
+  const invalid = metadata.replace("role: editor", "role: ''");
+  assert.ok(validateFormalization(invalid).some(
+    (item) => item.summary.includes("contributors must each have a name and role"),
+  ));
+});
+
 test("preflight exposes the exact public description and Comparator result names", () => {
   assert.deepEqual(formalizationDescription(VALID_FORMALIZATION), {
     text: "A formalization of the example result.",
