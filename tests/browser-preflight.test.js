@@ -43,6 +43,24 @@ test("portable metadata validation accepts the current minimal contract", () => 
   assert.deepEqual(validateFormalization(VALID_FORMALIZATION), []);
 });
 
+test("classification scheme keys are case-insensitive but unambiguous", () => {
+  const mixedCase = VALID_FORMALIZATION
+    .replace("  arxiv:", "  arXiv:")
+    .replace("  msc2020:", "  MSC2020:");
+  assert.deepEqual(validateFormalization(mixedCase), []);
+  assert.deepEqual(formalizationRepairDraft(mixedCase).values["classification.arxiv"], [
+    "math.LO",
+  ]);
+
+  const ambiguous = VALID_FORMALIZATION.replace(
+    "  arxiv: [math.LO]",
+    "  arxiv: [math.LO]\n  arXiv: [math.CO]",
+  );
+  assert.deepEqual(validateFormalization(ambiguous).map((item) => item.code), [
+    "formalization.invalid_yaml",
+  ]);
+});
+
 test("source contributor roles survive validation and guided repair", () => {
   const metadata = VALID_FORMALIZATION.replace(
     "    relationship: other",
