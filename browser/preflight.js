@@ -22,6 +22,20 @@ function mapping(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
+function canonicalizeClassificationKeys(data) {
+  const classification = mapping(data.classification);
+  for (const canonical of ["arxiv", "msc2020"]) {
+    const matches = Object.keys(classification)
+      .filter((key) => key.toLocaleLowerCase("en-US") === canonical);
+    if (matches.length > 1) return false;
+    if (matches.length === 1 && matches[0] !== canonical) {
+      classification[canonical] = classification[matches[0]];
+      delete classification[matches[0]];
+    }
+  }
+  return true;
+}
+
 function nonempty(value) {
   return typeof value === "string" && value.trim() !== "";
 }
@@ -99,6 +113,13 @@ export function validateFormalization(text, selectedPolicy = policy) {
     return [diagnostic(
       "formalization.wrong_root_type",
       "formalization.yaml must contain one top-level mapping.",
+      { path: "formalization.yaml" },
+    )];
+  }
+  if (!canonicalizeClassificationKeys(data)) {
+    return [diagnostic(
+      "formalization.invalid_yaml",
+      "formalization.yaml contains duplicate classification keys differing only by case.",
       { path: "formalization.yaml" },
     )];
   }
@@ -266,7 +287,7 @@ function parsedFormalization(text) {
     const document = parseDocument(text, { merge: false, prettyErrors: false, uniqueKeys: true });
     if (document.errors.length || containsMergeKey(document.contents)) return null;
     const data = document.toJS({ maxAliasCount: 100 });
-    return mapping(data) === data ? data : null;
+    return mapping(data) === data && canonicalizeClassificationKeys(data) ? data : null;
   } catch {
     return null;
   }
