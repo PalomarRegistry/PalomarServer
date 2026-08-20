@@ -2,8 +2,10 @@
 # its bundled copy of PalomarSubmission's published policy matches that policy
 # exactly. The test workflow checks that, but only when this repository changes,
 # so a policy landing upstream leaves the deployment quietly uncertifying itself
-# until something else happens here. This runs the same check on upstream's
-# schedule instead: on its dispatch when it publishes, and on a timer regardless.
+# until something else happens here. This runs the same check without waiting
+# for that: every six hours, and on demand. Nothing sends the dispatch today,
+# because doing so would mean a cross-repository token upstream; the trigger is
+# here so publishing that notification later needs no change on this side.
 name: policy drift
 
 on:
