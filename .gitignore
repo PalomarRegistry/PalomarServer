@@ -1,5 +1,6 @@
 node_modules/
 .wrangler/
 .dev.vars
+public/classification-limits.js
 public/preflight.js
 public/preflight.js.LEGAL.txt
