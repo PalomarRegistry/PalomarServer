@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
 import {
+  classificationMaximum,
   FORMALIZATION_FIELDS,
   FORMALIZATION_PROFILE_VERSION,
 } from "../public/formalization-profile.js";
@@ -21,6 +22,18 @@ assert.deepEqual(
   browserPolicy,
   "the browser preflight policy drifted from PalomarSubmission",
 );
+
+// The repair form and the repair contract cap classification lists without
+// reading the policy, because the browser loads them unbundled.
+for (const [name, [, maximum]] of Object.entries(
+  browserPolicy.formalization.classification_cardinality,
+)) {
+  assert.equal(
+    classificationMaximum(`classification.${name}`),
+    maximum,
+    `the ${name} classification maximum drifted from PalomarSubmission`,
+  );
+}
 
 assert.equal(FORMALIZATION_PROFILE_VERSION, profile.schema_version);
 assert.deepEqual(
