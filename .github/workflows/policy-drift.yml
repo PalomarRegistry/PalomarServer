@@ -1,0 +1,41 @@
+# The deployed intake page refuses to certify its own preflight results unless
+# its bundled copy of PalomarSubmission's published policy matches that policy
+# exactly. The test workflow checks that, but only when this repository changes,
+# so a policy landing upstream leaves the deployment quietly uncertifying itself
+# until something else happens here. This runs the same check on upstream's
+# schedule instead: on its dispatch when it publishes, and on a timer regardless.
+name: policy drift
+
+on:
+  repository_dispatch:
+    types: [palomar-submission-contract-changed]
+  schedule:
+    - cron: "41 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: "22"
+      - run: npm ci
+      - run: npm run build:preflight
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          repository: PalomarRegistry/PalomarSubmission
+          ref: main
+          path: upstream-submission
+          persist-credentials: false
+      # A failure here means the deployment is serving a stale contract. Fixing
+      # it is a pull request against this repository, not a redeploy: the
+      # committed copies have to be brought forward first.
+      - run: node tools/check-formalization-contract.mjs upstream-submission
