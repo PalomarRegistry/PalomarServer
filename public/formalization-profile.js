@@ -1,4 +1,6 @@
 /** Presentation and payload contract mirrored from PalomarSubmission profile v4. */
+import { CLASSIFICATION_MAXIMUM } from "./classification-limits.js";
+
 export const FORMALIZATION_PROFILE_VERSION = 4;
 export const LEGACY_REPAIR_FIELDS = new Set([
   "project.name", "project.license", "classification.arxiv",
@@ -82,14 +84,6 @@ export function sourceContributorText(value) {
     .map((contributor) => `${contributor.name} | ${contributor.role}`)
     .join("\n");
 }
-
-// These are the upper bounds of the published policy's classification
-// cardinalities, restated for the modules the browser loads unbundled.
-// tools/check-formalization-contract.mjs holds them to PalomarSubmission.
-const CLASSIFICATION_MAXIMUM = new Map([
-  ["classification.arxiv", 8],
-  ["classification.msc2020", 8],
-]);
 
 export function classificationMaximum(field) {
   return CLASSIFICATION_MAXIMUM.get(field) ?? 8;
