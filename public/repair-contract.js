@@ -1,4 +1,5 @@
 import {
+  classificationMaximum,
   sourceRelationshipCategory,
   SUBSTANTIVE_SOURCE_RELATIONSHIPS,
 } from "./formalization-profile.js";
@@ -165,8 +166,9 @@ export function normalizedRepairEdits(value, profileVersion = 1, taxonomies = {}
     if (kind === "text") normalized = line(edit.value, field);
     else if (kind === "prose") normalized = text(edit.value, field);
     else if (kind === "list") {
-      const maximum = field === "classification.arxiv" ? 2 : 8;
-      normalized = classificationList(edit.value, field, maximum, taxonomies[field]);
+      normalized = classificationList(
+        edit.value, field, classificationMaximum(field), taxonomies[field],
+      );
     }
     else if (kind === "people") normalized = lineList(edit.value, field);
     else if (kind === "sources") normalized = sourceList(edit.value, profileVersion >= 4);

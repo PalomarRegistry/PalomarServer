@@ -43,15 +43,15 @@ test("classification validation accepts canonicalizable case and detects real pr
 
 test("classification repair drafts and add controls share the field limits", () => {
   const failure = { repair_draft: { values: {
-    "classification.arxiv": ["math.OA", "math.DS", "math.GR"],
+    "classification.arxiv": Array.from({ length: 9 }, (_, index) => `math.X${index}`),
     "classification.msc2020": Array.from({ length: 9 }, (_, index) => String(index)),
   } } };
-  assert.equal(classificationMaximum("classification.arxiv"), 2);
+  assert.equal(classificationMaximum("classification.arxiv"), 8);
   assert.equal(classificationMaximum("classification.msc2020"), 8);
-  assert.deepEqual(safeDraft(failure, "classification.arxiv"), ["math.OA", "math.DS"]);
+  assert.equal(safeDraft(failure, "classification.arxiv").length, 8);
   assert.equal(safeDraft(failure, "classification.msc2020").length, 8);
-  assert.equal(canAddClassification("classification.arxiv", 1), true);
-  assert.equal(canAddClassification("classification.arxiv", 2), false);
+  assert.equal(canAddClassification("classification.arxiv", 7), true);
+  assert.equal(canAddClassification("classification.arxiv", 8), false);
 });
 
 test("guided diagnostics are hidden only when a matching repair form is visible", () => {

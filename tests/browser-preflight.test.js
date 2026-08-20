@@ -132,15 +132,15 @@ artifact:
   ]), []);
 });
 
-test("arXiv classification acceptance is lax while guided prefills remain concise", () => {
-  const invalid = VALID_FORMALIZATION.replace(
+test("a guided arXiv prefill carries every code the policy accepts", () => {
+  const many = VALID_FORMALIZATION.replace(
     "  arxiv: [math.LO]",
     "  arxiv: [math.LO, math.AG, math.GR]",
   ).replace("  msc2020: [03B35]", "  msc2020: []");
-  assert.deepEqual(validateFormalization(invalid), []);
+  assert.deepEqual(validateFormalization(many), []);
   assert.deepEqual(
-    formalizationRepairDraft(invalid).values["classification.arxiv"],
-    ["math.LO", "math.AG"],
+    formalizationRepairDraft(many).values["classification.arxiv"],
+    ["math.LO", "math.AG", "math.GR"],
   );
 });
 

@@ -83,8 +83,16 @@ export function sourceContributorText(value) {
     .join("\n");
 }
 
+// These are the upper bounds of the published policy's classification
+// cardinalities, restated for the modules the browser loads unbundled.
+// tools/check-formalization-contract.mjs holds them to PalomarSubmission.
+const CLASSIFICATION_MAXIMUM = new Map([
+  ["classification.arxiv", 8],
+  ["classification.msc2020", 8],
+]);
+
 export function classificationMaximum(field) {
-  return field === "classification.arxiv" ? 2 : 8;
+  return CLASSIFICATION_MAXIMUM.get(field) ?? 8;
 }
 
 export function canAddClassification(field, count) {
