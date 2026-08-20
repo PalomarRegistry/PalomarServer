@@ -42,10 +42,10 @@ export const FORMALIZATION_FIELDS = Object.freeze({
     label: "Responsible maintainers", description: "People responsible for the submitted formalization. Palomar does not infer this from authorship.", input: "people",
   },
   "classification.arxiv": {
-    label: "arXiv classifications", description: "One or two official arXiv category codes.", input: "text-list",
+    label: "arXiv classifications", description: "At least one official arXiv category code.", input: "text-list",
   },
   "classification.msc2020": {
-    label: "MSC 2020 classifications", description: "Between one and eight official MSC 2020 codes.", input: "text-list",
+    label: "MSC 2020 classifications", description: "Up to eight official MSC 2020 codes; leave empty if none apply.", input: "text-list",
   },
   sources: {
     label: "Mathematical sources", description: "Every source needs a title and an accurate relationship to the formalized result. Use named contributor roles for non-author credits. Source type is optional free text; original-proof is reserved for results first presented by the formalization.", input: "sources",
