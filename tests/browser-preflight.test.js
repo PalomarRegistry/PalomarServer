@@ -74,9 +74,94 @@ test("source contributor roles survive validation and guided repair", () => {
   ]);
 
   const invalid = metadata.replace("role: editor", "role: ''");
-  assert.ok(validateFormalization(invalid).some(
-    (item) => item.summary.includes("contributors must each have a name and role"),
-  ));
+  assert.deepEqual(validateFormalization(invalid).map((item) => item.summary), [
+    "sources entry 1 contributor 2 needs a role.",
+  ]);
+});
+
+test("conflated source field failures name the actual defect", () => {
+  const withContributors = (body) => VALID_FORMALIZATION.replace(
+    "    relationship: other",
+    `    contributors:\n${body}\n    relationship: other`,
+  );
+
+  // A blank role is a missing role, not an over-long one.
+  assert.deepEqual(
+    validateFormalization(withContributors("      - name: A\n        role: '   '"))
+      .map((item) => item.summary),
+    ["sources entry 1 contributor 1 needs a role."],
+  );
+  assert.deepEqual(
+    validateFormalization(withContributors(`      - name: A\n        role: ${"x".repeat(201)}`))
+      .map((item) => item.summary),
+    ["sources entry 1 contributor 1 role must be at most 200 characters."],
+  );
+  // A missing name and an over-long role are reported independently.
+  assert.deepEqual(
+    validateFormalization(withContributors(`      - role: ${"x".repeat(201)}`))
+      .map((item) => item.summary),
+    [
+      "sources entry 1 contributor 1 needs a name.",
+      "sources entry 1 contributor 1 role must be at most 200 characters.",
+    ],
+  );
+  assert.deepEqual(
+    validateFormalization(withContributors("      - just a string")).map((item) => item.summary),
+    ["sources entry 1 contributor 1 must be a mapping with a name and role."],
+  );
+  assert.deepEqual(
+    validateFormalization(
+      VALID_FORMALIZATION.replace("    relationship: other", "    contributors: nope\n    relationship: other"),
+    ).map((item) => item.summary),
+    ["sources entry 1 contributors must be a list."],
+  );
+  // A bare `contributors:` key parses to null, which the server contract
+  // accepts alongside an empty list; neither carries a claim to validate.
+  assert.deepEqual(
+    validateFormalization(
+      VALID_FORMALIZATION.replace("    relationship: other", "    contributors:\n    relationship: other"),
+    ),
+    [],
+  );
+  assert.deepEqual(
+    validateFormalization(
+      VALID_FORMALIZATION.replace("    relationship: other", "    contributors: []\n    relationship: other"),
+    ),
+    [],
+  );
+
+  // Optional bounded text: absent and empty stay acceptable, blank and
+  // non-string report as missing rather than as too long.
+  // Based on a source carrying no `type` of its own, so the cases below can
+  // set one without colliding with the fixture's original-proof entry.
+  const untyped = VALID_FORMALIZATION.replace(
+    "    type: original-proof\n    relationship: other",
+    "    relationship: formalizes",
+  );
+  assert.deepEqual(validateFormalization(untyped), []);
+  for (const [field, label, maximum] of [
+    ["type", "type", 200],
+    ["author_endorsement", "author endorsement", 100],
+    ["note", "note", 10_000],
+  ]) {
+    const withField = (value) => untyped.replace(
+      "    relationship: formalizes",
+      `    relationship: formalizes\n    ${field}: ${value}`,
+    );
+    assert.deepEqual(validateFormalization(withField("''")), [], `${field} accepts ""`);
+    assert.deepEqual(
+      validateFormalization(withField("'   '")).map((item) => item.summary),
+      [`sources entry 1 ${label} must be a nonempty string when supplied.`],
+    );
+    assert.deepEqual(
+      validateFormalization(withField("[a, b]")).map((item) => item.summary),
+      [`sources entry 1 ${label} must be a nonempty string when supplied.`],
+    );
+    assert.deepEqual(
+      validateFormalization(withField(`"${"x".repeat(maximum + 1)}"`)).map((item) => item.summary),
+      [`sources entry 1 ${label} must be at most ${maximum} characters.`],
+    );
+  }
 });
 
 test("preflight exposes the exact public description and Comparator result names", () => {
@@ -189,6 +274,29 @@ test("an unfamiliar source relationship has the provenance meaning of other", ()
     "    relationship: first presented in this formalization",
   );
   assert.deepEqual(validateFormalization(metadata), []);
+});
+
+test("a missing source relationship is reported as missing, not as too long", () => {
+  const missing = VALID_FORMALIZATION.replace("    relationship: other\n", "");
+  assert.deepEqual(validateFormalization(missing).map((item) => item.summary), [
+    "sources entry 1 needs a relationship; original-proof entries must use other.",
+  ]);
+
+  const blank = VALID_FORMALIZATION.replace(
+    "    relationship: other",
+    '    relationship: "   "',
+  );
+  assert.deepEqual(validateFormalization(blank).map((item) => item.summary), [
+    "sources entry 1 needs a relationship; original-proof entries must use other.",
+  ]);
+
+  const overlong = VALID_FORMALIZATION.replace(
+    "    relationship: other",
+    `    relationship: ${"x".repeat(501)}`,
+  );
+  assert.deepEqual(validateFormalization(overlong).map((item) => item.summary), [
+    "sources entry 1 relationship must be at most 500 characters.",
+  ]);
 });
 
 test("guided repair is offered only when it covers every blocking finding", () => {
