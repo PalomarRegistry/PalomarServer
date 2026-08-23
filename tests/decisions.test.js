@@ -34,6 +34,7 @@ const ENV = {
 };
 
 const TOKEN = "a".repeat(64);
+const TECHNICAL_MAINTAINER_ID = 477956;
 
 function encode(value) {
   return Buffer.from(JSON.stringify(value, null, 2) + "\n", "utf-8").toString("base64");
@@ -1663,8 +1664,7 @@ function stubOAuth({
   files = {},
   sourceFiles = {},
   login = "someone",
-  membership = null,
-  membershipStatus = null,
+  id = 4242,
   repository = undefined,
   inflight = { open: [] },
   reviewer = { schema_version: 1, open: [] },
@@ -1675,10 +1675,13 @@ function stubOAuth({
   if (reviewer !== null) initial["index/open.json"] = reviewer;
   const indexed = [...Object.entries(files)]
     .filter(([path, value]) =>
-      path.endsWith("/state.json") && value?.push_proof?.principal?.id === 4242)
+      path.endsWith("/state.json") && value?.push_proof?.principal?.id === id)
     .map(([, value]) => value.id);
-  if (indexed.length && !(PRINCIPAL_INDEX_PATH in initial)) {
-    initial[PRINCIPAL_INDEX_PATH] = { schema_version: 1, submissions: indexed };
+  const principalIndexPath = id === TECHNICAL_MAINTAINER_ID
+    ? TECHNICAL_MAINTAINER_INDEX_PATH
+    : PRINCIPAL_INDEX_PATH;
+  if (indexed.length && !(principalIndexPath in initial)) {
+    initial[principalIndexPath] = { schema_version: 1, submissions: indexed };
   }
   const store = new Map(Object.entries(initial));
   const deleted = [];
@@ -1691,15 +1694,7 @@ function stubOAuth({
       return Response.json({ access_token: "the-submitter-token" });
     }
     if (target.pathname === "/user") {
-      return Response.json({ login, id: 4242 });
-    }
-    if (target.pathname === `/orgs/PalomarRegistry/teams/technical-maintainers/memberships/${login}`) {
-      if (membershipStatus !== null) {
-        return new Response("", { status: membershipStatus });
-      }
-      return membership === null
-        ? new Response("", { status: 404 })
-        : Response.json({ state: membership, role: "member" });
+      return Response.json({ login, id });
     }
     if (target.pathname === "/repos/example/project") {
       const value = repository === undefined ? {
@@ -1777,6 +1772,8 @@ const PENDING = {
 
 const PRINCIPAL_INDEX_PATH =
   `index/principals/${await digest(`${ENV.TOKEN_PEPPER}:4242`)}.json`;
+const TECHNICAL_MAINTAINER_INDEX_PATH =
+  `index/principals/${await digest(`${ENV.TOKEN_PEPPER}:${TECHNICAL_MAINTAINER_ID}`)}.json`;
 
 async function identityCookieHeader(principal = { login: "someone", id: 4242 }) {
   return (await githubIdentityCookie(ENV, principal)).split(";", 1)[0];
@@ -1877,11 +1874,11 @@ test("a submitter who cannot push writes no submission", async () => {
   assert.deepEqual(written.map((item) => item.path), []);
 });
 
-test("an active Technical Maintainer without push access is admitted only as a test", async () => {
+test("an allowlisted Technical Maintainer without push access is admitted only as a test", async () => {
   const nonce = "e".repeat(64);
   const stub = stubOAuth({
     push: false,
-    membership: "active",
+    id: TECHNICAL_MAINTAINER_ID,
     files: { [`pending/${await digest(nonce)}.json`]: PENDING },
   });
   const response = await callback(nonce);
@@ -1942,7 +1939,7 @@ test("an active Technical Maintainer's ordinary submission bypasses account limi
   };
   const stub = stubOAuth({
     push: true,
-    membership: "active",
+    id: TECHNICAL_MAINTAINER_ID,
     inflight: { open: [
       {
         id: "ownerslot001",
@@ -2147,7 +2144,7 @@ test("an active Technical Maintainer can run a marked test without push access o
   };
   const stub = stubOAuth({
     push: false,
-    membership: "active",
+    id: TECHNICAL_MAINTAINER_ID,
     inflight: { open: [
       {
         id: "ownerslot001",
@@ -2174,7 +2171,10 @@ test("an active Technical Maintainer can run a marked test without push access o
   assert.equal(record.value.push_proof.method, "technical-team-test");
   assert.equal(record.value.push_proof.binding, "active-technical-team-membership");
   assert.equal(record.value.push_proof.technical_maintainer, true);
-  assert.deepEqual(stub.store.get(PRINCIPAL_INDEX_PATH).submissions, [record.value.id]);
+  assert.deepEqual(
+    stub.store.get(TECHNICAL_MAINTAINER_INDEX_PATH).submissions,
+    [record.value.id],
+  );
   assert.deepEqual(
     stub.store.get("index/inflight.json").open.map((item) => item.id),
     ["ownerslot001", "ownerslot002", record.value.id],
@@ -2211,7 +2211,7 @@ test("submission recovery is a first-class GitHub sign-in with no new submission
   assert.equal(response.status, 303);
   const authorize = new URL(response.headers.get("location"));
   assert.equal(authorize.origin, "https://github.com");
-  assert.equal(authorize.searchParams.get("scope"), "read:user");
+  assert.equal(authorize.searchParams.has("scope"), false);
   assert.match(authorize.searchParams.get("state"), /^[0-9a-f]{64}$/);
   const pending = stub.written.find((item) => item.path.startsWith("pending/"));
   assert.equal(pending.value.method, "oauth-recovery");
@@ -2723,10 +2723,18 @@ test("a new repository still pauses to list the submitter's other current work",
 test("a Technical Maintainer fallback stays non-registerable after the submission choice", async () => {
   const nonce = "f".repeat(64);
   const pendingPath = `pending/${await digest(nonce)}.json`;
-  const old = currentSubmission({ repository: "other/project" });
+  const old = currentSubmission({
+    repository: "other/project",
+    push_proof: {
+      schema_version: 1,
+      method: "oauth",
+      binding: "same-account",
+      principal: { login: "someone", id: TECHNICAL_MAINTAINER_ID },
+    },
+  });
   const stub = stubOAuth({
     push: false,
-    membership: "active",
+    id: TECHNICAL_MAINTAINER_ID,
     reviewer: { schema_version: 1, open: [old.id] },
     files: {
       [pendingPath]: PENDING,
@@ -2869,7 +2877,6 @@ test("selecting the test exception does not trust a nonmember", async () => {
   const pending = { ...PENDING, authorization_relationship: "technical-test" };
   const stub = stubOAuth({
     push: false,
-    membership: null,
     files: { [`pending/${await digest(nonce)}.json`]: pending },
   });
   const response = await callback(nonce);
@@ -2880,22 +2887,15 @@ test("selecting the test exception does not trust a nonmember", async () => {
   assert.ok(!stub.store.has(`pending/${await digest(nonce)}.json`));
 });
 
-test("a membership-provider failure does not reveal the maintainer exception", async () => {
+test("a recycled maintainer login does not confer numeric-id authority", async () => {
   const nonce = "d".repeat(64);
   const pendingPath = `pending/${await digest(nonce)}.json`;
   const stub = stubOAuth({
     push: true,
-    membershipStatus: 503,
+    login: "kim-em",
     files: { [pendingPath]: PENDING },
   });
-  const originalError = console.error;
-  console.error = () => {};
-  let response;
-  try {
-    response = await callback(nonce);
-  } finally {
-    console.error = originalError;
-  }
+  const response = await callback(nonce);
 
   assert.equal(response.status, 303);
   assert.doesNotMatch(await response.text(), /Technical Maintainer|technical test/i);
@@ -2904,38 +2904,6 @@ test("a membership-provider failure does not reveal the maintainer exception", a
   assert.equal(record.value.authorization.relationship, "maintainer");
   assert.equal(record.value.push_proof.method, "oauth");
   assert.equal(record.value.push_proof.technical_maintainer, undefined);
-});
-
-test("pending membership and provider failure both refuse and consume a technical test", async () => {
-  for (const [name, options, status] of [
-    ["pending invitation", { membership: "pending" }, 403],
-    ["provider failure", { membershipStatus: 503 }, 503],
-  ]) {
-    const nonce = name === "pending invitation" ? "6".repeat(64) : "5".repeat(64);
-    const pendingPath = `pending/${await digest(nonce)}.json`;
-    const stub = stubOAuth({
-      push: false,
-      ...options,
-      files: {
-        [pendingPath]: { ...PENDING, authorization_relationship: "technical-test" },
-      },
-    });
-    const originalError = console.error;
-    console.error = () => {};
-    let response;
-    try {
-      response = await callback(nonce);
-    } finally {
-      console.error = originalError;
-    }
-    assert.equal(response.status, status, name);
-    assert.ok(!stub.store.has(pendingPath), `${name} retained an unusable pending proof`);
-    assert.equal(
-      stub.written.filter((item) => item.path.endsWith("state.json")).length,
-      0,
-      name,
-    );
-  }
 });
 
 test("a technical test refuses a repository that disappeared after intake", async () => {
@@ -4005,7 +3973,7 @@ test("a challenge cannot be spent twice", async () => {
   assert.equal(second.status, 404, "a spent challenge admitted a second submission");
 });
 
-test("a browser sign-in requests team visibility and cannot be completed as an agent", async () => {
+test("a browser sign-in requests no private visibility and cannot be completed as an agent", async () => {
   // The two intakes prove different things and record different bindings.
   // A pending record must be redeemed by the path that created it.
   const stub = stubAgent();
@@ -4019,13 +3987,10 @@ test("a browser sign-in requests team visibility and cannot be completed as an a
   );
   const pending = stub.written.find((item) => item.path.startsWith("pending/"));
   assert.equal(pending.value.method, "oauth");
-  assert.equal(
-    new URL(response.headers.get("location")).searchParams.get("scope"),
-    "read:user read:org",
-  );
+  assert.equal(new URL(response.headers.get("location")).searchParams.has("scope"), false);
 });
 
-test("a browser technical test requests team visibility and the agent path refuses it", async () => {
+test("a browser technical test requests no private visibility and the agent path refuses it", async () => {
   const stub = stubAgent();
   const testSubmission = {
     ...AGENT_SUBMISSION,
@@ -4040,10 +4005,7 @@ test("a browser technical test requests team visibility and the agent path refus
     ENV,
   );
   assert.equal(browser.status, 303);
-  assert.equal(
-    new URL(browser.headers.get("location")).searchParams.get("scope"),
-    "read:user read:org",
-  );
+  assert.equal(new URL(browser.headers.get("location")).searchParams.has("scope"), false);
 
   const agent = await worker.fetch(
     new Request("https://submit.palomar-registry.org/api/submit", {

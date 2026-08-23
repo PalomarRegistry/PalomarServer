@@ -92,8 +92,8 @@ import {
   beginDashboardLogin,
   completeDashboardLogin,
   dashboardPrincipal,
-  technicalTeamMembership,
 } from "./dashboard-auth.js";
+import { isTechnicalMaintainer } from "./technical-maintainers.js";
 import { dashboardHtml, withDashboardActions } from "./dashboard.js";
 import { SECURITY_HEADERS } from "./response-security.js";
 // One vocabulary for "this submission has stopped moving", shared with the
@@ -699,11 +699,9 @@ async function beginSubmission(request, env, { machine = false } = {}) {
   const authorize = new URL("https://github.com/login/oauth/authorize");
   authorize.searchParams.set("client_id", env.OAUTH_CLIENT_ID);
   authorize.searchParams.set("redirect_uri", `${new URL(request.url).origin}/oauth/callback`);
-  // Every browser submission needs enough visibility to distinguish an active
-  // Technical Maintainer from an ordinary submitter. The exemption belongs to
-  // the authenticated account, not to the authorization relationship selected
-  // on the form.
-  authorize.searchParams.set("scope", "read:user read:org");
+  // Public identity and public repository information need no OAuth scope.
+  // Technical Maintainer authority comes from the reviewed local allowlist,
+  // never from organization visibility delegated by each submitter.
   authorize.searchParams.set("state", nonce);
   // `Response.redirect` answers with immutable headers, so the redirect is
   // built by hand in order to carry the cookie.
@@ -760,7 +758,6 @@ async function beginRecovery(request, env) {
   const authorize = new URL("https://github.com/login/oauth/authorize");
   authorize.searchParams.set("client_id", env.OAUTH_CLIENT_ID);
   authorize.searchParams.set("redirect_uri", `${new URL(request.url).origin}/oauth/callback`);
-  authorize.searchParams.set("scope", "read:user");
   authorize.searchParams.set("state", nonce);
   return new Response(null, {
     status: 303,
@@ -1155,9 +1152,10 @@ async function openAutomaticSubmission(request, env) {
  * Everything after the proof, shared so the two intakes cannot drift apart.
  *
  * Ordinary browser and agent intakes prove write access by different means; a
- * marked browser test proves technical-team membership instead. What follows
- * records that distinction but otherwise shares the same admission, indexes,
- * and dispatch. Two copies would be two definitions of what a submission is.
+ * marked browser test proves checked-in Technical Maintainer authority instead.
+ * What follows records that distinction but otherwise shares the same
+ * admission, indexes, and dispatch. Two copies would be two definitions of
+ * what a submission is.
  */
 async function admitSubmission(
   env,
@@ -1825,24 +1823,7 @@ async function completeSubmission(request, env) {
       "Start again after confirming that the public repository is available.",
     ]), 403));
   }
-  const membership = await technicalTeamMembership(granted.access_token, submitter);
-  if (membership.unavailable) {
-    console.error("submission-oauth-membership", membership.status);
-    if (requestedTechnicalTest) {
-      if (!(await deleteState(env, pendingPath, pending.sha,
-                              "Discard a test whose membership could not be verified"))) {
-        console.error("pending", `could not discard ${pendingPath}`);
-      }
-      return identified(html(
-        errorPage(env, "Submission authorization is temporarily unavailable", spentSignInProblems([
-          "Palomar could not confirm that authorization just now.",
-        ])),
-        503,
-        { "set-cookie": await intakeCookie(nonce, null, { clear: true }) },
-      ));
-    }
-  }
-  const technicalMaintainer = !membership.unavailable && membership.active;
+  const technicalMaintainer = isTechnicalMaintainer(principal);
   if (requestedTechnicalTest && !technicalMaintainer) {
     if (!(await deleteState(env, pendingPath, pending.sha,
                             "Discard a test requested by a nonmember"))) {
@@ -1873,9 +1854,9 @@ async function completeSubmission(request, env) {
     ]), 403));
   }
 
-  // Anyone with ordinary push access, and each verified Technical
+  // Anyone with ordinary push access, and each allowlisted Technical
   // Maintainer test, can reach this point. `admitSubmission` exempts every
-  // active Technical Maintainer account from the per-principal backoff and
+  // allowlisted Technical Maintainer account from the per-principal backoff and
   // owner/submitter caps. The unauthenticated edge throttle remains in front of
   // this flow because identity is not known until OAuth completes.
   const owner = viewer.owner?.login ?? null;
@@ -1889,6 +1870,8 @@ async function completeSubmission(request, env) {
   const proof = {
     schema_version: 1,
     method: technicalTest ? "technical-team-test" : "oauth",
+    // Keep the durable vocabulary consumed by the reviewer. Technical
+    // Maintainer authority itself is the checked-in numeric-id set.
     binding: technicalTest ? "active-technical-team-membership" : "same-account",
     verified_at: recordedAt(),
     repository_id: viewer.id ?? null,

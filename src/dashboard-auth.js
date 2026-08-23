@@ -1,10 +1,9 @@
-/** Short-lived GitHub-team authorization for the private dashboard. */
+/** Short-lived checked-in Technical Maintainer authorization for the private dashboard. */
 
 import { SECURITY_HEADERS } from "./response-security.js";
+import { isTechnicalMaintainer } from "./technical-maintainers.js";
 
 const SESSION_COOKIE = "__Host-palomar_dashboard";
-const TEAM = "technical-maintainers";
-const ORG = "PalomarRegistry";
 const encoder = new TextEncoder();
 
 
@@ -108,7 +107,6 @@ export async function beginDashboardLogin(request, env) {
   const authorize = new URL("https://github.com/login/oauth/authorize");
   authorize.searchParams.set("client_id", env.OAUTH_CLIENT_ID);
   authorize.searchParams.set("redirect_uri", `${new URL(request.url).origin}/oauth/callback`);
-  authorize.searchParams.set("scope", "read:user read:org");
   authorize.searchParams.set("state", state);
   return new Response(null, {
     status: 303,
@@ -138,20 +136,6 @@ async function githubJson(url, token, init = {}) {
 
 function providerFailure(response) {
   return response.status === 403 || response.status === 429 || response.status >= 500;
-}
-
-
-/** Resolve the one GitHub team that carries technical-maintainer authority. */
-export async function technicalTeamMembership(token, login) {
-  const membership = await githubJson(
-    `https://api.github.com/orgs/${ORG}/teams/${TEAM}/memberships/${encodeURIComponent(login)}`,
-    token,
-  );
-  return {
-    status: membership.response.status,
-    unavailable: providerFailure(membership.response),
-    active: membership.value?.state === "active",
-  };
 }
 
 
@@ -199,23 +183,19 @@ export async function completeDashboardLogin(request, env) {
     return privateResponse("GitHub sign-in is temporarily unavailable.\n", 503, { "set-cookie": clear });
   }
   const login = user.value?.login;
-  if (typeof login !== "string") {
+  const principal = { login, id: user.value?.id };
+  if (typeof login !== "string" || !Number.isSafeInteger(principal.id)) {
     return privateResponse("GitHub did not identify that account.\n", 403, { "set-cookie": clear });
   }
-  const membership = await technicalTeamMembership(granted.access_token, login);
-  if (membership.unavailable) {
-    console.error("dashboard-oauth-membership", membership.status);
-    return privateResponse("GitHub team authorization is temporarily unavailable.\n", 503, { "set-cookie": clear });
-  }
-  if (!membership.active) {
+  if (!isTechnicalMaintainer(principal)) {
     return privateResponse(
       "This dashboard is limited to Palomar Technical Maintainers.\n",
       403,
       { "set-cookie": clear },
     );
   }
-  // The GitHub token is deliberately not retained. Team removal takes effect
-  // no later than this short session's expiry.
+  // The GitHub token is deliberately not retained. Allowlist removal takes
+  // effect no later than this short session's expiry after deployment.
   const session = await signed(env, { kind: "session", login, expires: Date.now() + 15 * 60_000 });
   const headers = new Headers({ ...SECURITY_HEADERS, location: "/dashboard" });
   headers.append("set-cookie", clear);
