@@ -46,7 +46,9 @@ function people(value) {
 }
 
 function addOptionalSourceText(result, value, label, index, maximum) {
-  if (value === undefined || value === "") return;
+  // A bare `note:` key parses to null, which the server contract reads as an
+  // absent field rather than an empty one.
+  if (value === undefined || value === null || value === "") return;
   if (!nonempty(value)) {
     addField(result, false, "sources", `entry ${index + 1} ${label} must be a nonempty string when supplied.`);
   } else if (value.trim().length > maximum) {
@@ -225,13 +227,16 @@ export function validateFormalization(text, selectedPolicy = policy) {
         100,
       );
       addOptionalSourceText(result, source.note, "note", index, 10_000);
-      const relationshipText = source.relationship?.trim();
+      const relationshipText = nonempty(source.relationship) ? source.relationship.trim() : "";
       const relationship = relationshipCategories.has(relationshipText)
         ? relationshipText
         : "other";
-      original ||= source.type === "original-proof";
+      // The server reads `type` through the same trimming as the other bounded
+      // text fields, so padding must not change what the entry claims to be.
+      const originalProof = nonempty(source.type) && source.type.trim() === "original-proof";
+      original ||= originalProof;
       substantive ||= SUBSTANTIVE_SOURCE_RELATIONSHIPS.has(relationship);
-      if (source.type === "original-proof" && relationship !== "other") {
+      if (originalProof && relationship !== "other") {
         addField(result, false, "sources", "original-proof entries must use relationship other.");
       }
     });

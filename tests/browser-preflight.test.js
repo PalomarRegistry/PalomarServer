@@ -149,6 +149,8 @@ test("conflated source field failures name the actual defect", () => {
       `    relationship: formalizes\n    ${field}: ${value}`,
     );
     assert.deepEqual(validateFormalization(withField("''")), [], `${field} accepts ""`);
+    // A bare key parses to null, which the server contract reads as absent.
+    assert.deepEqual(validateFormalization(withField("")), [], `${field} accepts a bare key`);
     assert.deepEqual(
       validateFormalization(withField("'   '")).map((item) => item.summary),
       [`sources entry 1 ${label} must be a nonempty string when supplied.`],
@@ -297,6 +299,30 @@ test("a missing source relationship is reported as missing, not as too long", ()
   assert.deepEqual(validateFormalization(overlong).map((item) => item.summary), [
     "sources entry 1 relationship must be at most 500 characters.",
   ]);
+
+  // A relationship that is not a string is missing, not unreadable: reading it
+  // as free text used to throw before the entry could be reported at all.
+  const list = VALID_FORMALIZATION.replace("    relationship: other", "    relationship: [other]");
+  assert.deepEqual(validateFormalization(list).map((item) => item.summary), [
+    "sources entry 1 needs a relationship; original-proof entries must use other.",
+  ]);
+});
+
+test("a padded source type still names the entry an original proof", () => {
+  const padded = VALID_FORMALIZATION.replace(
+    "    type: original-proof",
+    '    type: "  original-proof  "',
+  );
+  assert.deepEqual(validateFormalization(padded), []);
+
+  assert.deepEqual(
+    validateFormalization(padded.replace("    relationship: other", "    relationship: formalizes"))
+      .map((item) => item.summary),
+    [
+      "sources original-proof entries must use relationship other.",
+      "sources original proofs may use only background or other relationships.",
+    ],
+  );
 });
 
 test("guided repair is offered only when it covers every blocking finding", () => {
