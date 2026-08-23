@@ -577,12 +577,32 @@ again changes nothing.
 
 The same caveat applies: history keeps what the tip no longer shows.
 
+### Rotating the state pepper
+
+An account migration rotates `TOKEN_PEPPER`, invalidating every old raw status
+link. GitHub identity recovery continues to work because current records retain
+the submitter's numeric principal. Rebuild the pepper-derived locator and reset
+rate history in a fresh State checkout, first as a dry run:
+
+```bash
+TOKEN_PEPPER=... tools/rekey-pepper-indexes.js ../PalomarSubmissionState
+TOKEN_PEPPER=... tools/rekey-pepper-indexes.js --write ../PalomarSubmissionState
+```
+
+The command refuses to write if any nonclosed record lacks a recoverable
+principal. It deliberately preserves `index/tokens/`: those historical pointers
+are required by the State repository's integrity relation even though the new
+pepper makes their corresponding raw tokens unusable. Validate and review the
+complete State diff before merging it.
+
 ## Deploying
 
 Pushes to `main` are deployed automatically after the test suite passes. The
-GitHub repository must provide `CLOUDFLARE_ACCOUNT_ID` and
-`CLOUDFLARE_API_TOKEN` as Actions secrets. The Cloudflare dashboard credential
-stored under that secret is named exactly **palomar worker deployment token**.
+GitHub repository must provide `CLOUDFLARE_ACCOUNT_ID` as a repository variable
+and `CLOUDFLARE_API_TOKEN` as an Actions secret. The account variable is public
+configuration and must equal the `account_id` pinned in `wrangler.jsonc`. The
+Cloudflare dashboard credential stored under the token secret is named exactly
+**palomar worker deployment token**.
 It is not **PalomarDatabaseTools GitHub deploy**, which is a separate credential
 owned by a different repository. **palomar worker deployment token** must not
 have **Workers Routes: Edit**: this deployment deliberately uploads and promotes

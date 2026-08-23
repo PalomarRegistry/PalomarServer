@@ -301,6 +301,22 @@ const REQUIRED_SECRETS = [
   "OAUTH_CLIENT_SECRET",
 ];
 
+const PAUSED_OPERATIONS = new Set([
+  "POST /api/submit",
+  "POST /api/verify",
+  "POST /submit",
+  "GET /submissions",
+  "POST /submissions/open",
+  "POST /submission-choice",
+  "GET /oauth/callback",
+  "POST /withdraw",
+  "POST /register",
+  "POST /api/repair",
+  // Refreshing a status can update the record, release capacity and dispatch
+  // a reviewer, despite its GET method.
+  "GET /api/submission",
+]);
+
 function obsoleteReview() {
   return json({ error: "the review uses an obsolete or invalid contract and must be rerun" }, 409);
 }
@@ -2264,6 +2280,10 @@ export default {
    * admission slots or abandoned intake accumulate.
    */
   async scheduled(event, env) {
+    if (env.PALOMAR_WRITES_PAUSED === "true") {
+      console.log("maintenance", "scheduled writes paused");
+      return;
+    }
     await scheduledMaintenance(env);
   },
 
@@ -2302,6 +2322,25 @@ export default {
           ]),
           503,
         );
+      }
+
+      // Account moves need a short, observable interval in which state cannot
+      // change while the final copy and index rekey are made. Keep status and
+      // dashboard reads available, but refuse every route that can mutate the
+      // private state repository or dispatch work. This is a plain deployment
+      // variable so entering and leaving maintenance never exposes a secret.
+      const pausedOperation = PAUSED_OPERATIONS.has(`${request.method} ${url.pathname}`);
+      if (env.PALOMAR_WRITES_PAUSED === "true" && pausedOperation) {
+        console.log("maintenance", `${request.method} ${url.pathname} refused`);
+        if (url.pathname.startsWith("/api/")) {
+          return json({
+            error: "Palomar is briefly read-only for scheduled maintenance",
+            detail: "Keep this page open and try again after the maintenance window.",
+          }, 503);
+        }
+        return html(errorPage(env, "Palomar is briefly read-only", [
+          "No submission data was changed. Try again after the maintenance window.",
+        ]), 503);
       }
 
       if (request.method === "GET" && url.pathname === "/") {
