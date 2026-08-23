@@ -25,6 +25,7 @@ const ENV = {
   SITE_URL: "https://palomar-registry.org",
   INTAKE_LIMITER: { limit: async () => ({ success: true }) },
 };
+const TECHNICAL_MAINTAINER_ID = 477956;
 
 
 function spendBlock(count, lower, upper) {
@@ -133,7 +134,7 @@ function inline(value) {
 }
 
 
-async function login(fetchImpl, membership = "active", provider = {}) {
+async function login(fetchImpl, id = TECHNICAL_MAINTAINER_ID, provider = {}) {
   const saved = globalThis.fetch;
   globalThis.fetch = async (url, init = {}) => {
     const text = String(url);
@@ -141,10 +142,7 @@ async function login(fetchImpl, membership = "active", provider = {}) {
       return provider.token ?? Response.json({ access_token: "ephemeral-user-token" });
     }
     if (text === "https://api.github.com/user") {
-      return provider.user ?? Response.json({ login: "maintainer" });
-    }
-    if (text.includes("/teams/technical-maintainers/memberships/maintainer")) {
-      return provider.membership ?? Response.json({ state: membership, role: "member" });
+      return provider.user ?? Response.json({ login: "maintainer", id });
     }
     return fetchImpl(url, init);
   };
@@ -153,7 +151,7 @@ async function login(fetchImpl, membership = "active", provider = {}) {
     assert.equal(begun.status, 303);
     assert.equal(begun.headers.get("referrer-policy"), "no-referrer");
     const authorize = new URL(begun.headers.get("location"));
-    assert.equal(authorize.searchParams.get("scope"), "read:user read:org");
+    assert.equal(authorize.searchParams.has("scope"), false);
     const oauthCookie = begun.headers.get("set-cookie").split(";", 1)[0];
     const callback = await worker.fetch(
       new Request(
@@ -169,7 +167,7 @@ async function login(fetchImpl, membership = "active", provider = {}) {
 }
 
 
-test("dashboard login authorizes the exact active Technical Maintainers team", async () => {
+test("dashboard login authorizes the checked-in Technical Maintainer ids", async () => {
   const callback = await login(() => {
     throw new Error("unexpected fetch");
   });
@@ -184,28 +182,20 @@ test("dashboard login authorizes the exact active Technical Maintainers team", a
 test("nonmembers receive no dashboard session", async () => {
   const callback = await login(() => {
     throw new Error("unexpected fetch");
-  }, "pending");
+  }, 4242);
   assert.equal(callback.status, 403);
   assert.doesNotMatch(callback.headers.get("set-cookie") ?? "", /__Host-palomar_dashboard=[^.]/);
 });
 
 
-test("GitHub provider failures are temporary service errors, not membership refusals", async () => {
+test("GitHub identity provider failures remain temporary service errors", async () => {
   const userFailure = await login(
     () => { throw new Error("unexpected fetch"); },
-    "active",
+    TECHNICAL_MAINTAINER_ID,
     { user: new Response("down", { status: 503 }) },
   );
   assert.equal(userFailure.status, 503);
   assert.match(await userFailure.text(), /temporarily unavailable/);
-
-  const membershipFailure = await login(
-    () => { throw new Error("unexpected fetch"); },
-    "active",
-    { membership: new Response("rate", { status: 429 }) },
-  );
-  assert.equal(membershipFailure.status, 503);
-  assert.match(await membershipFailure.text(), /temporarily unavailable/);
 });
 
 

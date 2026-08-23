@@ -100,21 +100,23 @@ Push access is not authorship. It does not establish approval from the
 responsible authors of a substantive formalization, and does not replace the
 declaration a submitter makes about that.
 
-Every browser submission requests read-only `read:org` visibility and checks
-whether its authenticated account is an active member of
-`PalomarRegistry/technical-maintainers`. Active Technical Maintainers bypass the
-ordinary per-principal start interval and the owner and submitter in-flight caps
-for every submission, independently of the authorization relationship selected
-on the form. The durable OAuth proof records that membership.
+Browser sign-in requests no GitHub OAuth scopes: public identity and public
+repository information are sufficient. Technical Maintainer authority comes
+from the reviewed numeric GitHub ids in `src/technical-maintainers.js`, not
+from organization visibility delegated by every submitter. Allowlisted
+Technical Maintainers bypass the ordinary per-principal start interval and the
+owner and submitter in-flight caps for every submission, independently of the
+authorization relationship selected on the form. The durable OAuth proof
+records that authority.
 
-When an active member submits a public repository and pinned commit without
-write access, the browser path automatically records it as a technical test.
+When an allowlisted maintainer submits a public repository and pinned commit
+without write access, the browser path automatically records it as a technical test.
 The explicit technical-test relationship reaches the same path. Its durable
 record says `test_submission`, does not claim `push_verified`, and carries a
-distinct team-membership proof. The agent intake cannot use either
-membership-based exception because its tag-and-gist proof does not establish
-team membership. The pre-authentication address throttle still applies because
-the account is not known until OAuth completes.
+distinct Technical Maintainer proof. The agent intake cannot use either
+allowlist-based exception because its tag-and-gist proof does not establish the
+same account's numeric identity. The pre-authentication address throttle still
+applies because the account is not known until OAuth completes.
 
 ## Private operational dashboard
 
@@ -127,16 +129,13 @@ reads that one private file and identifies the exact immutable State
 `submissions/` tree and latest event included, so lag is visible rather than
 disguised as current data.
 
-Dashboard sign-in uses the existing GitHub OAuth application with the additional
-read-only `read:org` scope. The callback requires an active membership in the
-closed `PalomarRegistry/technical-maintainers` team, discards the GitHub token
-immediately, and issues a signed host-only session lasting fifteen minutes.
-GitHub OAuth grants scopes cumulatively per application, so a maintainer who
-has granted `read:org` may also receive it on a later intake token; every such
-token is still single-use here and is discarded rather than stored.
-Removing a maintainer therefore takes effect no later than that expiry. The
-signature is domain-separated from submission-token digests while reusing the
-existing `TOKEN_PEPPER`; there is no additional secret or durable login store.
+Dashboard sign-in also requests no GitHub OAuth scopes. The callback requires a
+numeric id in the same checked-in Technical Maintainer allowlist, discards the
+GitHub token immediately, and issues a signed host-only session lasting fifteen
+minutes. Removing a maintainer takes effect no later than that expiry after the
+allowlist change is deployed. The signature is domain-separated from
+submission-token digests while reusing the existing `TOKEN_PEPPER`; there is no
+additional secret or durable login store.
 The OAuth state and session cookie both reject duplicates and are never cached.
 Dashboard OAuth initiation and callback share the intake address limiter, so an
 unauthenticated loop cannot turn into unbounded GitHub token exchanges. Every
@@ -174,11 +173,17 @@ and never appear in the repository:
 
 | Secret | What it is | Reach |
 | --- | --- | --- |
-| `OAUTH_CLIENT_ID` | GitHub OAuth App client id, for submission push-access and dashboard team checks | — |
+| `OAUTH_CLIENT_ID` | GitHub OAuth App client id, for public identity and submission push-access checks | — |
 | `OAUTH_CLIENT_SECRET` | its client secret | — |
 | `GITHUB_TOKEN` | reads and atomically advances submission State, asks the reviewer to run, and reads public repository metadata for the repository being submitted | `PalomarSubmissionState`, contents and actions, plus public reads |
 | `SUBMISSION_TOKEN` | starts and reads verification runs, and reads the submitter's public ref and gist while checking a proof | `PalomarSubmission`, actions, plus public reads |
 | `TOKEN_PEPPER` | so a leaked state repository does not yield live links, and to authenticate short-lived GitHub identity cookies under a domain-separated HMAC key | — |
+
+The checked-in Technical Maintainer ids are the source of truth. Adding or
+removing authority is an ordinary reviewed change to
+`src/technical-maintainers.js`. GitHub login renames require no update because
+the numeric id is stable; a deleted account can no longer authenticate, so no
+scheduled synchronization job or organization-reading credential is needed.
 
 The State token's existing repository `Contents: write` grant covers the Git
 tree, commit, and non-forced reference update used for atomic admission; it
