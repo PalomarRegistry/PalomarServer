@@ -123,6 +123,41 @@ function request(path, method = "GET", cookie = `__Host-palomar_session=${TOKEN}
   });
 }
 
+test("maintenance mode keeps reads up and refuses every state-changing route", async () => {
+  const paused = { ...ENV, PALOMAR_WRITES_PAUSED: "true" };
+  const reads = await worker.fetch(request("/s"), paused);
+  assert.equal(reads.status, 200);
+
+  for (const [method, path] of [
+    ["POST", "/api/submit"],
+    ["POST", "/api/verify"],
+    ["POST", "/submit"],
+    ["GET", "/submissions"],
+    ["POST", "/submissions/open"],
+    ["POST", "/submission-choice"],
+    ["GET", "/oauth/callback"],
+    ["POST", "/withdraw"],
+    ["POST", "/register"],
+    ["POST", "/api/repair"],
+    ["GET", "/api/submission"],
+  ]) {
+    const response = await worker.fetch(request(path, method), paused);
+    assert.equal(response.status, 503, `${method} ${path} was not paused`);
+  }
+});
+
+test("maintenance mode suppresses scheduled state reconciliation", async () => {
+  const previous = globalThis.fetch;
+  globalThis.fetch = async () => {
+    throw new Error("scheduled maintenance reached durable state while paused");
+  };
+  try {
+    await worker.scheduled({}, { ...ENV, PALOMAR_WRITES_PAUSED: "true" });
+  } finally {
+    globalThis.fetch = previous;
+  }
+});
+
 test("the review is delivered only to whoever holds the access token", async () => {
   stubState(await fixture());
   const held = await worker.fetch(request("/api/review"), ENV);

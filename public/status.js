@@ -1208,7 +1208,13 @@ async function poll() {
     if (!response.ok) {
       const failure = pollFailureAction(response.status);
       if (failure === "missing") {
-        summary.textContent = "This submission could not be found.";
+        const recovery = el("a", "sign in with GitHub to recover your submissions");
+        recovery.href = "/submissions";
+        summary.replaceChildren(
+          "This submission link no longer opens the record. If it predates the Cloudflare account migration, ",
+          recovery,
+          ".",
+        );
         hideTransientSections();
         return;
       }

@@ -93,6 +93,8 @@ test("every private status-page operation uses the tab-local request helper", as
   assert.equal(script.match(/\bfetch\(/g)?.length, 3, "an unexpected bare fetch bypasses the helper");
   assert.match(script, /if \(!validToken\) return;[\s\S]*visibilityState/);
   assert.match(script, /async function poll\(\) \{\s*if \(!validToken\) return;/);
+  assert.match(script, /predates the Cloudflare account migration/);
+  assert.match(script, /recovery\.href = "\/submissions"/);
   const githubReads = script.slice(
     script.indexOf("async function showVerificationFailure"),
     script.indexOf("let pollTimer"),
