@@ -45,12 +45,15 @@ function people(value) {
     nonempty(person) || (mapping(person) === person && nonempty(person.name)));
 }
 
-function sourceContributors(value) {
-  return Array.isArray(value) && value.every((contributor) =>
-    mapping(contributor) === contributor &&
-    nonempty(contributor.name) &&
-    nonempty(contributor.role) &&
-    contributor.role.trim().length <= 200);
+function addOptionalSourceText(result, value, label, index, maximum) {
+  // A bare `note:` key parses to null, which the server contract reads as an
+  // absent field rather than an empty one.
+  if (value === undefined || value === null || value === "") return;
+  if (!nonempty(value)) {
+    addField(result, false, "sources", `entry ${index + 1} ${label} must be a nonempty string when supplied.`);
+  } else if (value.trim().length > maximum) {
+    addField(result, false, "sources", `entry ${index + 1} ${label} must be at most ${maximum} characters.`);
+  }
 }
 
 function addField(result, condition, field, requirement) {
@@ -177,52 +180,63 @@ export function validateFormalization(text, selectedPolicy = policy) {
     sources.forEach((raw, index) => {
       const source = mapping(raw);
       addField(result, nonempty(source.title), "sources", `entry ${index + 1} needs a title.`);
-      if (source.contributors !== undefined) {
+      // An absent or empty `contributors:` key carries no claim, so the server
+      // contract accepts both; only a present non-list is a defect.
+      if (source.contributors !== undefined && source.contributors !== null) {
+        if (!Array.isArray(source.contributors)) {
+          addField(result, false, "sources", `entry ${index + 1} contributors must be a list.`);
+        } else {
+          source.contributors.forEach((contributor, position) => {
+            const label = `entry ${index + 1} contributor ${position + 1}`;
+            if (mapping(contributor) !== contributor) {
+              addField(result, false, "sources", `${label} must be a mapping with a name and role.`);
+              return;
+            }
+            if (!nonempty(contributor.name)) {
+              addField(result, false, "sources", `${label} needs a name.`);
+            }
+            if (!nonempty(contributor.role)) {
+              addField(result, false, "sources", `${label} needs a role.`);
+            } else if (contributor.role.trim().length > 200) {
+              addField(result, false, "sources", `${label} role must be at most 200 characters.`);
+            }
+          });
+        }
+      }
+      if (!nonempty(source.relationship)) {
         addField(
           result,
-          sourceContributors(source.contributors),
+          false,
           "sources",
-          `entry ${index + 1} contributors must each have a name and role of at most 200 characters.`,
+          `entry ${index + 1} needs a relationship; original-proof entries must use other.`,
+        );
+      } else {
+        addField(
+          result,
+          source.relationship.trim().length <= 500,
+          "sources",
+          `entry ${index + 1} relationship must be at most 500 characters.`,
         );
       }
-      addField(
+      addOptionalSourceText(result, source.type, "type", index, 200);
+      addOptionalSourceText(
         result,
-        nonempty(source.relationship) && source.relationship.trim().length <= 500,
-        "sources",
-        `entry ${index + 1} relationship must be at most 500 characters.`,
+        source.author_endorsement,
+        "author endorsement",
+        index,
+        100,
       );
-      if (source.type !== undefined) {
-        addField(
-          result,
-          source.type === "" || (nonempty(source.type) && source.type.length <= 200),
-          "sources",
-          `entry ${index + 1} type must be at most 200 characters when supplied.`,
-        );
-      }
-      if (source.author_endorsement !== undefined) {
-        addField(
-          result,
-          source.author_endorsement === "" ||
-            (nonempty(source.author_endorsement) && source.author_endorsement.trim().length <= 100),
-          "sources",
-          `entry ${index + 1} author endorsement must be at most 100 characters.`,
-        );
-      }
-      if (source.note !== undefined) {
-        addField(
-          result,
-          source.note === "" || (nonempty(source.note) && source.note.trim().length <= 10_000),
-          "sources",
-          `entry ${index + 1} note must be at most 10000 characters.`,
-        );
-      }
-      const relationshipText = source.relationship?.trim();
+      addOptionalSourceText(result, source.note, "note", index, 10_000);
+      const relationshipText = nonempty(source.relationship) ? source.relationship.trim() : "";
       const relationship = relationshipCategories.has(relationshipText)
         ? relationshipText
         : "other";
-      original ||= source.type === "original-proof";
+      // The server reads `type` through the same trimming as the other bounded
+      // text fields, so padding must not change what the entry claims to be.
+      const originalProof = nonempty(source.type) && source.type.trim() === "original-proof";
+      original ||= originalProof;
       substantive ||= SUBSTANTIVE_SOURCE_RELATIONSHIPS.has(relationship);
-      if (source.type === "original-proof" && relationship !== "other") {
+      if (originalProof && relationship !== "other") {
         addField(result, false, "sources", "original-proof entries must use relationship other.");
       }
     });
