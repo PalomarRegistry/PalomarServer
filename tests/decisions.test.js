@@ -324,6 +324,40 @@ test("registration diagnostics stay private while the safe paused state is visib
   assert.equal(Object.hasOwn(body, "registration_failure"), false);
 });
 
+test("API credit exhaustion reaches the submitter only as a safe service issue", async () => {
+  stubState(await fixture({
+    status: "review-failed",
+    review_error:
+      "private command context: stream disconnected: You have no credits remaining. " +
+      "Add credits to continue using the API.",
+  }));
+  const response = await worker.fetch(request("/api/submission"), ENV);
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.review_service_issue, "api-credits-exhausted");
+  assert.equal(Object.hasOwn(body, "review_error"), false);
+  assert.doesNotMatch(JSON.stringify(body), /private command context/);
+
+  const script = await readFile(new URL("../public/status.js", import.meta.url), "utf8");
+  assert.match(script, /temporarily out of API credits/);
+  assert.match(script, /channel\/621638-Palomar/);
+  assert.match(script, /consider donating to the/);
+  assert.match(script, /lean-lang\.org\/fro/);
+  assert.match(script, /icarm\.io\/donate/);
+});
+
+test("unrelated review failures retain the generic submitter message", async () => {
+  stubState(await fixture({
+    status: "review-failed",
+    review_error: "private engine diagnostic",
+  }));
+  const response = await worker.fetch(request("/api/submission"), ENV);
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.review_service_issue, null);
+  assert.equal(Object.hasOwn(body, "review_error"), false);
+});
+
 test("cache availability reaches the consent page without exposing registration diagnostics", async () => {
   stubState(await fixture({ mathlib_cache_available: false }));
   const response = await worker.fetch(request("/api/submission"), ENV);

@@ -323,6 +323,24 @@ function link(href, text) {
   return a;
 }
 
+function showReviewCreditOutage() {
+  const zulip = link(
+    "https://leanprover.zulipchat.com/#narrow/channel/621638-Palomar",
+    "Palomar channel on Zulip",
+  );
+  const leanFro = link("https://lean-lang.org/fro/", "Lean FRO");
+  const icarm = link("https://icarm.io/donate/", "ICARM");
+  summary.replaceChildren(
+    "It looks like Palomar is temporarily out of API credits! Please let us know in the ",
+    zulip,
+    ". Please also consider donating to the ",
+    leanFro,
+    " and ",
+    icarm,
+    ", which are currently carrying Palomar's bills.",
+  );
+}
+
 function hideTransientSections() {
   waitingSection.hidden = true;
   decisionSection.hidden = true;
@@ -1241,9 +1259,13 @@ async function poll() {
   lastFailureDigest = data.failure_digest ?? null;
   lastFailureProfileVersion = data.failure?.profile_version ?? null;
   const structuredFailure = showStructuredFailure(data);
-  summary.textContent = data.status === "verification-failed" && !failedRun && !structuredFailure
-    ? "Palomar could not complete or recover the verification run. This is a fault at our end, not with your submission."
-    : LABELS[data.status] ?? data.status;
+  if (data.review_service_issue === "api-credits-exhausted") {
+    showReviewCreditOutage();
+  } else {
+    summary.textContent = data.status === "verification-failed" && !failedRun && !structuredFailure
+      ? "Palomar could not complete or recover the verification run. This is a fault at our end, not with your submission."
+      : LABELS[data.status] ?? data.status;
+  }
   progress.replaceChildren();
   const waiting = waitingStatusMessage(data.status);
   waitingSection.hidden = !waiting;
