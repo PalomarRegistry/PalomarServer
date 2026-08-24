@@ -110,7 +110,10 @@ header on every call:
     Authorization: Bearer <the fragment>
 
 - `GET /api/submission` — status, events, the verification run, the paths the
-  submission asked for, and an estimate of how long review is taking.
+  submission asked for, an estimate of how long review is taking, and a
+  `review_service_issue` when Palomar can safely identify an operational
+  problem to report. Its current values are `null` and
+  `"api-credits-exhausted"`; private provider diagnostics are never returned.
 - `GET /api/review` — the review, once there is one. Private to the token
   holder. Do not paste it anywhere public, including a pull request or an
   issue, before it is registered.

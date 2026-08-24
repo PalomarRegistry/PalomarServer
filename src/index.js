@@ -321,6 +321,21 @@ function obsoleteReview() {
   return json({ error: "the review uses an obsolete or invalid contract and must be rerun" }, 409);
 }
 
+/**
+ * Reduce a private provider diagnostic to the one operational condition a
+ * submitter can usefully report. The raw review error never crosses this
+ * boundary: it may contain command lines, provider details, or other private
+ * operational context.
+ */
+function reviewServiceIssue(record) {
+  if (!["awaiting-review", "review-failed"].includes(record.status) ||
+      typeof record.review_error !== "string") return null;
+  return /\b(?:no credits remaining|credit balance exhausted|credit_balance_exhausted)\b/i
+      .test(record.review_error)
+    ? "api-credits-exhausted"
+    : null;
+}
+
 /** Ours to fix, not the submitter's, and never phrased as though it were. */
 function intakeUnavailable(env, machine) {
   return machine
@@ -2758,6 +2773,7 @@ export default {
               }
             : null,
           review_started_at: record.review_started_at ?? null,
+          review_service_issue: reviewServiceIssue(record),
           typical_review_seconds: await typicalReviewSeconds(env),
           registration_consent: record.registration_consent === true,
           mathlib_cache_available:
