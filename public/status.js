@@ -621,7 +621,7 @@ function appendRepairControl(wrapper, diagnostic, profile, failure) {
     input.name = field;
     input.dataset.inputType = profile.input;
     input.required = true;
-    input.maxLength = profile.input === "text" ? 500 : 4000;
+    input.maxLength = profile.input === "text" ? profile.maximum ?? 500 : 4000;
     if (input instanceof HTMLTextAreaElement) input.rows = profile.input === "people" ? 3 : 2;
     input.value = Array.isArray(draft) ? draft.join("\n") : draft ?? "";
     if (!input.value.trim()) input.dataset.originallyInvalid = "true";

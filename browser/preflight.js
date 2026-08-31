@@ -2,6 +2,7 @@ import { isMap, isSeq, parseDocument, stringify } from "yaml";
 
 import {
   classificationMaximum,
+  PROJECT_NAME_MAXIMUM,
   SUBSTANTIVE_SOURCE_RELATIONSHIPS,
 } from "../public/formalization-profile.js";
 import policy from "./preflight-policy.json" with { type: "json" };
@@ -129,7 +130,12 @@ export function validateFormalization(text, selectedPolicy = policy) {
 
   const result = [];
   const project = mapping(data.project);
-  addField(result, nonempty(project.name), "project.name", "must be a nonempty string.");
+  addField(
+    result,
+    nonempty(project.name) && project.name.trim().length <= PROJECT_NAME_MAXIMUM,
+    "project.name",
+    `must be a nonempty string of at most ${PROJECT_NAME_MAXIMUM} characters.`,
+  );
   addField(
     result,
     nonempty(project.description) && project.description.trim().length <= 10_000,

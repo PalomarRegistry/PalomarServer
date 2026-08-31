@@ -315,7 +315,9 @@ export function createPreflightRepairForm({ container, fields, status }) {
       input.name = field;
       input.dataset.inputType = profile.input;
       input.required = true;
-      input.maxLength = profile.input === "text" ? 500 : profile.input === "prose" ? 10_000 : 4000;
+      input.maxLength = profile.input === "text"
+        ? profile.maximum ?? 500
+        : profile.input === "prose" ? 10_000 : 4000;
       if (input instanceof HTMLTextAreaElement) input.rows = 3;
       input.value = Array.isArray(draft) ? draft.join("\n") : draft ?? "";
       if (!input.value.trim()) input.dataset.originallyInvalid = "true";

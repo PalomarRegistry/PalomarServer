@@ -196,6 +196,13 @@ test("classification repairs canonicalize and enforce the verifier taxonomies", 
 });
 
 test("repair values respect constraints enforced by formalization validation", () => {
+  assert.equal(normalizedRepairEdits([
+    { field: "project.name", value: "x".repeat(300) },
+  ])[0].value.length, 300);
+  assert.throws(
+    () => normalizedRepairEdits([{ field: "project.name", value: "x".repeat(301) }]),
+    /300/,
+  );
   assert.throws(
     () => normalizedRepairEdits([{ field: "sources", value: [{
       title: "Source", relationship: "formalizes", location: "x".repeat(1001),

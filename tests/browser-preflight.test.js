@@ -43,6 +43,16 @@ test("portable metadata validation accepts the current minimal contract", () => 
   assert.deepEqual(validateFormalization(VALID_FORMALIZATION), []);
 });
 
+test("portable metadata validation bounds the public project title", () => {
+  const metadata = VALID_FORMALIZATION.replace(
+    "  name: Example",
+    `  name: ${"x".repeat(301)}`,
+  );
+  assert.deepEqual(validateFormalization(metadata).map((item) => item.summary), [
+    "project.name must be a nonempty string of at most 300 characters.",
+  ]);
+});
+
 test("classification scheme keys are case-insensitive but unambiguous", () => {
   const mixedCase = VALID_FORMALIZATION
     .replace("  arxiv:", "  arXiv:")
