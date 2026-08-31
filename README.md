@@ -47,6 +47,14 @@ submitted the repository and that an account named itself, which are not
 provably the same account, so the record carries `separately-attested` rather
 than `same-account` and the two are not treated as equivalent anywhere.
 
+A Registry-correction agent uses a narrower proof for a different authority.
+Corrections do not require write access to the source repository, which they
+cannot move. The agent creates only the secret challenge gist; GitHub's numeric
+id for its owner must be in `src/technical-maintainers.js`. The durable proof is
+the same `technical-team-correction` / `active-technical-team-membership`
+authority recorded by the dashboard path. A source-repository tag would prove
+an irrelevant capability and is deliberately neither requested nor read.
+
 An access token is the ordinary way back to a submission. On the agent path
 there is no link to put it in, so `/api/verify` returns it in the response body.
 On the browser path it is carried after the `#`, because a browser leaves that
@@ -113,10 +121,11 @@ When an allowlisted maintainer submits a public repository and pinned commit
 without write access, the browser path automatically records it as a technical test.
 The explicit technical-test relationship reaches the same path. Its durable
 record says `test_submission`, does not claim `push_verified`, and carries a
-distinct Technical Maintainer proof. The agent intake cannot use either
-allowlist-based exception because its tag-and-gist proof does not establish the
-same account's numeric identity. The pre-authentication address throttle still
-applies because the account is not known until OAuth completes.
+distinct Technical Maintainer proof. Technical tests remain browser-only; the
+agent exception is limited to a structurally valid Registry correction and
+checks the gist owner's numeric id before admission. The pre-authentication
+address throttle still applies because the account is not known until the
+OAuth callback or gist verification completes.
 
 ## Private operational dashboard
 

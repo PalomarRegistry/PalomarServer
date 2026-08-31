@@ -15,10 +15,11 @@ is the only way in. The registry itself is at https://palomar-registry.org.
 Nothing about eligibility, metadata, or scoring is restated here. If this file
 and the policy disagree, the policy is right.
 
-## You may submit, but not by signing in as your user
+## You may make an ordinary submission, but not by signing in as your user
 
-Submitting requires proving that whoever submits can write to the repository
-being submitted. There are two ways to prove it, and you may drive exactly one.
+An ordinary submission requires proving that whoever submits can write to the
+repository being submitted. There are two ways to prove it, and you may drive
+exactly one.
 
 **Do not drive the browser sign-in.** Not with browser automation, not with a
 stored session, not with credentials your user has given you for other
@@ -101,6 +102,84 @@ If that token is lost, do not drive the browser recovery sign-in. Hand control
 back to your user: `/submissions` (the submission form's **Find my
 submissions** action) lets them authenticate with GitHub and receive a fresh
 link while the submission is still in progress.
+
+## A Technical Maintainer may make a Registry correction through the API
+
+This is a separate authority, not a shortcut for an ordinary submission. It is
+available only when the authenticated `gh` account's GitHub-set numeric id is
+in Palomar's current Technical Maintainer allowlist. Read the correction policy
+and runbook first:
+
+- https://github.com/PalomarRegistry/PalomarPolicy/blob/main/CONTRIBUTING.md#91-exceptional-registry-metadata-corrections
+- https://github.com/PalomarRegistry/PalomarPolicy/blob/main/docs/maintainer-corrections.md
+
+Before calling intake, show your user the exact current version, every proposed
+metadata value, and the public explanation. Remind them that the proposal and
+explanation become public when validation starts, even if it is later
+withdrawn, and get their explicit agreement. Do not infer permission from an
+earlier request to inspect or draft a correction.
+
+Load `/versions/PALOMAR-....json` from `data.palomar-registry.org`, then load its
+highest active entry. The correction is a complete replacement for the
+correctable metadata, not a patch: copy every unchanged value exactly and edit
+only the fields the user approved. POST this shape to `/api/submit`:
+
+    {
+      "repository": "OWNER/REPOSITORY",
+      "commit": "<the baseline's 40-character source commit>",
+      "existing_id": "PALOMAR-YYYY-MM-DD-NNNNNN",
+      "project_path": "<baseline source.project_path, or omit when absent>",
+      "formalization_metadata_path": "<baseline formalization path>",
+      "comparator_config_path": "<baseline Comparator path>",
+      "authorization_relationship": "palomar-maintainer",
+      "registry_correction": {
+        "schema_version": 1,
+        "based_on": {"id": "PALOMAR-...", "version": 2},
+        "explanation": "<plain-text public explanation>",
+        "metadata": {
+          "title": "...",
+          "abstract": "...",
+          "authors": [{"name": "...", "github": "optional", "orcid": "optional"}],
+          "classification": {"arxiv": ["..."], "msc2020": ["..."]},
+          "provenance": {
+            "responsible_maintainers": [{"name": "..."}],
+            "mathematical_sources": [],
+            "related_formalizations": []
+          }
+        }
+      }
+    }
+
+Person objects permit only `name`, optional `github`, and optional canonical
+bare `orcid`. Mathematical-source and related-formalization objects should be
+copied from the baseline unless one of those fields is itself being corrected.
+The server reloads the current active baseline, computes the changed-field list
+itself, refuses stale corrections, and refuses any movement of the repository,
+commit, project, metadata, or Comparator paths.
+
+The response carries `pending_secret` and `challenge`. Prove the allowlisted
+account with a new secret gist; unlike an ordinary submission, do not create a
+repository tag, because source-repository write access is not correction
+authority:
+
+    echo '{"public":false,"files":{"palomar.txt":{"content":"CHALLENGE"}}}' \
+      | gh api -X POST gists --input -
+
+Then POST `/api/verify`:
+
+    {"pending_secret": "...", "gist_id": "..."}
+
+The gist must be owned by a `User` account whose numeric id is currently
+allowlisted, must be secret, must carry the exact challenge, and must have been
+created for this intake. Delete it immediately after `/api/verify` answers:
+
+    gh api -X DELETE gists/GIST_ID
+
+The same fifteen-minute intake lifetime, ten-attempt bound, access-token rules,
+monitoring API, review delivery, and explicit registration decision described
+elsewhere in this file apply. The durable authorization records active
+Technical Maintainer membership; it does not claim source-repository write
+access, project approval, authorship, or endorsement.
 
 ## After that, monitoring is yours
 
@@ -193,14 +272,14 @@ press it, that is fine; deciding for them is not.
   progress at once than it will hold. Nothing was consumed and there is nothing
   to correct. Wait for the `retry-after` and send the same body again.
 - `/api/verify` allows a bounded number of failed proofs and then refuses and
-  discards the intake. Fix the tag or the gist before retrying, rather than
-  retrying the same broken proof.
+  discards the intake. Fix the required tag or gist before retrying, rather
+  than retrying the same broken proof.
 - A policy or principal-limit refusal after `/api/verify` has accepted the proof says
   `"proof_consumed": true` and includes a `restart` instruction. Start again at
   `/api/submit` when the refusal can be addressed. If durable State is damaged
   or unavailable, no admission commit lands: the response instead says
-  `"proof_consumed": false`, and the same pending secret, tag, and gist may be
-  retried after the service is repaired, subject to the response's
+  `"proof_consumed": false`, and the same pending secret and required proof
+  artifacts may be retried after the service is repaired, subject to the response's
   `attempts_remaining`. An explicitly `"unknown"` outcome must not be retried
   automatically: ask the registry operator to inspect State first.
 - Errors on the `/api/` routes come back as JSON `{"error": "..."}` with a
