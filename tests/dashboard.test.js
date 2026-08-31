@@ -179,6 +179,49 @@ test("dashboard login authorizes the checked-in Technical Maintainer ids", async
 });
 
 
+test("the protected dashboard exposes the exceptional registry-correction form", async () => {
+  const callback = await login(() => {
+    throw new Error("unexpected fetch");
+  });
+  const cookies = callback.headers.getSetCookie?.() ?? [callback.headers.get("set-cookie")];
+  const session = cookies.join(";").match(/__Host-palomar_dashboard=([^;,]+)/)?.[0];
+  const response = await worker.fetch(
+    new Request("https://submit.example/dashboard/corrections/new", {
+      headers: { cookie: session },
+    }),
+    ENV,
+  );
+  assert.equal(response.status, 200);
+  const body = await response.text();
+  assert.match(body, /Create a registry correction/);
+  assert.match(body, /registry-correction-form\.js/);
+  assert.match(body, /name="authorization_relationship" value="palomar-maintainer"/);
+  assert.match(body, /name="robots" content="noindex,nofollow"/);
+  assert.match(body, /maintainer-corrections\.md/);
+});
+
+
+test("the registry-correction form is not rendered without a maintainer session", async () => {
+  const direct = await worker.fetch(
+    new Request("https://submit.example/dashboard/corrections/new"),
+    ENV,
+  );
+  assert.equal(direct.status, 303);
+  assert.equal(direct.headers.get("location"), "/dashboard/login");
+
+  const crafted = await worker.fetch(
+    new Request("https://submit.example/submit", {
+      method: "POST",
+      headers: { "sec-fetch-site": "same-origin" },
+      body: new URLSearchParams({ authorization_relationship: "palomar-maintainer" }),
+    }),
+    ENV,
+  );
+  assert.equal(crafted.status, 403);
+  assert.doesNotMatch(await crafted.text(), /id="registry-correction-form"/);
+});
+
+
 test("nonmembers receive no dashboard session", async () => {
   const callback = await login(() => {
     throw new Error("unexpected fetch");

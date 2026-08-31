@@ -28,7 +28,13 @@ import {
   writeState,
   transactState,
 } from "./github.js";
-import { intakeForm, statusPage, errorPage, submissionsPage } from "./html.js";
+import {
+  intakeForm,
+  registryCorrectionForm,
+  statusPage,
+  errorPage,
+  submissionsPage,
+} from "./html.js";
 import {
   admissionDecision,
   nextRateRecord,
@@ -62,6 +68,11 @@ import {
 } from "./state-contract.js";
 import { normalizedQueuedRepairEdits } from "../public/repair-contract.js";
 import {
+  MAX_REGISTRY_CORRECTION_BYTES,
+  normalizeRegistryCorrection,
+  registryCorrectionDelta,
+} from "../public/registry-correction.js";
+import {
   BROWSER_PREFLIGHT_POLICY,
   canApplyFormalizationRepair,
   formalizationRepairDraft,
@@ -79,6 +90,7 @@ const REPAIR_TAXONOMIES = Object.freeze({
     Object.keys(msc2020Codes).map((code) => [code.toUpperCase(), code]),
   ),
 });
+const REGISTRY_DATA = "https://data.palomar-registry.org";
 import {
   activeSubmissionPhase,
   assertInflightContract,
@@ -502,6 +514,76 @@ async function intakeThrottle(env, request, { machine = false } = {}) {
       );
 }
 
+async function registryCorrectionBaseline(correction) {
+  const identifier = correction.based_on.id;
+  const versionsResponse = await fetch(`${REGISTRY_DATA}/versions/${identifier}.json`, {
+    headers: { accept: "application/json" },
+  });
+  if (!versionsResponse.ok) {
+    throw new TypeError(
+      versionsResponse.status === 404
+        ? "The correction target has no active version"
+        : "The correction target is temporarily unavailable",
+    );
+  }
+  const versions = await versionsResponse.json();
+  if (
+    versions?.id !== identifier ||
+    ![2, 3].includes(versions?.schema_version) ||
+    !Array.isArray(versions.entries) ||
+    !versions.entries.length
+  ) throw new TypeError("The correction target has a malformed version history");
+  const current = versions.entries.reduce((latest, item) =>
+    Number(item?.version) > Number(latest?.version) ? item : latest
+  );
+  if (current?.version !== correction.based_on.version) {
+    throw new TypeError(
+      `The correction is stale; version ${String(current?.version)} is now current`,
+    );
+  }
+  const expectedPath = `entries/${identifier}-v${current.version}.json`;
+  if (current.path !== expectedPath) {
+    throw new TypeError("The correction target has an inconsistent entry path");
+  }
+  const entryResponse = await fetch(`${REGISTRY_DATA}/${expectedPath}`, {
+    headers: { accept: "application/json" },
+  });
+  if (!entryResponse.ok) throw new TypeError("The correction target entry is unavailable");
+  const encoded = await entryResponse.text();
+  let entry;
+  try {
+    entry = JSON.parse(encoded);
+  } catch {
+    throw new TypeError("The correction target entry is malformed");
+  }
+  if (entry?.id !== identifier || entry?.version !== current.version) {
+    throw new TypeError("The correction target entry has an inconsistent identity");
+  }
+  const normalized = registryCorrectionDelta(correction, entry);
+  for (const code of normalized.metadata.classification.arxiv) {
+    if (!REPAIR_TAXONOMIES["classification.arxiv"].has(code.toUpperCase())) {
+      throw new TypeError(`The correction contains an unrecognized arXiv code: ${code}`);
+    }
+  }
+  for (const code of normalized.metadata.classification.msc2020) {
+    if (!REPAIR_TAXONOMIES["classification.msc2020"].has(code.toUpperCase())) {
+      throw new TypeError(`The correction contains an unrecognized MSC 2020 code: ${code}`);
+    }
+  }
+  return {
+    entry,
+    correction: {
+      ...normalized,
+      baseline: {
+        id: identifier,
+        version: current.version,
+        path: expectedPath,
+        sha256: await digest(encoded),
+      },
+    },
+  };
+}
+
 /**
  * Intake, before any credential is involved.
  *
@@ -536,12 +618,27 @@ async function beginSubmission(request, env, { machine = false } = {}) {
   }
   const { values, problems, submission } = validateIntake(form);
   const automaticRecovery = !machine && Boolean(await githubIdentityPrincipal(request, env));
+  const requestedCorrection = String(form.get("authorization_relationship") ?? "") ===
+    "palomar-maintainer";
+  // Do not use the hidden relationship value as permission to render the
+  // privileged editor. The same short-lived session that protects its GET
+  // route must accompany every POST and every validation-error redisplay.
+  if (requestedCorrection && !machine && !(await dashboardPrincipal(request, env))) {
+    return html(errorPage(env, "This correction is not authorized", [
+      "Open the Technical Maintainer dashboard and sign in before starting a Registry correction.",
+    ]), 403);
+  }
   // A browser gets its form back with everything still in it; an agent gets
   // the same problems as a list it can act on.
   const rejected = (...problems) =>
     machine
       ? json({ error: "that submission was refused", problems }, 400)
-      : html(intakeForm(env, values, problems, { automaticRecovery }), 400);
+      : html(
+          requestedCorrection
+            ? registryCorrectionForm(env, values, problems)
+            : intakeForm(env, values, problems, { automaticRecovery }),
+          400,
+        );
 
   if (problems.length) return rejected(...problems);
 
@@ -575,6 +672,30 @@ async function beginSubmission(request, env, { machine = false } = {}) {
     }
   }
 
+  let registryCorrection = null;
+  let correctionBaseline = null;
+  const rawRegistryCorrection = String(form.get("registry_correction") ?? "");
+  if (requestedCorrection) {
+    if (machine) return rejected("Registry corrections are available only through maintainer sign-in.");
+    if (!rawRegistryCorrection || new TextEncoder().encode(rawRegistryCorrection).length > MAX_REGISTRY_CORRECTION_BYTES) {
+      return rejected("The registry correction is missing or too large.");
+    }
+    try {
+      const normalized = normalizeRegistryCorrection(JSON.parse(rawRegistryCorrection));
+      const resolved = await registryCorrectionBaseline(normalized);
+      registryCorrection = resolved.correction;
+      correctionBaseline = resolved.entry;
+    } catch (error) {
+      return rejected(
+        error instanceof Error
+          ? `The registry correction could not be accepted: ${error.message}.`
+          : "The registry correction could not be accepted.",
+      );
+    }
+  } else if (rawRegistryCorrection) {
+    return rejected("Registry correction metadata requires the maintainer correction mode.");
+  }
+
   const {
     repository: repositoryName,
     commit,
@@ -586,8 +707,15 @@ async function beginSubmission(request, env, { machine = false } = {}) {
   } = submission;
   const technicalTest = relationship === "technical-test";
 
+  if (relationship === "palomar-maintainer" && !registryCorrection) {
+    return rejected("The registry correction is missing.");
+  }
+
   if (preflightRepair && technicalTest) {
     return rejected("A test submission cannot ask Palomar to open a repair pull request.");
+  }
+  if (preflightRepair && registryCorrection) {
+    return rejected("A registry correction cannot also request an upstream metadata repair.");
   }
 
   if (machine && technicalTest) {
@@ -636,6 +764,27 @@ async function beginSubmission(request, env, { machine = false } = {}) {
   if (!(await resolveCommit(env.SUBMISSION_TOKEN, repositoryName, commit))) {
     return rejected(`${commit} was not found in ${repositoryName}.`);
   }
+  if (registryCorrection) {
+    const expected = {
+      repository: correctionBaseline?.source?.repository,
+      commit: correctionBaseline?.source?.commit,
+      project_path: correctionBaseline?.source?.project_path ?? null,
+      comparator_config_path: correctionBaseline?.formalization?.comparator_config_path,
+      formalization_metadata_path: correctionBaseline?.formalization?.formalization_metadata_path,
+    };
+    const actual = {
+      repository: repositoryName,
+      commit,
+      project_path: requestedPaths.project_path,
+      comparator_config_path: requestedPaths.comparator_config_path,
+      formalization_metadata_path: requestedPaths.formalization_metadata_path,
+    };
+    if (JSON.stringify(actual) !== JSON.stringify(expected) || existingId !== correctionBaseline.id) {
+      return rejected(
+        "A registry correction must retain the current entry's repository, commit, project, metadata, and Comparator paths.",
+      );
+    }
+  }
 
   // A pending intake, so the callback can recover exactly what was asked for
   // without trusting anything the browser carries back except an opaque nonce.
@@ -674,6 +823,7 @@ async function beginSubmission(request, env, { machine = false } = {}) {
     authorization_relationship: relationship,
     authorization_evidence: evidence,
     ...(preflightRepair ? { preflight_repair: preflightRepair } : {}),
+    ...(registryCorrection ? { registry_correction: registryCorrection } : {}),
     created_at: recordedAt(),
   };
   try {
@@ -1247,6 +1397,7 @@ async function admitSubmission(
           ? { evidence: pending.authorization_evidence }
           : {}),
       },
+      registryCorrection: pending.registry_correction ?? null,
     }),
     push_proof: proof,
     created_at: createdAt,
@@ -1815,6 +1966,8 @@ async function completeSubmission(request, env) {
 
   const requestedTechnicalTest =
     pending.value.authorization_relationship === "technical-test";
+  const requestedRegistryCorrection =
+    pending.value.authorization_relationship === "palomar-maintainer";
   if (requestedTechnicalTest && (
     !viewer ||
     viewer.private === true ||
@@ -1852,14 +2005,28 @@ async function completeSubmission(request, env) {
       { "set-cookie": await intakeCookie(nonce, null, { clear: true }) },
     ));
   }
+  if (requestedRegistryCorrection && !technicalMaintainer) {
+    if (!(await deleteState(env, pendingPath, pending.sha,
+                            "Discard a correction requested by a nonmember"))) {
+      console.error("pending", `could not discard ${pendingPath}`);
+    }
+    return identified(html(
+      errorPage(env, "This correction is not authorized", spentSignInProblems([
+        "Registry corrections are limited to Palomar Technical Maintainers.",
+      ])),
+      403,
+      { "set-cookie": await intakeCookie(nonce, null, { clear: true }) },
+    ));
+  }
 
   const technicalTest = requestedTechnicalTest || (
+    !requestedRegistryCorrection &&
     !viewer?.permissions?.push &&
     technicalMaintainer &&
     viewer.private !== true &&
     (pending.value.repository_id == null || viewer.id === pending.value.repository_id)
   );
-  if (!viewer?.permissions?.push && !technicalTest) {
+  if (!viewer?.permissions?.push && !technicalTest && !requestedRegistryCorrection) {
     // Deliberately before the pending record is consumed. Consuming first
     // meant a refused submitter lost everything they had typed, undoing the
     // care `beginSubmission` takes to hand it back to them.
@@ -1884,10 +2051,13 @@ async function completeSubmission(request, env) {
     : pending.value;
   const proof = {
     schema_version: 1,
-    method: technicalTest ? "technical-team-test" : "oauth",
+    method: requestedRegistryCorrection
+      ? "technical-team-correction"
+      : technicalTest ? "technical-team-test" : "oauth",
     // Keep the durable vocabulary consumed by the reviewer. Technical
     // Maintainer authority itself is the checked-in numeric-id set.
-    binding: technicalTest ? "active-technical-team-membership" : "same-account",
+    binding: (technicalTest || requestedRegistryCorrection)
+      ? "active-technical-team-membership" : "same-account",
     verified_at: recordedAt(),
     repository_id: viewer.id ?? null,
     commit: pending.value.commit,
@@ -2370,6 +2540,16 @@ export default {
           return html(errorPage(env, "The operational report is temporarily unavailable", []), 503);
         }
         return html(dashboardHtml(report.value, principal));
+      }
+      if (request.method === "GET" && url.pathname === "/dashboard/corrections/new") {
+        const principal = await dashboardPrincipal(request, env);
+        if (!principal) {
+          return new Response(null, {
+            status: 303,
+            headers: { ...SECURITY_HEADERS, location: "/dashboard/login" },
+          });
+        }
+        return html(registryCorrectionForm(env));
       }
       if (request.method === "GET" && url.pathname === "/api/dashboard") {
         if (!madeByThisSite(request)) {
