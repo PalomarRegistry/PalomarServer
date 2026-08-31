@@ -6,12 +6,13 @@ export function escape(value) {
   })[c]);
 }
 
-export function page(env, title, body, { submitCurrent = false } = {}) {
+export function page(env, title, body, { submitCurrent = false, noIndex = false } = {}) {
   return `<!DOCTYPE html>
 <html lang="en">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    ${noIndex ? '<meta name="robots" content="noindex,nofollow">' : ""}
     <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
     <meta name="theme-color" content="#101216" media="(prefers-color-scheme: dark)">
     <title>${escape(title)} — Palomar</title>
@@ -289,6 +290,107 @@ export function intakeForm(
     </form>
     <script type="module" src="/intake.js"></script>
   `, { submitCurrent: true });
+}
+
+/** Technical-Maintainer-only entry point for one metadata-only registry version. */
+export function registryCorrectionForm(env, values = {}, problems = []) {
+  const trouble = problems.length
+    ? `<section class="disclosure problems-block" role="alert">
+         <h2>That correction did not go through</h2>
+         <ul class="problems">${problems.map((problem) => `<li>${escape(problem)}</li>`).join("")}</ul>
+       </section>`
+    : "";
+  return page(env, "Create a registry correction", `
+    <h1>Create a registry correction</h1>
+    ${trouble}
+    <p class="lede">
+      This exceptional path appends a Palomar-authored metadata version. It does not
+      change the registered repository, commit, project, metadata file, or Comparator configuration.
+    </p>
+    <section class="disclosure">
+      <h2>Registration warning</h2>
+      <p class="hint warning">
+        The proposed values and explanation become public as soon as validation starts,
+        even if the correction is later withdrawn. Registration is permanent and does
+        not imply endorsement by the source repository's authors or maintainers.
+      </p>
+    </section>
+    <form method="post" action="/submit" id="registry-correction-form">
+      <label for="correction-id">Current Palomar record</label>
+      <input id="correction-id" autocomplete="off" required
+             pattern="PALOMAR-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{6}"
+             placeholder="PALOMAR-2026-07-29-000123"
+             value="${escape(values.existing_id)}">
+      <p class="hint" id="correction-load-status" role="status">
+        Enter an identifier to load its current active version.
+      </p>
+
+      <section id="correction-editor" hidden>
+        <div class="details" id="correction-baseline"></div>
+        <label for="correction-title">Title</label>
+        <input id="correction-title" maxlength="300" required>
+
+        <label for="correction-abstract">Abstract</label>
+        <textarea id="correction-abstract" rows="8" maxlength="10000" required></textarea>
+
+        <fieldset>
+          <legend>Authors</legend>
+          <p class="hint">One person per line: <code>Name | GitHub login | ORCID</code>. The last two columns are optional.</p>
+          <textarea id="correction-authors" rows="5" required></textarea>
+        </fieldset>
+
+        <fieldset>
+          <legend>Classification</legend>
+          <label for="correction-arxiv">arXiv codes</label>
+          <textarea id="correction-arxiv" rows="2" required aria-describedby="correction-classification-hint"></textarea>
+          <label for="correction-msc2020">MSC 2020 codes</label>
+          <textarea id="correction-msc2020" rows="3" required aria-describedby="correction-classification-hint"></textarea>
+          <p class="hint" id="correction-classification-hint">One code per line.</p>
+        </fieldset>
+
+        <fieldset>
+          <legend>Responsible maintainers</legend>
+          <p class="hint">One person per line: <code>Name | GitHub login | ORCID</code>.</p>
+          <textarea id="correction-maintainers" rows="4" required></textarea>
+        </fieldset>
+
+        <fieldset>
+          <legend>Mathematical sources</legend>
+          <div id="correction-sources"></div>
+          <button type="button" class="secondary compact" id="correction-add-source">Add source</button>
+        </fieldset>
+
+        <fieldset>
+          <legend>Related formalizations</legend>
+          <div id="correction-related"></div>
+          <button type="button" class="secondary compact" id="correction-add-related">Add related formalization</button>
+        </fieldset>
+
+        <label for="correction-explanation">Public explanation</label>
+        <textarea id="correction-explanation" rows="5" maxlength="4000" required
+                  aria-describedby="correction-explanation-hint">${escape(values.correction_explanation)}</textarea>
+        <p class="hint warning" id="correction-explanation-hint">
+          Explain what is being corrected and why. This plain text becomes public
+          during validation and remains attached to the immutable version.
+        </p>
+
+        <input type="hidden" name="repository" id="repository">
+        <input type="hidden" name="commit" id="commit">
+        <input type="hidden" name="existing_id" id="existing_id">
+        <input type="hidden" name="project_path" id="project_path">
+        <input type="hidden" name="comparator_config_path" id="comparator_config_path">
+        <input type="hidden" name="formalization_metadata_path" id="formalization_metadata_path">
+        <input type="hidden" name="authorization_relationship" value="palomar-maintainer">
+        <input type="hidden" name="registry_correction" id="registry-correction-payload">
+        <button type="submit">Validate correction</button>
+      </section>
+    </form>
+    <p class="hint">
+      <a href="https://github.com/PalomarRegistry/PalomarPolicy/blob/main/docs/maintainer-corrections.md">Read the maintainer correction runbook</a>
+      · <a href="/dashboard">Return to the Technical Maintainer dashboard</a>
+    </p>
+    <script type="module" src="/registry-correction-form.js"></script>
+  `, { submitCurrent: true, noIndex: true });
 }
 
 export function submissionsPage(

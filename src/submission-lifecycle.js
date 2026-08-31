@@ -68,7 +68,7 @@ export function activeSubmissionPhase(record) {
   }
   if (record.status === "verifying") {
     return {
-      mode: "full",
+      mode: record.registry_correction ? "correction" : "full",
       runField: "run",
       missesField: "run_misses",
       leaseAtField: "dispatch_lease_at",
@@ -121,11 +121,12 @@ async function failUnrecoverableRun(env, item, record, phase, note) {
 
 /** Dispatch the verification described entirely by one durable State record. */
 export function dispatchSubmissionVerification(env, record, mode = "full") {
+  const effectiveMode = record.registry_correction ? "correction" : mode;
   return dispatchVerification(env, {
     repositoryName: record.repository,
     commit: record.commit,
     requestId: record.id,
-    mode,
+    mode: effectiveMode,
     options: {
       authorization_relationship: authorizationRelationshipLabel(
         record.authorization.relationship,
@@ -137,6 +138,9 @@ export function dispatchSubmissionVerification(env, record, mode = "full") {
         ? { authorization_evidence: record.authorization.evidence }
         : {}),
       ...(record.existing_id ? { existing_id: record.existing_id } : {}),
+      ...(record.registry_correction
+        ? { registry_correction: JSON.stringify(record.registry_correction) }
+        : {}),
       // The submitter's notes are deliberately absent. Dispatch inputs are
       // world-readable on the public submission repository's run page, the
       // form promises the notes never reach that workflow, and the workflow

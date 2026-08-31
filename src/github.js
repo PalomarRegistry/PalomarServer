@@ -474,7 +474,9 @@ export async function dispatchVerification(
   env,
   { repositoryName, commit, requestId, options, mode = "full" },
 ) {
-  if (!new Set(["preflight", "full"]).has(mode)) throw new Error("invalid verification mode");
+  if (!new Set(["preflight", "full", "correction"]).has(mode)) {
+    throw new Error("invalid verification mode");
+  }
   const response = await fetch(
     `${API}/repos/${env.SUBMISSION_REPO}/actions/workflows/${env.VERIFY_WORKFLOW}/dispatches`,
     {
@@ -551,10 +553,14 @@ export async function findVerificationRun(
   requestId,
   { pinnedRunId = null, since = null, mode = "full" } = {},
 ) {
-  if (!new Set(["preflight", "full"]).has(mode)) throw new Error("invalid verification mode");
+  if (!new Set(["preflight", "full", "correction"]).has(mode)) {
+    throw new Error("invalid verification mode");
+  }
   const expected = mode === "preflight"
     ? `Preflight submission ${requestId}`
-    : `Verify submission ${requestId}`;
+    : mode === "correction"
+      ? `Validate registry correction ${requestId}`
+      : `Verify submission ${requestId}`;
 
   if (pinnedRunId) {
     const run = await call(

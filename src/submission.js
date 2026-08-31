@@ -163,7 +163,7 @@ export function withdrawnRecord(record, { at, note }) {
 
 export function newRecord({
   id, repositoryName, commit, owner, submitter, existingId, context, authorization,
-  requestedPaths = {}, testSubmission = false,
+  requestedPaths = {}, testSubmission = false, registryCorrection = null,
 }) {
   return {
     schema_version: 1,
@@ -173,7 +173,10 @@ export function newRecord({
     commit,
     owner,
     submitter,
-    push_verified: !testSubmission,
+    // A registry correction is authorized by Technical Maintainer membership,
+    // not by write access to the formalization repository it leaves unchanged.
+    push_verified: !testSubmission && !registryCorrection,
+    ...(registryCorrection ? { registry_correction_authorized: true } : {}),
     ...(testSubmission ? { test_submission: true } : {}),
     existing_id: existingId || null,
     context: context || null,
@@ -185,6 +188,7 @@ export function newRecord({
       formalization_metadata_path: requestedPaths.formalization_metadata_path || "",
     },
     authorization,
+    ...(registryCorrection ? { registry_correction: registryCorrection } : {}),
     created_at: null,
     events: [],
   };

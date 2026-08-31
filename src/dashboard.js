@@ -279,6 +279,9 @@ ${totals.landed_targets_attempt_history_incomplete ? `<p><small>Retry history is
 <li><a href="${escapeHtml(actions.restoration)}">Restore a version</a></li>
 </ul>
 <p><small>${escapeHtml(actions.note)}</small></p>
+<h2>Registry maintenance</h2>
+<p><a href="/dashboard/corrections/new">Create an exceptional metadata correction</a></p>
+<p><small><a href="https://github.com/PalomarRegistry/PalomarPolicy/blob/main/docs/maintainer-corrections.md">Registry correction runbook</a></small></p>
 <p><a href="/api/dashboard">Machine-readable aggregate JSON</a></p>
 </main></body></html>`;
 }

@@ -13,13 +13,16 @@ import {
   normalizeRepositoryPath,
 } from "./submission.js";
 
-const RELATIONSHIPS = new Set(["maintainer", "approved", "technical-test"]);
+const RELATIONSHIPS = new Set([
+  "maintainer", "approved", "technical-test", "palomar-maintainer",
+]);
 export const MAX_PREFLIGHT_REPAIR_BYTES = 64_000;
 // The verifier speaks the long form; the form and the record speak the short.
 const RELATIONSHIP_LABELS = {
   maintainer: "I am a responsible author or maintainer",
   approved: "I have approval from a responsible author or maintainer",
   "technical-test": "I am a Palomar Technical Maintainer testing the workflow",
+  "palomar-maintainer": "Palomar is making an exceptional registry metadata correction",
 };
 
 export function authorizationRelationshipLabel(relationship) {
@@ -56,6 +59,7 @@ export function validateIntake(fields) {
   const relationship = String(fields.get("authorization_relationship") ?? "").trim();
   const evidence = String(fields.get("authorization_evidence") ?? "").trim().slice(0, 4000);
   const rawPreflightRepair = String(fields.get("preflight_repair") ?? "");
+  const registryCorrection = String(fields.get("registry_correction") ?? "");
   const preflightRepair = new TextEncoder().encode(rawPreflightRepair).length <= MAX_PREFLIGHT_REPAIR_BYTES
     ? rawPreflightRepair : "";
 
@@ -74,6 +78,7 @@ export function validateIntake(fields) {
     comparator_config_path: String(fields.get("comparator_config_path") ?? ""),
     formalization_metadata_path: String(fields.get("formalization_metadata_path") ?? ""),
     ...(preflightRepair ? { preflight_repair: preflightRepair } : {}),
+    ...(registryCorrection ? { registry_correction: registryCorrection } : {}),
   };
 
   const problems = [];
@@ -120,7 +125,9 @@ export function validateIntake(fields) {
       authorization_relationship: relationship,
       // The server-owned technical-test path must not carry submitter-written
       // approval evidence, even when a hand-written POST supplies it.
-      authorization_evidence: relationship !== "technical-test" && evidence ? evidence : null,
+      authorization_evidence: !["technical-test", "palomar-maintainer"].includes(relationship) && evidence
+        ? evidence : null,
+      ...(registryCorrection ? { registry_correction: registryCorrection } : {}),
     },
   };
 }

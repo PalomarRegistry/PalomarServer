@@ -120,6 +120,12 @@ applies because the account is not known until OAuth completes.
 
 ## Private operational dashboard
 
+Technical Maintainers enter at `https://submit.palomar-registry.org/dashboard`.
+The dashboard includes the protected exceptional Registry-correction editor;
+the operational procedure is the PalomarPolicy
+[`maintainer-corrections.md`](https://github.com/PalomarRegistry/PalomarPolicy/blob/main/docs/maintainer-corrections.md)
+runbook. The ordinary submission form does not expose this editor.
+
 `/dashboard` shows aggregate submission throughput, review-round counts,
 landing distributions, and bounded model-spend distributions. It never reads a
 review or serves a submission id, repository, Comparator path, commit, or
