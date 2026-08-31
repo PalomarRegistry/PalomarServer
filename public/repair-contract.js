@@ -1,5 +1,6 @@
 import {
   classificationMaximum,
+  PROJECT_NAME_MAXIMUM,
   sourceRelationshipCategory,
   SUBSTANTIVE_SOURCE_RELATIONSHIPS,
 } from "./formalization-profile.js";
@@ -163,7 +164,9 @@ export function normalizedRepairEdits(value, profileVersion = 1, taxonomies = {}
     if (!kind || seen.has(field)) throw new TypeError(`unsupported or duplicate repair field: ${field}`);
     seen.add(field);
     let normalized;
-    if (kind === "text") normalized = line(edit.value, field);
+    if (kind === "text") {
+      normalized = line(edit.value, field, field === "project.name" ? PROJECT_NAME_MAXIMUM : 500);
+    }
     else if (kind === "prose") normalized = text(edit.value, field);
     else if (kind === "list") {
       normalized = classificationList(

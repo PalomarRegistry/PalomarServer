@@ -2,6 +2,7 @@
 import { CLASSIFICATION_MAXIMUM } from "./classification-limits.js";
 
 export const FORMALIZATION_PROFILE_VERSION = 4;
+export const PROJECT_NAME_MAXIMUM = 300;
 export const LEGACY_REPAIR_FIELDS = new Set([
   "project.name", "project.license", "classification.arxiv",
   "classification.msc2020", "review.status",
@@ -27,7 +28,9 @@ export function sourceRelationshipCategory(value) {
 
 export const FORMALIZATION_FIELDS = Object.freeze({
   "project.name": {
-    label: "Project name", description: "The name of the formalized result or project.", input: "text",
+    label: "Project name",
+    description: "The default public entry title for the formalized result or project.",
+    input: "text", maximum: PROJECT_NAME_MAXIMUM,
   },
   "project.description": {
     label: "Project description",
