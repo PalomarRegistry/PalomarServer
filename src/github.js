@@ -643,13 +643,12 @@ export async function challengeGist(token, id, challenge, { issuedAt = null } = 
   if (!files.some((file) => String(file?.content ?? "").trim() === challenge)) {
     return { ok: false, reason: "the gist does not carry the challenge" };
   }
-  // Made for this challenge rather than found already carrying it. The
-  // challenge is public by construction: it is a tag name on a public
-  // repository, so anybody watching can read it. A gist more than a minute
-  // older than the intake cannot have been made for it, and the minute is
-  // slack for the two clocks involved rather than a judgement about anything.
-  // It costs a legitimate agent nothing, since it creates the gist after being
-  // told what to put in it.
+  // Made for this challenge rather than found already carrying it. An ordinary
+  // submission exposes the challenge in a tag; a correction gives it to an
+  // untrusted API caller who could relay it. In either case, an older gist is
+  // not a response to this intake. The minute is slack for the two clocks
+  // involved rather than a judgement about anything, and costs a legitimate
+  // agent nothing because it creates the gist after receiving the challenge.
   if (issuedAt && Date.parse(gist.created_at ?? 0) < Date.parse(issuedAt) - 60_000) {
     return { ok: false, reason: "the gist predates this challenge" };
   }

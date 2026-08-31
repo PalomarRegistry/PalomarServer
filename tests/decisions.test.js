@@ -18,6 +18,7 @@ import {
   WITHDRAWAL_SCRUB_NOTE,
 } from "../src/submission.js";
 import { githubIdentityCookie } from "../src/request-credentials.js";
+import { correctableMetadata } from "../public/registry-correction.js";
 
 const ENV = {
   STATE_REPO: "PalomarRegistry/PalomarSubmissionState",
@@ -3207,14 +3208,15 @@ test("an unexpected failure before the atomic ref update exposes no admission", 
  * The agent path: what an agent must prove, and what it must not be able to
  * skip.
  *
- * A browser proves push access by signing in; an agent proves it by creating a
- * tag, which needs the same write access, and a gist, which is the only half
- * that carries an identity. Neither alone is enough and the record says so.
+ * An ordinary agent proves repository access with a tag and identity with a
+ * gist. A correction agent proves the only authority corrections require: the
+ * gist owner's numeric id is on Palomar's Technical Maintainer allowlist.
  */
 function stubAgent(config = {}) {
   const {
     inflight = { open: [] },
     reviewer = { schema_version: 1, open: [] },
+    registryEntry = null,
     ...proofConfig
   } = config;
   const state = { tag: {}, gist: {}, repoId: 987654321, ...proofConfig };
@@ -3229,6 +3231,25 @@ function stubAgent(config = {}) {
   globalThis.fetch = async (url, init = {}) => {
     const target = new URL(url);
     const method = init.method ?? "GET";
+    if (registryEntry && target.hostname === "data.palomar-registry.org") {
+      if (target.pathname === `/versions/${registryEntry.id}.json`) {
+        return Response.json({
+          schema_version: 3,
+          id: registryEntry.id,
+          entries: [{
+            id: registryEntry.id,
+            version: registryEntry.version,
+            path: `entries/${registryEntry.id}-v${registryEntry.version}.json`,
+            status: "registered",
+            title: registryEntry.title,
+          }],
+        });
+      }
+      if (
+        target.pathname ===
+          `/entries/${registryEntry.id}-v${registryEntry.version}.json`
+      ) return Response.json(registryEntry);
+    }
     if (target.pathname.startsWith("/repos/example/project/git/ref/tags/palomar-verify-")) {
       if (!state.tag.exists) return new Response("", { status: 404 });
       return Response.json({ object: { type: state.tag.type ?? "commit", sha: state.tag.sha } });
@@ -3279,6 +3300,50 @@ const AGENT_SUBMISSION = {
   authorization_relationship: "maintainer",
 };
 
+const CORRECTION_ENTRY = {
+  schema_version: 4,
+  id: "PALOMAR-2026-08-31-000001",
+  version: 2,
+  title: "Old title",
+  abstract: "A result.",
+  authors: [{ name: "Ada" }],
+  classification: { arxiv: ["math.LO"], msc2020: ["03B35"] },
+  source: {
+    repository: "example/project",
+    commit: "1".repeat(40),
+    project_path: null,
+  },
+  formalization: {
+    comparator_config_path: "comparator.json",
+    formalization_metadata_path: "formalization.yaml",
+  },
+  provenance: {
+    responsible_maintainers: [{ name: "Ada" }],
+    mathematical_sources: [],
+    related_formalizations: [],
+  },
+};
+
+function agentCorrection() {
+  const metadata = correctableMetadata(CORRECTION_ENTRY);
+  metadata.authors = [{ name: "Ada Lovelace", orcid: "0000-0000-0000-0001" }];
+  return {
+    repository: CORRECTION_ENTRY.source.repository,
+    commit: CORRECTION_ENTRY.source.commit,
+    existing_id: CORRECTION_ENTRY.id,
+    comparator_config_path: CORRECTION_ENTRY.formalization.comparator_config_path,
+    formalization_metadata_path:
+      CORRECTION_ENTRY.formalization.formalization_metadata_path,
+    authorization_relationship: "palomar-maintainer",
+    registry_correction: {
+      schema_version: 1,
+      based_on: { id: CORRECTION_ENTRY.id, version: CORRECTION_ENTRY.version },
+      explanation: "Correct the author's public name and add the verified ORCID iD.",
+      metadata,
+    },
+  };
+}
+
 async function agentSubmit(overrides = {}) {
   const response = await worker.fetch(
     new Request("https://submit.palomar-registry.org/api/submit", {
@@ -3312,12 +3377,12 @@ async function agentVerify(body) {
   );
 }
 
-async function agentRatePath() {
-  return `index/rate/${await digest(`${ENV.TOKEN_PEPPER}:4242`)}.json`;
+async function agentRatePath(id = 4242) {
+  return `index/rate/${await digest(`${ENV.TOKEN_PEPPER}:${id}`)}.json`;
 }
 
-async function agentPrincipalPath() {
-  return `index/principals/${await digest(`${ENV.TOKEN_PEPPER}:4242`)}.json`;
+async function agentPrincipalPath(id = 4242) {
+  return `index/principals/${await digest(`${ENV.TOKEN_PEPPER}:${id}`)}.json`;
 }
 
 test("an agent is told what to create, and the challenge is not the key", async () => {
@@ -3435,6 +3500,77 @@ test("a tag and a gist together admit a submission", async () => {
     Object.hasOwn(dispatchedOptions, "context"),
     false,
     "the submitter's private notes reached the public verification dispatch inputs",
+  );
+});
+
+test("an allowlisted agent submits a registry correction with a gist and no tag", async () => {
+  const stub = stubAgent({ registryEntry: CORRECTION_ENTRY });
+  const begun = await agentSubmit(agentCorrection());
+
+  assert.match(begun.pending_secret, /^[0-9a-f]{64}$/);
+  assert.match(begun.challenge, /^[0-9a-f]{64}$/);
+  assert.doesNotMatch(begun.instructions, /git\/refs/);
+  assert.match(begun.instructions, /Technical Maintainer/);
+  const pending = stub.written.find((item) => item.path.startsWith("pending/"));
+  assert.equal(pending.value.method, "maintainer-gist");
+  assert.deepEqual(pending.value.registry_correction.changed_fields, ["authors"]);
+
+  stub.state.gist = {
+    exists: true,
+    content: begun.challenge,
+    owner: { type: "User", login: "kim-em", id: TECHNICAL_MAINTAINER_ID },
+  };
+  const response = await agentVerify({
+    pending_secret: begun.pending_secret,
+    gist_id: "abc123",
+  });
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.doesNotMatch(body.next, /git\/refs/);
+  assert.match(body.next, /DELETE gists/);
+  const record = stub.written.find((item) => item.path.endsWith("state.json"));
+  assert.equal(record.value.push_verified, false);
+  assert.equal(record.value.registry_correction_authorized, true);
+  assert.equal(record.value.submitter, "kim-em");
+  assert.equal(record.value.push_proof.method, "technical-team-correction");
+  assert.equal(record.value.push_proof.binding, "active-technical-team-membership");
+  assert.equal(record.value.push_proof.technical_maintainer, true);
+  assert.equal(record.value.push_proof.principal.id, TECHNICAL_MAINTAINER_ID);
+  assert.equal(stub.state.tag.exists, undefined, "a correction unexpectedly needed a tag");
+  const principalPath = await agentPrincipalPath(TECHNICAL_MAINTAINER_ID);
+  const ratePath = await agentRatePath(TECHNICAL_MAINTAINER_ID);
+  assert.ok(stub.refUpdates[0].some(
+    (item) => item.path === principalPath
+  ));
+  assert.equal(stub.refUpdates[0].some(
+    (item) => item.path === ratePath
+  ), false, "an active Technical Maintainer was throttled as an ordinary submitter");
+  assert.equal(stub.dispatched.length, 1);
+  assert.equal(stub.dispatched[0].body.inputs.mode, "correction");
+});
+
+test("a correction gist owned by a non-maintainer is refused", async () => {
+  const stub = stubAgent({ registryEntry: CORRECTION_ENTRY });
+  const begun = await agentSubmit(agentCorrection());
+  stub.state.gist = {
+    exists: true,
+    content: begun.challenge,
+    owner: { type: "User", login: "someone", id: 4242 },
+  };
+
+  const response = await agentVerify({
+    pending_secret: begun.pending_secret,
+    gist_id: "abc123",
+  });
+  const body = await response.json();
+
+  assert.equal(response.status, 403);
+  assert.match(body.gist, /not an active Palomar Technical Maintainer/);
+  assert.equal(body.tag, undefined);
+  assert.equal(
+    stub.written.filter((item) => item.path.endsWith("state.json")).length,
+    0,
   );
 });
 

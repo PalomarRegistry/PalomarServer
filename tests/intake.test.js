@@ -1054,6 +1054,10 @@ test("what agents are told about this service is true of this service", async ()
   // drive, and that registering is a decision rather than monitoring.
   assert.match(guide, /do not drive the browser sign-in/i);
   assert.match(guide, /you may use the `gh` path/i);
+  assert.match(guide, /Technical Maintainer may make a Registry correction/i);
+  assert.match(guide, /"authorization_relationship": "palomar-maintainer"/);
+  assert.match(guide, /do not create a\s+repository tag/i);
+  assert.match(guide, /numeric id is currently\s+allowlisted/i);
   assert.match(guide, /\/register/);
   // And that it does not sell the agent path as equivalent to the browser one.
   assert.match(guide, /not provably the same account/i);

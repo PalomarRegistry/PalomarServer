@@ -606,9 +606,23 @@ async function beginSubmission(request, env, { machine = false } = {}) {
   // program, and a program can act on `error`.
   let form;
   try {
-    form = machine
-      ? new Map(Object.entries(await request.json().catch(() => ({}))))
-      : await request.formData();
+    if (machine) {
+      const decoded = await request.json().catch(() => ({}));
+      const fields = decoded && typeof decoded === "object" && !Array.isArray(decoded)
+        ? { ...decoded }
+        : {};
+      // The browser necessarily sends this nested contract through one hidden
+      // form field. Let an API client send the natural JSON object instead of
+      // making it JSON-encode a value inside an already JSON-encoded request.
+      if (
+        fields.registry_correction &&
+        typeof fields.registry_correction === "object" &&
+        !Array.isArray(fields.registry_correction)
+      ) fields.registry_correction = JSON.stringify(fields.registry_correction);
+      form = new Map(Object.entries(fields));
+    } else {
+      form = await request.formData();
+    }
   } catch {
     return json({
       error: machine
@@ -676,7 +690,6 @@ async function beginSubmission(request, env, { machine = false } = {}) {
   let correctionBaseline = null;
   const rawRegistryCorrection = String(form.get("registry_correction") ?? "");
   if (requestedCorrection) {
-    if (machine) return rejected("Registry corrections are available only through maintainer sign-in.");
     if (!rawRegistryCorrection || new TextEncoder().encode(rawRegistryCorrection).length > MAX_REGISTRY_CORRECTION_BYTES) {
       return rejected("The registry correction is missing or too large.");
     }
@@ -811,7 +824,9 @@ async function beginSubmission(request, env, { machine = false } = {}) {
   const pending = {
     schema_version: 2,
     ...(binding ? { binding_sha256: await digest(binding) } : {}),
-    method: machine ? "tag-and-gist" : "oauth",
+    method: machine
+      ? registryCorrection ? "maintainer-gist" : "tag-and-gist"
+      : "oauth",
     challenge,
     repository_id: repo.id ?? null,
     attempts: 0,
@@ -841,23 +856,35 @@ async function beginSubmission(request, env, { machine = false } = {}) {
   }
 
   if (machine) {
+    const instructions = registryCorrection
+      ? [
+          `Create a secret gist carrying this challenge. Its GitHub-set owner must be`,
+          `an active Palomar Technical Maintainer:`,
+          `  echo '{"public":false,"files":{"palomar.txt":{"content":"${challenge}"}}}' \\`,
+          `    | gh api -X POST gists --input -`,
+          `Then POST /api/verify with {"pending_secret": "...", "gist_id": "..."},`,
+          `and delete the gist once it answers. No repository tag is required:`,
+          `Technical Maintainer membership, not source-repository write access, authorizes`,
+          `a Registry correction.`,
+        ]
+      : [
+          `Create a tag at the commit you are submitting. Creating a ref needs the`,
+          `same write access an ordinary browser submission checks for, which is why it is here:`,
+          `  gh api -X POST repos/${repositoryName}/git/refs \\`,
+          `    -f ref=refs/tags/${CHALLENGE_TAG_PREFIX}${challenge} -f sha=${commit}`,
+          `Then a secret gist carrying the same challenge, which is what tells`,
+          `Palomar who you are, since a ref records no author:`,
+          `  echo '{"public":false,"files":{"palomar.txt":{"content":"${challenge}"}}}' \\`,
+          `    | gh api -X POST gists --input -`,
+          `Then POST /api/verify with {"pending_secret": "...", "gist_id": "..."},`,
+          `and delete both once it answers.`,
+        ];
     return json({
       pending_secret: nonce,
       challenge,
       repository: repositoryName,
       commit,
-      instructions: [
-        `Create a tag at the commit you are submitting. Creating a ref needs the`,
-        `same write access an ordinary browser submission checks for, which is why it is here:`,
-        `  gh api -X POST repos/${repositoryName}/git/refs \\`,
-        `    -f ref=refs/tags/${CHALLENGE_TAG_PREFIX}${challenge} -f sha=${commit}`,
-        `Then a secret gist carrying the same challenge, which is what tells`,
-        `Palomar who you are, since a ref records no author:`,
-        `  echo '{"public":false,"files":{"palomar.txt":{"content":"${challenge}"}}}' \\`,
-        `    | gh api -X POST gists --input -`,
-        `Then POST /api/verify with {"pending_secret": "...", "gist_id": "..."},`,
-        `and delete both once it answers.`,
-      ].join("\n"),
+      instructions: instructions.join("\n"),
     });
   }
 
@@ -1355,7 +1382,7 @@ async function admitSubmission(
   // method too, so a choice page minted by the previous deployment does not
   // suddenly acquire a throttle after this Worker is deployed.
   const technicalMaintainer = proof?.technical_maintainer === true ||
-    proof?.method === "technical-team-test";
+    ["technical-team-test", "technical-team-correction"].includes(proof?.method);
   // Registration clears an ordinary submitter's exponential backoff. Active
   // Technical Maintainers are operationally exempt regardless of whether this
   // is a marked test or an ordinary submission.
@@ -1628,16 +1655,14 @@ async function admitSubmission(
 }
 
 /**
- * The agent path's proof: a tag that needed write access, and a gist that says
- * who wrote it.
+ * The agent path's proof.
  *
- * Neither half is sufficient. A ref proves `contents: write` — the capability
- * the browser path reads as `permissions.push` — but records no author. A gist
- * names a verified account but says nothing about the repository. Together they
- * establish that someone who can write to this repository submitted it, and
- * that an account claimed it; not, as OAuth does, that those are one account.
- * The record says which of the two it is, and the reviewer refuses a record
- * that claims otherwise.
+ * An ordinary submission still needs both halves: a ref proves `contents:
+ * write`, while a gist names an account. A Registry correction is different by
+ * policy: source-repository write access is irrelevant because its immutable
+ * baseline cannot move. There the secret gist is the whole proof, and its
+ * GitHub-set numeric owner must be in the checked-in Technical Maintainer
+ * allowlist. Both routes record the authorization they actually established.
  */
 async function verifySubmission(request, env) {
   const body = await request.json().catch(() => ({}));
@@ -1652,11 +1677,19 @@ async function verifySubmission(request, env) {
   if (!pending.value || pendingExpired(pending.value)) {
     return json({ error: "that submission has already been verified" }, 404);
   }
-  if (pending.value.method !== "tag-and-gist") {
+  if (!["tag-and-gist", "maintainer-gist"].includes(pending.value.method)) {
     return json({ error: "that intake is a browser sign-in, not an agent submission" }, 409);
   }
   if (pending.value.authorization_relationship === "technical-test") {
     return json({ error: "that authorization requires browser sign-in" }, 409);
+  }
+  const registryCorrection = pending.value.method === "maintainer-gist";
+  if (
+    registryCorrection !== Boolean(pending.value.registry_correction) ||
+    registryCorrection !==
+      (pending.value.authorization_relationship === "palomar-maintainer")
+  ) {
+    return json({ error: "that agent intake has inconsistent correction authority" }, 409);
   }
 
   // The attempt is spent before anything is spent on it, and claimed under the
@@ -1700,16 +1733,24 @@ async function verifySubmission(request, env) {
     }, 409);
   }
 
-  const tag = await challengeTag(env.SUBMISSION_TOKEN, repository, challenge, commit);
-  const gist = tag.ok
+  const tag = registryCorrection
+    ? { ok: true }
+    : await challengeTag(env.SUBMISSION_TOKEN, repository, challenge, commit);
+  let gist = tag.ok
     ? await challengeGist(env.SUBMISSION_TOKEN, body.gist_id, challenge, {
         issuedAt: pending.value.created_at,
       })
     : { ok: false };
+  if (registryCorrection && gist.ok && !isTechnicalMaintainer(gist.principal)) {
+    gist = {
+      ok: false,
+      reason: "the gist owner is not an active Palomar Technical Maintainer",
+    };
+  }
   if (!tag.ok || !gist.ok) {
     return json({
       error: "that proof was refused",
-      tag: tag.ok ? "accepted" : tag.reason,
+      ...(registryCorrection ? {} : { tag: tag.ok ? "accepted" : tag.reason }),
       gist: gist.ok ? "accepted" : (gist.reason ?? "not checked: the tag was refused"),
       attempts_remaining: remaining,
     }, 403);
@@ -1733,13 +1774,16 @@ async function verifySubmission(request, env) {
       submitter: gist.principal.login,
       proof: {
         schema_version: 1,
-        method: "tag-and-gist",
-        binding: "separately-attested",
+        method: registryCorrection ? "technical-team-correction" : "tag-and-gist",
+        binding: registryCorrection
+          ? "active-technical-team-membership"
+          : "separately-attested",
         verified_at: recordedAt(),
         repository_id: pending.value.repository_id,
         commit,
         challenge_sha256: await digest(challenge),
         principal: gist.principal,
+        ...(registryCorrection ? { technical_maintainer: true } : {}),
       },
     });
   } catch (error) {
@@ -1788,8 +1832,12 @@ async function verifySubmission(request, env) {
     proof_consumed: true,
     status_url: `${new URL(request.url).origin}/s#${admitted.token}`,
     next: [
-      `Delete both artifacts now:`,
-      `  gh api -X DELETE repos/${repository}/git/refs/tags/${CHALLENGE_TAG_PREFIX}${challenge}`,
+      registryCorrection ? `Delete the proof gist now:` : `Delete both proof artifacts now:`,
+      ...(
+        registryCorrection
+          ? []
+          : [`  gh api -X DELETE repos/${repository}/git/refs/tags/${CHALLENGE_TAG_PREFIX}${challenge}`]
+      ),
       `  gh api -X DELETE gists/${body.gist_id}`,
       `Then send Authorization: Bearer <access_token> on the status and`,
       `decision requests. Do not exchange it for a cookie: that path is`,
