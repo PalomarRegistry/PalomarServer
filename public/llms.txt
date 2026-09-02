@@ -151,8 +151,11 @@ only the fields the user approved. POST this shape to `/api/submit`:
     }
 
 Person objects permit only `name`, optional `github`, and optional canonical
-bare `orcid`. Mathematical-source and related-formalization objects should be
-copied from the baseline unless one of those fields is itself being corrected.
+bare `orcid`. A mathematical source's optional `contributors` list uses exact
+`{"name": "...", "role": "..."}` objects and records non-author source
+credits. Mathematical-source and related-formalization objects, including
+these contributor credits, should be copied from the baseline unless one of
+those fields is itself being corrected.
 The server reloads the current active baseline, computes the changed-field list
 itself, refuses stale corrections, and refuses any movement of the repository,
 commit, project, metadata, or Comparator paths.

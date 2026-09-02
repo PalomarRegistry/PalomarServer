@@ -81,6 +81,20 @@ function people(value, label, { required = true } = {}) {
   return value.map((item, index) => person(item, `${label}[${index}]`));
 }
 
+function contributors(value, label) {
+  if (!Array.isArray(value) || value.length > 100) {
+    throw new TypeError(`${label} must contain at most 100 credits`);
+  }
+  return value.map((item, index) => {
+    const field = `${label}[${index}]`;
+    object(item, field, ["name", "role"]);
+    return {
+      name: text(item.name, `${field}.name`, 500, { oneLine: true }),
+      role: text(item.role, `${field}.role`, 200, { oneLine: true }),
+    };
+  });
+}
+
 function classifications(value, label, maximum) {
   if (!Array.isArray(value) || value.length < 1 || value.length > maximum) {
     throw new TypeError(`${label} must contain between one and ${maximum} codes`);
@@ -95,8 +109,8 @@ function mathematicalSource(value, label) {
     throw new TypeError(`${label} must be a source object`);
   }
   const allowed = new Set([
-    "title", "authors", "relationship", "identifier", "type", "location", "license",
-    "author_endorsement",
+    "title", "authors", "contributors", "relationship", "identifier", "type", "location",
+    "license", "author_endorsement",
   ]);
   if (Object.keys(value).some((key) => !allowed.has(key))) {
     throw new TypeError(`${label} has unsupported fields`);
@@ -110,6 +124,8 @@ function mathematicalSource(value, label) {
     authors: people(value.authors ?? [], `${label}.authors`, { required: false }),
     relationship,
   };
+  const credits = contributors(value.contributors ?? [], `${label}.contributors`);
+  if (credits.length) result.contributors = credits;
   for (const [name, maximum] of [
     ["identifier", 2_048], ["type", 200], ["location", 1_000], ["license", 500],
     ["author_endorsement", 100],

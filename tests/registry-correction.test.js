@@ -16,7 +16,12 @@ const baseline = {
   classification: { arxiv: ["math.LO"], msc2020: ["03B35"] },
   provenance: {
     responsible_maintainers: [{ name: "Ada", github: "ada" }],
-    mathematical_sources: [],
+    mathematical_sources: [{
+      title: "A source",
+      authors: [{ name: "Emmy" }],
+      contributors: [{ name: "Grace", role: "editor" }],
+      relationship: "formalizes",
+    }],
     related_formalizations: [],
   },
 };
@@ -40,8 +45,33 @@ test("a registry correction derives its changed fields from the exact baseline",
 });
 
 test("a registry correction may retain an empty mathematical-source list", () => {
-  const normalized = normalizeRegistryCorrection(correction());
+  const metadata = correctableMetadata(baseline);
+  metadata.provenance.mathematical_sources = [];
+  const normalized = normalizeRegistryCorrection(correction(metadata));
   assert.deepEqual(normalized.metadata.provenance.mathematical_sources, []);
+});
+
+test("a correction preserves non-author source credits without widening its delta", () => {
+  const metadata = correctableMetadata(baseline);
+  metadata.authors = [{ name: "Ada Lovelace" }];
+  const result = registryCorrectionDelta(correction(metadata), baseline);
+  assert.deepEqual(result.changed_fields, ["authors"]);
+  assert.deepEqual(
+    result.metadata.provenance.mathematical_sources[0].contributors,
+    [{ name: "Grace", role: "editor" }],
+  );
+});
+
+test("source contributor credits require an exact name and role", () => {
+  for (const contributors of [
+    [{ name: "Grace" }],
+    [{ name: "Grace", role: "" }],
+    [{ name: "Grace", role: "editor", extra: "no" }],
+  ]) {
+    const value = correction();
+    value.metadata.provenance.mathematical_sources[0].contributors = contributors;
+    assert.throws(() => normalizeRegistryCorrection(value), /contributors/);
+  }
 });
 
 test("a no-op or stale correction fails closed", () => {
