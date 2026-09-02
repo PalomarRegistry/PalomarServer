@@ -1,3 +1,4 @@
+import { sourceContributorLines, sourceContributorText } from "./formalization-profile.js";
 import { correctableMetadata, normalizeRegistryCorrection } from "./registry-correction.js";
 
 const DATA = "https://data.palomar-registry.org";
@@ -61,6 +62,9 @@ function sourceRow(value = {}) {
   title.required = true;
   const authors = control("textarea", "authors", peopleText(value.authors));
   authors.rows = 3;
+  const contributors = control("textarea", "contributors", sourceContributorText(value.contributors));
+  contributors.rows = 3;
+  contributors.placeholder = "Name | role (one credit per line)";
   const relationship = control("select", "relationship", value.relationship);
   for (const name of ["formalizes", "adapts", "independently-proves", "background", "other"]) {
     relationship.append(Object.assign(document.createElement("option"), { value: name, textContent: name }));
@@ -69,6 +73,7 @@ function sourceRow(value = {}) {
   row.append(
     labeled("Title", title),
     labeled("Authors — one Name | GitHub | ORCID per line", authors),
+    labeled("Other source credits — one Name | role per line", contributors),
     labeled("Relationship", relationship),
   );
   for (const [name, labelText, current] of [
@@ -115,6 +120,8 @@ function readSource(row) {
     authors: parsePeople(part(row, "authors"), "Source authors", { required: false }),
     relationship: part(row, "relationship"),
   };
+  const contributors = sourceContributorLines(part(row, "contributors"));
+  if (contributors.length) result.contributors = contributors;
   for (const name of ["identifier", "type", "location", "license", "author_endorsement"]) {
     const value = part(row, name);
     if (value) result[name] = value;
