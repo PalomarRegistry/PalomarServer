@@ -15,6 +15,25 @@ is the only way in. The registry itself is at https://palomar-registry.org.
 Nothing about eligibility, metadata, or scoring is restated here. If this file
 and the policy disagree, the policy is right.
 
+## Mechanical preflight
+
+Before `POST /api/submit`, run Palomar's complete reusable workflow at
+`PalomarRegistry/PalomarSubmission/.github/workflows/submission.yml` for the
+exact repository, commit, project paths, and Comparator configuration with
+`mode: full`. The workflow uses the `palomar-standard-v1` resource profile;
+this is report metadata, not a field in `comparator.json`.
+
+Pin both the workflow reference and its
+`pipeline_commit` input to the same full commit. A local `lake build`,
+repository-specific CI job, or standalone Comparator run is not equivalent.
+
+Submit only after the mechanical report says `status: pass`. For an OOM,
+timeout, or incomplete resource report, address the reported condition before
+retrying. A passing preflight is advisory: it does not run Challenge rendering,
+editorial review, or registration, and later runs may differ. Submission
+cooldowns control inference and CI costs and still apply after verification
+errors.
+
 ## You may make an ordinary submission, but not by signing in as your user
 
 An ordinary submission requires proving that whoever submits can write to the
@@ -231,9 +250,12 @@ public annotations itself; Palomar never sends the submission access token to
 GitHub.
 
 A submission is settled at `registered`, `withdrawn`, `verification-failed`,
-`review-failed`, or `dispatch-lost`. For an ordinary submission,
-`GET /api/review` tells you whether the automated review identified blocking
-problems and what it asked for; it does
+`verification-error`, `review-failed`, or `dispatch-lost`. For a
+`verification-error`, follow the reported next action and wait for the
+submission cooldown before retrying.
+
+For an ordinary submission, `GET /api/review` tells you whether the automated
+review identified blocking problems and what it asked for; it does
 not distinguish a request for revision from rejection, and inferring either
 from `"blocking_problems_identified": true` would add information that is not
 there. If `requested_changes` describes something
