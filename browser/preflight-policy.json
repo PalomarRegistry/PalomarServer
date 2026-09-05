@@ -19,7 +19,7 @@
   },
   "comparator": {
     "required_keys": ["challenge_module", "permitted_axioms", "solution_module", "theorem_names"],
-    "allowed_keys": ["challenge_module", "definition_names", "enable_nanoda", "permitted_axioms", "solution_module", "theorem_names"],
+    "allowed_keys": ["challenge_module", "definition_names", "enable_nanoda", "permitted_axioms", "solution_module", "theorem_names", "verification_profile"],
     "standard_axioms": ["Classical.choice", "Quot.sound", "propext"]
   },
   "deferred_checks": ["classification-taxonomies", "git-attributes-lfs", "lakefile-toml", "licensee", "release-tag", "substantive-repository", "trusted-hashes"]

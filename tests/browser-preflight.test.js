@@ -415,3 +415,23 @@ test("the lazy browser bundle stays below its compressed page-weight budget", as
   const bundle = await readFile(new URL("../public/preflight.js", import.meta.url));
   assert.ok(gzipSync(bundle).byteLength < 100 * 1024);
 });
+
+test("the Comparator configuration may name Palomar's verification profile", () => {
+  const config = {
+    challenge_module: "Challenge",
+    solution_module: "Solution",
+    theorem_names: ["Example.main"],
+    definition_names: [],
+    permitted_axioms: ["propext", "Quot.sound", "Classical.choice"],
+    enable_nanoda: true,
+  };
+  assert.deepEqual(validateComparator(JSON.stringify(config)), []);
+  assert.deepEqual(
+    validateComparator(JSON.stringify({ ...config, verification_profile: "palomar-standard-v1" })),
+    [],
+  );
+  assert.deepEqual(
+    validateComparator(JSON.stringify({ ...config, memory_limit: "64G" })).map((item) => item.code),
+    ["comparator.unknown_key"],
+  );
+});

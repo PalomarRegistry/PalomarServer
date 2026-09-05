@@ -4363,6 +4363,31 @@ test("a registration puts the interval back to a minute", async () => {
   );
 });
 
+test("an infrastructure verification error refunds one backoff step", async () => {
+  const stub = stubAgent();
+  const begun = await agentSubmit();
+  stub.state.tag = { exists: true, sha: "1".repeat(40) };
+  stub.state.gist = { exists: true, content: begun.challenge };
+  const verified = await (await agentVerify({
+    pending_secret: begun.pending_secret, gist_id: "abc123",
+  })).json();
+  const rate = await agentRatePath();
+  stub.store.set(rate, {
+    ...stub.store.get(rate), starts: 12, interval_seconds: 122880,
+  });
+  const record = statePath(verified.submission_id, "state.json");
+  stub.store.set(record, { ...stub.store.get(record), status: "verification-error" });
+
+  const response = await worker.fetch(new Request(
+    "https://submit.palomar-registry.org/api/submission",
+    { headers: { authorization: `Bearer ${verified.access_token}` } },
+  ), ENV);
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).status, "verification-error");
+  assert.equal(stub.store.get(rate).interval_seconds, 61440);
+  assert.match(stub.store.get(record).rate_reset_at, /^\d{4}-\d{2}-\d{2}T/);
+});
+
 test("repeated metadata failures do not erase the accumulated admission backoff", async () => {
   const stub = stubAgent();
   const begun = await agentSubmit();

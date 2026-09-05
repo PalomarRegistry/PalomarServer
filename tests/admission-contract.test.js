@@ -8,6 +8,7 @@ import {
   RateContractError,
   rateDecision,
   rateRecord,
+  refundRateRecord,
   resetRateRecord,
 } from "../src/admission-contract.js";
 
@@ -232,6 +233,29 @@ test("registration reset preserves rate history and returns to the floor", () =>
     () => resetRateRecord(null, "2026-08-08T00:00:00Z"),
     RateContractError,
   );
+});
+
+test("an infrastructure refund removes one backoff step and permits an immediate retry", () => {
+  const refunded = refundRateRecord({
+    schema_version: 1,
+    starts: 12,
+    interval_seconds: 122880,
+    last_start_at: "2026-08-07T00:00:00Z",
+    next_allowed_at: "2026-08-08T10:08:00Z",
+  }, "2026-08-07T01:00:00Z");
+  assert.deepEqual(refunded, {
+    schema_version: 1,
+    starts: 12,
+    interval_seconds: 61440,
+    last_start_at: "2026-08-07T00:00:00Z",
+    next_allowed_at: "2026-08-07T01:00:00Z",
+  });
+  assert.equal(nextRateRecord({
+    starts: refunded.starts,
+    interval: refunded.interval_seconds,
+    startedAt: "2026-08-07T01:00:00Z",
+    at: Date.parse("2026-08-07T01:00:00Z"),
+  }).interval_seconds, 122880, "retry increased the pre-failure interval");
 });
 
 test("a reset sheds every identifying field an older document left", () => {

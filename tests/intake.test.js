@@ -1061,6 +1061,11 @@ test("what agents are told about this service is true of this service", async ()
   assert.match(guide, /\/register/);
   // And that it does not sell the agent path as equivalent to the browser one.
   assert.match(guide, /not provably the same account/i);
+  assert.match(guide, /^## Mechanical preflight$/m);
+  assert.match(guide, /PalomarRegistry\/PalomarSubmission\/\.github\/workflows\/submission\.yml/);
+  assert.match(guide, /`pipeline_commit` input to the same full commit/);
+  assert.match(guide, /provider-owned error is inconclusive/i);
+  assert.match(guide, /does not increase submission backoff/i);
 
   // It points at the policy rather than paraphrasing it, because a paraphrase
   // is a second copy that goes stale silently.
