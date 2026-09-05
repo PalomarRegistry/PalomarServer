@@ -41,6 +41,7 @@ import {
   RateContractError,
   rateDecision,
   rateRecord,
+  refundRateRecord,
   resetRateRecord,
 } from "./admission-contract.js";
 import { MAX_PREFLIGHT_REPAIR_BYTES, validateIntake } from "./intake-contract.js";
@@ -2344,7 +2345,9 @@ async function refresh(env, entry) {
   const record = entry.record;
   // A completed registration puts a submitter's interval back to a minute. A
   // small number of first-pass metadata corrections gets the same concession,
-  // but repeated failed preflights retain their accumulated backoff.
+  // while an infrastructure-owned verification error refunds the one increase
+  // caused by the attempt Palomar could not complete. Reproducible submission
+  // failures and repeated failed preflights retain their accumulated backoff.
   // This is where the server sees it: the status page and an agent both poll
   // until the status settles, and `registered` is settled, so the good news and
   // the reset arrive on the same request. Somebody who closes the tab between
@@ -2352,7 +2355,7 @@ async function refresh(env, entry) {
   // The alternative, letting the reviewer reset it, would need TOKEN_PEPPER in
   // reviewer CI, and that pepper exists so a leaked state repository yields no
   // live links.
-  if (["registered", "changes-required"].includes(record.status)
+  if (["registered", "changes-required", "verification-error"].includes(record.status)
       && !record.rate_reset_at && record.push_proof?.principal?.id) {
     const path = await ratePath(env, record.push_proof.principal.id);
     const resetAt = recordedAt();
@@ -2365,8 +2368,14 @@ async function refresh(env, entry) {
       current = await readRateState(env, path);
       const correctionConcession = record.status === "changes-required"
         && current.value?.starts <= 2;
-      if (current.sha !== null && (record.status === "registered" || correctionConcession)) {
-        projected = atRatePath(path, () => resetRateRecord(current.value, resetAt));
+      if (current.sha !== null && (
+        record.status === "registered"
+        || correctionConcession
+        || record.status === "verification-error"
+      )) {
+        projected = atRatePath(path, () => record.status === "verification-error"
+          ? refundRateRecord(current.value, resetAt)
+          : resetRateRecord(current.value, resetAt));
       }
     } catch (error) {
       if (!(error instanceof RateContractError)) throw error;

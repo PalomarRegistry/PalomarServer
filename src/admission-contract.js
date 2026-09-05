@@ -214,6 +214,21 @@ export function resetRateRecord(value, resetAt) {
   return result;
 }
 
+/** Undo the most recent backoff increase after Palomar could not verify. */
+export function refundRateRecord(value, refundedAt) {
+  const current = rateRecord(value).value;
+  timestamp(refundedAt, "next_allowed_at");
+  const result = {
+    schema_version: 1,
+    starts: current.starts,
+    interval_seconds: Math.max(RATE_FLOOR_SECONDS, Math.floor(current.interval_seconds / 2)),
+    last_start_at: current.last_start_at,
+    next_allowed_at: refundedAt,
+  };
+  rateRecord(result);
+  return result;
+}
+
 /**
  * Decide whether one more proved submission fits the principal admission caps.
  *

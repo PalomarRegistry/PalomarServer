@@ -15,6 +15,21 @@ is the only way in. The registry itself is at https://palomar-registry.org.
 Nothing about eligibility, metadata, or scoring is restated here. If this file
 and the policy disagree, the policy is right.
 
+## Mechanical preflight
+
+Before `POST /api/submit`, run Palomar's complete reusable workflow at
+`PalomarRegistry/PalomarSubmission/.github/workflows/submission.yml` for the
+exact repository, commit, project paths, and Comparator configuration under
+`palomar-standard-v1`. Pin both the workflow reference and its
+`pipeline_commit` input to the same full commit. A local `lake build`,
+repository-specific CI job, or standalone Comparator run is not equivalent.
+
+Submit only after the mechanical report says `status: pass`. An OOM, timeout,
+missing terminal resource record, or other provider-owned error is inconclusive:
+retry the same commit as instructed rather than changing the proof. Such an
+error does not increase submission backoff. Mechanical preflight predicts the
+mechanical gate; editorial review remains separate.
+
 ## You may make an ordinary submission, but not by signing in as your user
 
 An ordinary submission requires proving that whoever submits can write to the
@@ -223,7 +238,10 @@ public annotations itself; Palomar never sends the submission access token to
 GitHub.
 
 A submission is settled at `registered`, `withdrawn`, `verification-failed`,
-`review-failed`, or `dispatch-lost`. `GET /api/review` tells you whether the
+`verification-error`, `review-failed`, or `dispatch-lost`. A
+`verification-error` is Palomar-owned and refunds the attempt's backoff
+increase; retry the same commit after addressing any stated capacity issue.
+`GET /api/review` tells you whether the
 automated review identified blocking problems and what it asked for; it does
 not distinguish a request for revision from rejection, and inferring either
 from `"blocking_problems_identified": true` would add information that is not
