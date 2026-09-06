@@ -225,6 +225,26 @@ async function showReview({ registered = false, expectedDigest = null } = {}) {
   reviewDigest = review.review_sha256 ?? null;
   reviewSummary.replaceChildren();
   reviewBody.replaceChildren();
+  if (review.kind === "registry-metadata-correction") {
+    row("Registry correction", "Mechanically validated; no new editorial review was run.", reviewSummary);
+    row("Validated", review.decided_at ?? "", reviewSummary);
+    const baseline = review.based_on;
+    if (baseline?.id && baseline?.version) {
+      row("Baseline", `${baseline.id} v${baseline.version}`, reviewSummary);
+    }
+    row(
+      "Inherited reviewer models",
+      (review.inherited_review?.reviewer_models ?? []).join(", "),
+      reviewSummary,
+    );
+    const summaryText = document.createElement("p");
+    summaryText.textContent = review.summary ?? "";
+    reviewBody.append(summaryText);
+    paragraphs("Changed fields", review.changed_fields);
+    paragraphs("Inherited review comments", review.comments);
+    reviewSection.hidden = false;
+    return true;
+  }
   const reviewStatus = review.blocking_problems_identified
     ? "Problems were identified."
     : review.has_nonblocking_warnings
@@ -1262,7 +1282,13 @@ async function poll() {
   if (data.review_service_issue === "api-credits-exhausted") {
     showReviewCreditOutage();
   } else {
-    summary.textContent = data.status === "verification-failed" && !failedRun && !structuredFailure
+    summary.textContent = data.registry_correction && data.status === "awaiting-review"
+      ? "Correction validation passed. Preparing the registration decision."
+      : data.registry_correction && data.status === "reviewing"
+        ? "Preparing the registry correction decision."
+        : data.registry_correction && data.status === "review-ready"
+          ? "Your registry correction decision is ready."
+          : data.status === "verification-failed" && !failedRun && !structuredFailure
       ? "Palomar could not complete or recover the verification run. This is a fault at our end, not with your submission."
       : LABELS[data.status] ?? data.status;
   }
@@ -1277,7 +1303,9 @@ async function poll() {
   }
 
   if (data.status === "awaiting-review" || data.status === "reviewing") {
-    progress.append(el("p", REVIEW_EXPLANATION));
+    progress.append(el("p", data.registry_correction
+      ? "Palomar is binding the mechanically validated metadata change to the active baseline. The baseline editorial review and its warnings will be inherited unchanged; no model review is run."
+      : REVIEW_EXPLANATION));
     const notes = [];
     if (data.status === "awaiting-review") {
       notes.push("Palomar has been asked to start it.");
@@ -1371,6 +1399,11 @@ async function poll() {
   if (copy) {
     decisionHeading.textContent = copy.heading;
     decisionIntro.textContent = copy.intro;
+    if (data.registry_correction && presentation.register) {
+      decisionIntro.textContent =
+        "Read the correction decision above, then choose whether to register or withdraw it. " +
+        "Registration inherits the baseline editorial review unchanged.";
+    }
   }
   registerButton.hidden = !presentation.register;
   withdrawButton.hidden = !presentation.withdraw;

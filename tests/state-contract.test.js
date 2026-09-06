@@ -96,6 +96,19 @@ test("only a matching current review outcome passes the review contract", () => 
   }
 });
 
+test("a matching registry correction decision passes without impersonating a review", () => {
+  const decision = {
+    schema_version: 1,
+    kind: "registry-metadata-correction",
+    submission_id: ID,
+    outcome: "neutral",
+    inherited_review: { outcome: "neutral" },
+  };
+  assert.equal(isCurrentReview(decision, ID), true);
+  assert.equal(isCurrentReview({ ...decision, inherited_review: null }, ID), false);
+  assert.equal(isCurrentReview({ ...decision, outcome: "revision_required" }, ID), false);
+});
+
 test("the submitter projection is an explicit review-field allowlist", () => {
   assert.deepEqual(submitterReview({
     outcome: "revision_required",
@@ -124,5 +137,35 @@ test("the submitter projection is an explicit review-field allowlist", () => {
     requested_changes: [],
     reviewed_at: undefined,
     reviewer_models: [],
+  });
+});
+
+test("the submitter projection labels a deterministic correction decision", () => {
+  assert.deepEqual(submitterReview({
+    kind: "registry-metadata-correction",
+    outcome: "neutral",
+    summary: "No new review was run.",
+    decided_at: "2026-09-06T00:00:00Z",
+    based_on: { id: "PALOMAR-2026-08-31-000013", version: 1 },
+    changed_fields: ["title"],
+    inherited_review: {
+      reviewed_at: "2026-08-31T00:00:00Z",
+      reviewer_models: ["model-a"],
+      warnings: ["Existing warning."],
+    },
+  }), {
+    kind: "registry-metadata-correction",
+    blocking_problems_identified: false,
+    has_nonblocking_warnings: true,
+    summary: "No new review was run.",
+    comments: ["Existing warning."],
+    requested_changes: [],
+    decided_at: "2026-09-06T00:00:00Z",
+    based_on: { id: "PALOMAR-2026-08-31-000013", version: 1 },
+    changed_fields: ["title"],
+    inherited_review: {
+      reviewed_at: "2026-08-31T00:00:00Z",
+      reviewer_models: ["model-a"],
+    },
   });
 });

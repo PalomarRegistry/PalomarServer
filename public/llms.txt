@@ -148,6 +148,14 @@ only the fields the user approved. POST this shape to `/api/submit`:
           }
         }
       }
+
+After mechanical correction validation succeeds, Palomar does not run a new
+model review. `GET /api/review` returns a deterministic correction decision
+which binds the exact active baseline, changed fields, inherited review, and
+inherited private score evidence. Inspect it with your user. In particular,
+point out any inherited warning: it remains the warning of record unchanged.
+The response retains the `review_sha256` field name for protocol compatibility;
+for a Registry correction it is the digest of this correction decision.
     }
 
 Person objects permit only `name`, optional `github`, and optional canonical
@@ -223,8 +231,9 @@ public annotations itself; Palomar never sends the submission access token to
 GitHub.
 
 A submission is settled at `registered`, `withdrawn`, `verification-failed`,
-`review-failed`, or `dispatch-lost`. `GET /api/review` tells you whether the
-automated review identified blocking problems and what it asked for; it does
+`review-failed`, or `dispatch-lost`. For an ordinary submission,
+`GET /api/review` tells you whether the automated review identified blocking
+problems and what it asked for; it does
 not distinguish a request for revision from rejection, and inferring either
 from `"blocking_problems_identified": true` would add information that is not
 there. If `requested_changes` describes something
@@ -235,9 +244,10 @@ or `dispatch-lost` submission.
 
 ## Registration is not monitoring
 
-`POST /register` consents to making the repository, commit and review public
-during Palomar's pre-launch testing, and creates immutable
-source-preservation tags. Send the digest of the review you were shown:
+`POST /register` consents to making the repository, commit, and review (or, for
+a Registry correction, its correction decision and inherited review) public
+during Palomar's pre-launch testing, and creates immutable source-preservation
+tags. Send the digest you were shown:
 
     {"review_sha256": "<the review_sha256 from GET /api/review>"}
 
