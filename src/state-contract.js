@@ -152,12 +152,37 @@ export function repairOpen(value) {
 }
 
 export function isCurrentReview(review, submissionId) {
-  return plainObject(review) && review.schema_version === CURRENT_REVIEW_SCHEMA_VERSION &&
-    review.submission_id === submissionId && REVIEW_OUTCOMES.has(review.outcome);
+  if (!plainObject(review) || review.submission_id !== submissionId ||
+      !REVIEW_OUTCOMES.has(review.outcome)) return false;
+  return review.schema_version === CURRENT_REVIEW_SCHEMA_VERSION || (
+    review.schema_version === 1 &&
+    review.kind === "registry-metadata-correction" &&
+    review.outcome === "neutral" &&
+    plainObject(review.inherited_review)
+  );
 }
 
 /** Fields from a private mechanical review that its submitter may see. */
 export function submitterReview(review) {
+  if (review.kind === "registry-metadata-correction") {
+    const inherited = review.inherited_review ?? {};
+    const comments = inherited.warnings ?? [];
+    return {
+      kind: review.kind,
+      blocking_problems_identified: false,
+      has_nonblocking_warnings: comments.length > 0,
+      summary: review.summary,
+      comments,
+      requested_changes: [],
+      decided_at: review.decided_at,
+      based_on: review.based_on,
+      changed_fields: review.changed_fields,
+      inherited_review: {
+        reviewed_at: inherited.reviewed_at,
+        reviewer_models: inherited.reviewer_models ?? [],
+      },
+    };
+  }
   const comments = review.warnings ?? [];
   return {
     blocking_problems_identified: review.outcome !== "neutral",

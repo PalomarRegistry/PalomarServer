@@ -220,6 +220,35 @@ test("the review route composes the public projection with its reviewed digest",
   });
 });
 
+test("a registry correction exposes an inherited decision and accepts consent to it", async () => {
+  stubState(await fixture(
+    { registry_correction: { schema_version: 1 } },
+    {
+      schema_version: 1,
+      kind: "registry-metadata-correction",
+      decided_at: "2026-09-06T00:00:00Z",
+      summary: "No automated editorial review was run.",
+      based_on: { id: "PALOMAR-2026-08-31-000013", version: 1 },
+      changed_fields: ["title"],
+      inherited_review: {
+        reviewed_at: "2026-08-31T00:00:00Z",
+        reviewer_models: ["model-a"],
+        warnings: ["Existing warning."],
+      },
+    },
+  ));
+
+  const delivered = await worker.fetch(request("/api/review"), ENV);
+  assert.equal(delivered.status, 200);
+  const decision = await delivered.json();
+  assert.equal(decision.kind, "registry-metadata-correction");
+  assert.deepEqual(decision.comments, ["Existing warning."]);
+  assert.equal(decision.blocking_problems_identified, false);
+
+  const registered = await worker.fetch(request("/register", "POST"), ENV);
+  assert.equal(registered.status, 200);
+});
+
 test("registration consent is recorded, and only by the submitter", async () => {
   const { written } = stubState(await fixture());
   const response = await worker.fetch(request("/register", "POST"), ENV);

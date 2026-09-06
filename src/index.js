@@ -3009,6 +3009,7 @@ export default {
               ? record.mathlib_cache_available
               : null,
           test_submission: isTechnicalTest(record),
+          registry_correction: Boolean(record.registry_correction),
           // This lets a page that becomes visible again notice that the review
           // it rendered has been replaced before offering consent for it.
           review_sha256:
