@@ -126,6 +126,8 @@ export function dispatchSubmissionVerification(env, record, mode = "full") {
     repositoryName: record.repository,
     commit: record.commit,
     requestId: record.id,
+    executionProfile: record.execution?.profile,
+    executionAttempt: record.execution?.attempt,
     mode: effectiveMode,
     options: {
       authorization_relationship: authorizationRelationshipLabel(
@@ -215,7 +217,8 @@ export async function reconcile(env) {
     const pinned = record.value[phase.runField]?.id ?? null;
     const { run, complete } = await findVerificationRun(env, item.id, {
       pinnedRunId: pinned,
-      since: record.value.created_at,
+      since: record.value.execution?.started_at ?? record.value.created_at,
+      executionAttempt: record.value.execution?.attempt,
       mode: phase.mode,
     });
 

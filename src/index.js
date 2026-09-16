@@ -2395,7 +2395,8 @@ async function refresh(env, entry) {
   if (!phase) return record;
   const { run } = await findVerificationRun(env, record.id, {
     pinnedRunId: record[phase.runField]?.id ?? null,
-    since: record.created_at,
+    since: record.execution?.started_at ?? record.created_at,
+    executionAttempt: record.execution?.attempt,
     mode: phase.mode,
   });
   if (!run) return record;
