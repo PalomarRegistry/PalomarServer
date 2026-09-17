@@ -4392,6 +4392,33 @@ test("a registration puts the interval back to a minute", async () => {
   );
 });
 
+test("a verification error preserves the accumulated backoff and cooldown", async () => {
+  const stub = stubAgent();
+  const begun = await agentSubmit();
+  stub.state.tag = { exists: true, sha: "1".repeat(40) };
+  stub.state.gist = { exists: true, content: begun.challenge };
+  const verified = await (await agentVerify({
+    pending_secret: begun.pending_secret, gist_id: "abc123",
+  })).json();
+  const rate = await agentRatePath();
+  const rateBefore = {
+    ...stub.store.get(rate), starts: 12, interval_seconds: 122880,
+    next_allowed_at: new Date(Date.now() + 122880 * 1000).toISOString(),
+  };
+  stub.store.set(rate, rateBefore);
+  const record = statePath(verified.submission_id, "state.json");
+  stub.store.set(record, { ...stub.store.get(record), status: "verification-error" });
+
+  const response = await worker.fetch(new Request(
+    "https://submit.palomar-registry.org/api/submission",
+    { headers: { authorization: `Bearer ${verified.access_token}` } },
+  ), ENV);
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).status, "verification-error");
+  assert.deepEqual(stub.store.get(rate), rateBefore);
+  assert.equal(Object.hasOwn(stub.store.get(record), "rate_reset_at"), false);
+});
+
 test("repeated metadata failures do not erase the accumulated admission backoff", async () => {
   const stub = stubAgent();
   const begun = await agentSubmit();
