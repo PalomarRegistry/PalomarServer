@@ -185,7 +185,7 @@ export async function readStateSnapshot(env, paths) {
  * Tree and commit objects created before that loss are unreachable and never
  * become State. No forced ref update is ever used.
  */
-async function commitStateSnapshot(env, snapshot, changes, message) {
+export async function commitStateSnapshot(env, snapshot, changes, message) {
   const paths = changes.map((change) => change.path);
   if (new Set(paths).size !== paths.length) {
     throw new Error("A State transaction cannot change one path twice");
@@ -472,7 +472,7 @@ export async function deleteState(env, path, sha, message) {
  */
 export async function dispatchVerification(
   env,
-  { repositoryName, commit, requestId, options, mode = "full" },
+  { repositoryName, commit, requestId, options, mode = "full", executionProfile, executionAttempt },
 ) {
   if (!new Set(["preflight", "full", "correction"]).has(mode)) {
     throw new Error("invalid verification mode");
@@ -488,6 +488,8 @@ export async function dispatchVerification(
           repository: repositoryName,
           commit,
           request_id: requestId,
+          ...(executionProfile ? { execution_profile: executionProfile } : {}),
+          ...(executionAttempt ? { execution_attempt: executionAttempt } : {}),
           mode,
           // The optional fields the issue form offers, so a server submitter
           // is not quietly told less than an issue submitter would be.
@@ -551,16 +553,20 @@ function describeRun(run) {
 export async function findVerificationRun(
   env,
   requestId,
-  { pinnedRunId = null, since = null, mode = "full" } = {},
+  { pinnedRunId = null, since = null, mode = "full", executionAttempt = null } = {},
 ) {
   if (!new Set(["preflight", "full", "correction"]).has(mode)) {
     throw new Error("invalid verification mode");
   }
-  const expected = mode === "preflight"
+  let expected = mode === "preflight"
     ? `Preflight submission ${requestId}`
     : mode === "correction"
       ? `Validate registry correction ${requestId}`
       : `Verify submission ${requestId}`;
+  if (executionAttempt) {
+    if (!/^[0-9a-f]{32}$/.test(executionAttempt)) throw new Error("invalid execution attempt");
+    expected += ` [${executionAttempt}]`;
+  }
 
   if (pinnedRunId) {
     const run = await call(
