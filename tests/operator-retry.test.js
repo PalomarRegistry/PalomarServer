@@ -26,6 +26,25 @@ test("recovery rejects withdrawn, active, unapproved, unauthorized and occupied 
   assert.throws(() => retryTransition(state, { open: [{ id: "bcdefghijklm", owner: "other", submitter: "user", at: options.at }] }, queue, options));
 });
 
+test("renderability recovery renews the gate budget without shortening backoff", () => {
+  const exhausted = { ...state, run: { id: 12, conclusion: "success" },
+    renderability_attempts: 3, renderability_started_at: "2026-09-15T00:00:00Z",
+    renderability_error: "renderer infrastructure failed",
+    review_retry_after: "2026-09-17T00:00:00Z", review_attempts: 2,
+    registration_consent: false };
+  delete exhausted.failure;
+  const result = retryTransition(exhausted, { open: [] }, queue, options).state;
+  assert.equal((result.renderability_attempts ?? 0) + 1, 1);
+  assert.equal(result.renderability_started_at, undefined);
+  assert.equal(result.renderability_error, undefined);
+  assert.equal(result.review_retry_after, exhausted.review_retry_after);
+  assert.equal(result.review_attempts, 2);
+  assert.equal(result.registration_consent, false);
+  assert.deepEqual(result.execution_history[0].run, exhausted.run);
+  assert.equal(result.execution_history[0].failure, null);
+  assert.equal(exhausted.renderability_attempts, 3);
+});
+
 test("run discovery cannot reuse the original failed run for a fresh operator attempt", async (t) => {
   const { findVerificationRun } = await import("../src/github.js");
   const original = { id: 1, name: "Verify submission abcdefghijkl", status: "completed", conclusion: "failure" };

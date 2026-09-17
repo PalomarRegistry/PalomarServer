@@ -58,6 +58,9 @@ export function retryTransition(state, inflight, queue, { principal, reason, pro
   next.execution = { attempt, profile, started_at: at,
     operator: { id: principal.id, login: principal.login }, reason: reason.trim() };
   for (const key of ["run", "failure", "run_misses", "dispatch_lease_at", "dispatch_lease_count"]) delete next[key];
+  // A fresh execution gets a fresh rendering budget. Keep any retry deadline:
+  // operator recovery must not shorten backoff or refund admission cooldowns.
+  for (const key of ["renderability_attempts", "renderability_started_at", "renderability_error"]) delete next[key];
   next.status = "verifying";
   next.events = [...(next.events ?? []), { at, status: "verifying", note: "Technical Maintainer queued verification recovery" }];
   return {
