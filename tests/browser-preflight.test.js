@@ -369,8 +369,12 @@ test("Comparator validation remains strict JSON with duplicate detection", () =>
 });
 
 test("toolchain release candidates sort before the matching release", () => {
-  assert.deepEqual(validateToolchain("leanprover/lean4:v4.28.0"), []);
-  assert.deepEqual(validateToolchain("leanprover/lean4:v4.28.0-rc1").map((item) => item.code), [
+  assert.deepEqual(validateToolchain("leanprover/lean4:v4.35.0-rc2"), []);
+  assert.deepEqual(validateToolchain("leanprover/lean4:v4.35.0"), []);
+  assert.deepEqual(validateToolchain("leanprover/lean4:v4.35.0-rc1").map((item) => item.code), [
+    "toolchain.unsupported",
+  ]);
+  assert.deepEqual(validateToolchain("leanprover/lean4:v4.34.0").map((item) => item.code), [
     "toolchain.unsupported",
   ]);
 });
