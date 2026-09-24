@@ -20,7 +20,8 @@ and the policy disagree, the policy is right.
 Before `POST /api/submit`, run Palomar's complete reusable workflow at
 `PalomarRegistry/PalomarSubmission/.github/workflows/submission.yml` for the
 exact repository, commit, project paths, and Comparator configuration with
-`mode: full`. The workflow uses the `palomar-standard-v1` resource profile;
+`mode: full`. The workflow's default is the qualified
+`palomar-namespace-16x32-v1` resource profile;
 this is report metadata, not a field in `comparator.json`.
 
 Pin both the workflow reference and its

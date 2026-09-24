@@ -19,7 +19,7 @@ a preview generates a provisional ID and does not reserve work.
 The default is the qualified `palomar-namespace-16x32-v1` profile, matching the
 Submission workflow's current default. Use `--profile palomar-standard-v1` only
 when the smaller GitHub-hosted worker is appropriate for this workload. The
-retired `PALOMAR_NAMESPACE_ENABLED` variable is not consulted.
+retired `PALOMAR_NAMESPACE_ENABLED` variable is not consulted by this command.
 
 A CAS conflict commits no retry. Rerun the preview against current State. An
 unknown GitHub ref-update outcome must be investigated by reading the current
