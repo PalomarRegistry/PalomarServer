@@ -6,13 +6,9 @@ import { readStateSnapshot, commitStateSnapshot } from "./github.js";
 
 export const EXECUTION_PROFILES = new Set(["palomar-standard-v1", "palomar-namespace-16x32-v1"]);
 
-export function retryTransition(state, inflight, queue, { principal, reason, profile, attempt, at,
-  namespaceEnabled = false }) {
+export function retryTransition(state, inflight, queue, { principal, reason, profile, attempt, at }) {
   if (!isTechnicalMaintainer(principal)) throw new Error("Technical Maintainer identity required");
   if (!EXECUTION_PROFILES.has(profile)) throw new Error("unapproved execution profile");
-  if (profile !== "palomar-standard-v1" && !namespaceEnabled) {
-    throw new Error("Namespace is disabled pending confinement qualification");
-  }
   if (!/^[0-9a-f]{32}$/.test(attempt)) throw new Error("invalid attempt identifier");
   if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(at) || !Number.isFinite(Date.parse(at))) {
     throw new Error("invalid recovery timestamp");

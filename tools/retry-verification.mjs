@@ -7,18 +7,16 @@ import { authenticatedOperator, retryVerification } from "../src/operator-retry.
 
 const { values } = parseArgs({ options: {
   id: { type: "string" }, reason: { type: "string" },
-  profile: { type: "string", default: "palomar-standard-v1" },
+  profile: { type: "string", default: "palomar-namespace-16x32-v1" },
   apply: { type: "boolean", default: false },
 } });
 const gh = (...args) => execFileSync("gh", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 try {
   const { principal, at } = authenticatedOperator(gh("api", "--include", "user"));
   const token = gh("auth", "token");
-  const namespaceEnabled = values.profile === "palomar-namespace-16x32-v1"
-    && JSON.parse(gh("api", "repos/PalomarRegistry/PalomarSubmission/actions/variables/PALOMAR_NAMESPACE_ENABLED")).value === "true";
   const result = await retryVerification({ GITHUB_TOKEN: token, STATE_REPO: "PalomarRegistry/PalomarSubmissionState" },
     values.id, { principal, reason: values.reason, profile: values.profile,
-      attempt: randomBytes(16).toString("hex"), at, namespaceEnabled },
+      attempt: randomBytes(16).toString("hex"), at },
     { apply: values.apply });
   console.log(JSON.stringify(result, null, 2));
 } catch (error) {
