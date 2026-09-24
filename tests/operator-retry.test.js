@@ -20,9 +20,12 @@ test("recovery rejects withdrawn, active, unapproved, unauthorized and occupied 
   for (const status of ["withdrawn", "verifying", "registered"]) {
     assert.throws(() => retryTransition({ ...state, status }, { open: [] }, queue, options));
   }
-  for (const change of [{ principal: { id: 1 } }, { profile: "custom" }, { profile: "palomar-namespace-16x32-v1" }]) {
+  for (const change of [{ principal: { id: 1 } }, { profile: "custom" }]) {
     assert.throws(() => retryTransition(state, { open: [] }, queue, { ...options, ...change }));
   }
+  assert.equal(retryTransition(state, { open: [] }, queue,
+    { ...options, profile: "palomar-namespace-16x32-v1" }).state.execution.profile,
+  "palomar-namespace-16x32-v1");
   assert.throws(() => retryTransition(state, { open: [{ id: "bcdefghijklm", owner: "other", submitter: "user", at: options.at }] }, queue, options));
 });
 

@@ -20,8 +20,11 @@ and the policy disagree, the policy is right.
 Before `POST /api/submit`, run Palomar's complete reusable workflow at
 `PalomarRegistry/PalomarSubmission/.github/workflows/submission.yml` for the
 exact repository, commit, project paths, and Comparator configuration with
-`mode: full`. The workflow uses the `palomar-standard-v1` resource profile;
-this is report metadata, not a field in `comparator.json`.
+`mode: full`. Pass `execution_profile: palomar-standard-v1` when calling the
+reusable workflow from your own repository; its jobs run on your organization's
+runners, where Palomar's Namespace runner labels are unavailable. Palomar's own
+dispatches use the qualified `palomar-namespace-16x32-v1` default. The profile
+is report metadata, not a field in `comparator.json`.
 
 Pin both the workflow reference and its
 `pipeline_commit` input to the same full commit. A local `lake build`,
