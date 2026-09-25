@@ -346,6 +346,25 @@ test("aggregate contract identifies missing fields and unsupported versions", ()
 });
 
 
+test("dashboard accepts the mixed Sol price schedule with its matching source", () => {
+  const schedule = "gpt-5.6-sol-2026-08-21+gpt-6-sol-2026-09-22";
+  const report = {
+    ...REPORT,
+    source: { ...REPORT.source, pricing_schedule: schedule },
+    definitions: {
+      ...REPORT.definitions,
+      pricing: "official https://developers.openai.com/api/docs/pricing; broker estimates are not billing authority",
+    },
+    cost_model: { ...REPORT.cost_model, pricing_schedule: schedule },
+  };
+  assert.doesNotThrow(() => validateDashboardReport(report));
+  assert.throws(
+    () => validateDashboardReport({ ...report, cost_model: REPORT.cost_model }),
+    /at \$\.cost_model\.pricing_schedule/,
+  );
+});
+
+
 test("the exact State-produced aggregate fixture satisfies the consumer contract", async () => {
   const text = await readFile(
     new URL("fixtures/state-dashboard.json", import.meta.url),

@@ -6,14 +6,16 @@ const TAKEDOWN_ISSUE_FORM =
   "https://github.com/PalomarRegistry/PalomarDatabase/issues/new?template=takedown.yml";
 const RESTORATION_ISSUE_FORM =
   "https://github.com/PalomarRegistry/PalomarDatabase/issues/new?template=restoration.yml";
-const PRICE_SCHEDULE = "gpt-5.6-sol-2026-08-10";
+const PRICE_SCHEDULES = new Map([
+  ["gpt-5.6-sol-2026-08-10", "official https://developers.openai.com/api/docs/models/gpt-5.6-sol; broker estimates are not billing authority"],
+  ["gpt-5.6-sol-2026-08-21+gpt-6-sol-2026-09-22", "official https://developers.openai.com/api/docs/pricing; broker estimates are not billing authority"],
+]);
 const DEFINITIONS = {
   submission: "one non-test durable submissions/<id>/state.json record",
   technical_test: "a marked workflow exercise excluded from outcome, latency, and spend denominators",
   round: "one completed spend item; started rounds are reported separately",
   target: "case-folded repository plus normalized comparator configuration path; aggregate target metrics exclude historical rows without complete target identity",
   landed: "a submission with a registered event",
-  pricing: "official https://developers.openai.com/api/docs/models/gpt-5.6-sol; broker estimates are not billing authority",
 };
 const COST_BINS = [
   ["$0–$1", 0, 1],
@@ -299,7 +301,9 @@ function validateDashboardReportV1(report) {
     fail("$.source.state_revision", "expected submissions-tree followed by a 40-character lowercase commit hash");
   }
   timestamp(report.source.latest_event_at, "$.source.latest_event_at", true);
-  exactText(report.source.pricing_schedule, PRICE_SCHEDULE, "$.source.pricing_schedule");
+  if (!PRICE_SCHEDULES.has(report.source.pricing_schedule)) {
+    fail("$.source.pricing_schedule", "unexpected value");
+  }
 
   exactKeys(report.definitions, [
     "submission", "technical_test", "round", "target", "landed", "pricing",
@@ -307,6 +311,7 @@ function validateDashboardReportV1(report) {
   for (const [key, value] of Object.entries(DEFINITIONS)) {
     exactText(report.definitions[key], value, `$.definitions.${key}`);
   }
+  exactText(report.definitions.pricing, PRICE_SCHEDULES.get(report.source.pricing_schedule), "$.definitions.pricing");
 
   exactKeys(report.totals, [
     "submissions",
@@ -378,7 +383,7 @@ function validateDashboardReportV1(report) {
   ], "$.cost_model");
   exactText(report.cost_model.schema_version, 1, "$.cost_model.schema_version");
   exactText(report.cost_model.state_revision, report.source.state_revision, "$.cost_model.state_revision");
-  exactText(report.cost_model.pricing_schedule, PRICE_SCHEDULE, "$.cost_model.pricing_schedule");
+  exactText(report.cost_model.pricing_schedule, report.source.pricing_schedule, "$.cost_model.pricing_schedule");
   number(report.cost_model.completed_review_rounds, "$.cost_model.completed_review_rounds", { integer: true });
   number(report.cost_model.priced_review_rounds, "$.cost_model.priced_review_rounds", { integer: true });
   number(report.cost_model.mean_model_usd_per_review_round_lower, "$.cost_model.mean_model_usd_per_review_round_lower", { nullable: true });
