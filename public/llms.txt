@@ -22,8 +22,9 @@ Before requesting intake, ensure every regular committed Lean source file uses
 and an unterminated final line. A final newline adds no line; LF/CRLF each
 terminate one line. This includes unused files, generated certificates,
 contained projects, local path dependencies, and separately declared substantive
-source repositories. Exclude `lakefile.lean`, `.git`, `.lake`, and symlinks;
-external pinned Git dependencies are outside this length cap. Challenge keeps
+source repositories. The module-header exemption for `lakefile.lean` does not exempt its line count.
+Exclude `.git` and `.lake`; `.lean` symlinks are refused. External pinned Git
+dependencies are outside this length cap. Challenge keeps
 its stricter 1,000-line and 100 KiB limits.
 
 Move module doc comments after `module`. Port public declarations/imports and
@@ -31,7 +32,9 @@ exposed definition bodies as required by Lean's module system, then rebuild and
 rerun Comparator. Split oversized files into modules or reduce certificates;
 submit the corrected commit. See the policy for the binding requirements.
 
-Ordinary HTTPS intake checks at most 32 files, 1 MiB per file and 4 MiB in total,
+Browser and HTTPS intake source scans cover only the submitted repository,
+not a separately declared substantive source repository. Ordinary HTTPS intake
+checks at most 32 files, 1 MiB per file and 4 MiB in total,
 with a 10-second deadline and a bounded repository tree. Definite violations
 return HTTP 400 with file diagnostics before creating an authentication
 challenge. Successful intake includes `source_preflight.status` (`pass` or

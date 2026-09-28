@@ -480,7 +480,7 @@ test("the registration target appears only for a complete source and states its 
   assert.doesNotMatch(script, /setCustomValidity/);
 });
 
-test("only exact duplicate and explicit preflight review can interrupt the ordinary controls", async () => {
+test("only duplicates, definite source refusals and explicit preflight review interrupt controls", async () => {
   const script = await readFile(new URL("../public/intake.js", import.meta.url), "utf8");
   // A rate limit or an outage on somebody else's API is not a reason to refuse
   // someone's work. An exact registered commit is different: it cannot become
@@ -496,9 +496,10 @@ test("only exact duplicate and explicit preflight review can interrupt the ordin
   assert.match(script, /remainingHeader === null \? NaN/);
   assert.doesNotMatch(script, /setCustomValidity/);
   // The approval note applies to only one answer. The only other disabled
-  // region is the fieldset after the exact-duplicate message.
+  // region is the fieldset after the exact-duplicate message; the submit
+  // button is disabled only for a current-policy source refusal.
   const disabled = [...script.matchAll(/(\w+)\.disabled\s*=/g)].map((m) => m[1]);
-  assert.deepEqual([...new Set(disabled)].sort(), ["evidence", "submissionDetails"]);
+  assert.deepEqual([...new Set(disabled)].sort(), ["evidence", "submissionDetails", "submit"]);
   const hidden = [...script.matchAll(/(\w+)\.hidden\s*=/g)].map((m) => m[1]);
   assert.ok(hidden.includes("submissionDetails"));
 });

@@ -4,9 +4,9 @@
  * Everything here is convenience. The form works with this script blocked, and
  * nothing it says is trusted: the server checks the repository, the commit, the
  * submitter's push access, and the Palomar ID again, and its answers are the
- * ones that count. A deterministic browser finding asks for one explicit
- * checkbox confirmation, while an incomplete check, rate limit, or API
- * outage never blocks submission. A validated exact-commit match cannot become
+ * ones that count. Definite source violations require a corrected commit;
+ * other deterministic findings ask for explicit confirmation. Incomplete checks, rate limits, or API
+ * outages never block submission. A validated exact-commit match cannot become
  * another registration, so the later controls are disabled until the submitter
  * changes the registration identity or commit.
  *
@@ -1130,6 +1130,10 @@ function renderBrowserPreflight(result) {
   preflightRepairController?.clear();
   if (preflightRepairRequest) preflightRepairRequest.value = "";
   setSubmissionAction();
+  if (submit) {
+    submit.disabled = result.sourceRefused === true;
+    if (result.sourceRefused) submit.textContent = "Update Lean source before submitting";
+  }
   if (preflightRepairHeading) {
     const code = document.createElement("code");
     code.textContent = "formalization.yaml";
@@ -1146,7 +1150,9 @@ function renderBrowserPreflight(result) {
     return;
   }
   if (result.diagnostics.length) {
-    browserPreflightSummary.textContent = result.guard
+    browserPreflightSummary.textContent = result.sourceRefused
+      ? "Palomar cannot accept this source commit. Push a corrected commit to continue."
+      : result.guard
       ? "Palomar found changes that are likely to be required."
       : result.policyCurrent
         ? "Palomar found advisory items that full verification will decide."
@@ -1185,7 +1191,9 @@ function renderBrowserPreflight(result) {
       ' and the remaining checks after you click "Authenticate".',
     );
   } else {
-    browserPreflightDeferred.textContent = result.guard
+    browserPreflightDeferred.textContent = result.sourceRefused
+      ? "Correct the Lean source files listed above, commit the changes, and select the new commit. HTTPS intake refuses these source violations before authentication."
+      : result.guard
       ? result.repairFailure
         ? "Complete the metadata form below to prepare a pull request now, or confirm that you want full verification to continue despite these findings."
         : "Full verification will repeat these checks and scan every Lean source, confirm module headers with Lean, and run Licensee, LFS, release, taxonomy, TOML, and thin-wrapper checks. Confirm below if you want to continue."
@@ -1209,7 +1217,7 @@ function renderBrowserPreflight(result) {
   ) {
     setSubmissionAction({ repair: true });
   }
-  if (result.guard && result.diagnostics.length) {
+  if (result.guard && !result.sourceRefused && result.diagnostics.length) {
     browserPreflightConfirmation?.removeAttribute("hidden");
   }
 }
@@ -1326,7 +1334,8 @@ async function inspectBrowserPreflight() {
       ...(sourceResult?.diagnostics ?? []),
     ];
     const repairDiagnostics = guidedFormalizationDiagnostics(diagnostics);
-    const repairFailure = policyCurrent && content.formalization && repairDiagnostics.length &&
+    const sourceRefused = policyCurrent && (sourceResult?.diagnostics.length ?? 0) > 0;
+    const repairFailure = !sourceRefused && policyCurrent && content.formalization && repairDiagnostics.length &&
       canApplyFormalizationRepair(
         content.formalization,
         repairDiagnostics.map((item) => item.field),
@@ -1347,6 +1356,7 @@ async function inspectBrowserPreflight() {
       incomplete,
       policyCurrent,
       guard,
+      sourceRefused,
       repairFailure,
       profileVersion: selectedPolicy.formalization_profile_version,
       description: content.formalization
@@ -1377,6 +1387,7 @@ async function inspectBrowserPreflight() {
 function scheduleBrowserPreflight() {
   browserPreflightToken += 1;
   browserPreflightResult = null;
+  if (submit) submit.disabled = false;
   if (browserPreflightAnyway) browserPreflightAnyway.checked = false;
   browserPreflightConfirmation?.setAttribute("hidden", "");
   preflightRepairController?.clear();
@@ -1797,6 +1808,13 @@ browserPreflightAnyway?.addEventListener("change", () => {
 form?.addEventListener("submit", (event) => {
   if (!submit) return;
   const fingerprint = preflightFingerprint();
+  if (fingerprint && browserPreflightResult?.fingerprint === fingerprint &&
+      browserPreflightResult.sourceRefused) {
+    event.preventDefault();
+    browserPreflight?.scrollIntoView({ behavior: "smooth", block: "center" });
+    announce("Correct the Lean source and select the new commit before submitting.");
+    return;
+  }
   const wantsRepair = preflightRepairController?.active === true &&
     browserPreflightAnyway?.checked !== true;
   const repairPayload = wantsRepair ? preflightRepairController.payload() : null;

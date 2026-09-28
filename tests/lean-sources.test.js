@@ -10,7 +10,7 @@ const entry = (path, size = 7) => ({ path, size, type: "blob", mode: "100644" })
 test("shared Python/browser source fixtures agree at the limit and on header syntax", async () => {
   const fixture = JSON.parse(await readFile(new URL("./fixtures/lean-source-requirements.json", import.meta.url)));
   for (const item of fixture.cases) {
-    assert.deepEqual(validateLeanSource("Source.lean", item.text, policy).map((d) => d.code),
+    assert.deepEqual(validateLeanSource(item.path ?? "Source.lean", item.text, policy).map((d) => d.code),
       item.expected_codes, item.id);
   }
 });
@@ -32,15 +32,16 @@ test("prefixes produce definite failures only, including truncated comments and 
   assert.equal((await readLeanSource(new Response("module\n"), 7, 7)).complete, true);
 });
 
-test("scan scope includes nested sources, excludes config/dependencies/symlinks, and bounds reads", async () => {
+test("scan includes nested source/config, rejects symlinks, excludes dependency state and bounds reads", async () => {
   const files = [entry("Good.lean"), entry("nested/Unused.lean"), entry("lakefile.lean"),
     entry("nested/lakefile.lean"), entry(".lake/Bad.lean"), entry(".git/Bad.lean"),
     { ...entry("Link.lean"), mode: "120000" }];
   const read = async (item) => ({ text: item.path === "Good.lean" ? "module\n" : "import Init\n", complete: true });
   const result = await inspectLeanSources(files, read, policy);
-  assert.equal(result.files_checked, 2);
+  assert.equal(result.files_checked, 5);
   assert.equal(result.status, "fail");
-  assert.equal(result.diagnostics[0].path, "nested/Unused.lean");
+  assert.deepEqual(new Set(result.diagnostics.map((d) => d.path)),
+    new Set(["nested/Unused.lean", "Link.lean"]));
   let reads = 0;
   const capped = await inspectLeanSources(Array.from({ length: 33 }, (_, i) => entry(`${i}.lean`)),
     async () => { reads += 1; return { text: "module\n", complete: true }; }, policy);

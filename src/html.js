@@ -131,8 +131,8 @@ export function intakeForm(
       </p>
 
       <p class="hint">Every submitted Lean source file must use <code>module</code> and contain at most
-        10,000 lines. This includes contained projects; <code>lakefile.lean</code> and files under
-        <code>.lake</code> are excluded. The Challenge has the stricter 1,000-line and 100 KiB limits.
+        10,000 lines. This includes contained projects. <code>lakefile.lean</code> is exempt only from the module header; files under
+        <code>.lake</code> are excluded and <code>.lean</code> symlinks are refused. The Challenge has the stricter 1,000-line and 100 KiB limits.
         Preliminary source scans are bounded; full verification checks every file before building.</p>
 
       <label for="comparator_config_path">Comparator configuration</label>

@@ -7,8 +7,7 @@ export const SOURCE_SCAN_FILE_BYTES = 1024 * 1024;
 export function isLeanSourcePath(path, policy) {
   const parts = path.split("/");
   return path.endsWith(".lean") &&
-    !parts.some((part) => policy.lean_sources.excluded_directories.includes(part)) &&
-    !policy.lean_sources.excluded_filenames.includes(parts.at(-1));
+    !parts.some((part) => policy.lean_sources.excluded_directories.includes(part));
 }
 
 export function moduleHeader(text, complete = true) {
@@ -21,12 +20,15 @@ export function moduleHeader(text, complete = true) {
       index = end + 1;
     } else if (text.startsWith("/-", index) &&
         !text.startsWith("/--", index) && !text.startsWith("/-!", index)) {
-      index += 2;
+      // Lean consumes one character after a plain opener, then scans markers.
+      index += 3;
       let depth = 1;
-      while (depth && index < text.length) {
-        if (text.startsWith("/-", index)) { depth += 1; index += 2; }
-        else if (text.startsWith("-/", index)) { depth -= 1; index += 2; }
-        else index += 1;
+      const markers = /\/-|-\//g;
+      markers.lastIndex = index;
+      let marker;
+      while (depth && (marker = markers.exec(text)) !== null) {
+        depth += marker[0] === "/-" ? 1 : -1;
+        index = markers.lastIndex;
       }
       if (depth) return complete ? "missing" : "incomplete";
     } else {
@@ -54,7 +56,8 @@ export function validateLeanSource(path, text, policy, { complete = true } = {})
       summary: `${path} has ${complete ? "" : "at least "}${lines.toLocaleString("en-US")} lines; each submitted Lean source file must have at most ${policy.limits.lean_source_lines.toLocaleString("en-US")} lines. Split the source into smaller modules or reduce the certificate.`,
     });
   }
-  if (moduleHeader(text, complete) === "missing") {
+  if (!policy.lean_sources.module_exempt_filenames.includes(path.split("/").at(-1)) &&
+      moduleHeader(text, complete) === "missing") {
     diagnostics.push({
       code: "source.module_required", path,
       summary: `${path} must begin with the module header keyword. Port the file to the module system, including public declarations/imports and exposed definitions as needed.`,
@@ -103,13 +106,20 @@ export async function readLeanSource(response, maximumBytes, expectedBytes) {
 
 export async function inspectLeanSources(entries, read, policy) {
   const files = entries.filter((entry) => entry.type === "blob" &&
-    /^100\d{3}$/.test(entry.mode || "") && isLeanSourcePath(entry.path, policy))
+    (/^100\d{3}$/.test(entry.mode || "") || entry.mode === "120000") &&
+    isLeanSourcePath(entry.path, policy))
     .sort((left, right) => right.size - left.size || left.path.localeCompare(right.path));
   const diagnostics = [];
   let budget = SOURCE_SCAN_BYTES;
   let checked = 0;
   let incomplete = files.length > SOURCE_SCAN_FILES;
   for (const entry of files.slice(0, SOURCE_SCAN_FILES)) {
+    if (entry.mode === "120000") {
+      checked += 1;
+      diagnostics.push({ code: "source.symlink_not_allowed", path: entry.path,
+        summary: `${entry.path} must be a regular Lean file, not a symbolic link. Commit the source as a regular .lean file and submit the new commit.` });
+      continue;
+    }
     if (!Number.isSafeInteger(entry.size) || entry.size < 0 || budget <= 0) {
       incomplete = true;
       continue;
