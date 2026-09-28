@@ -10,6 +10,16 @@ export function isLeanSourcePath(path, policy) {
     !parts.some((part) => policy.lean_sources.excluded_directories.includes(part));
 }
 
+// Lean 4 Init/Meta/Defs.lean identifier characters; Unicode letter classes
+// are broader. A qualified identifier also continues across a dot.
+const ID_LETTER_LIKE =
+  String.raw`\u03b1-\u03ba\u03bc-\u03c9\u0391-\u039f\u03a1-\u03a2\u03a4-\u03a9` +
+  String.raw`\u03ca-\u03fb\u1f00-\u1ffe\u2100-\u214f\u{1d49c}-\u{1d59f}` +
+  String.raw`\u00c0-\u00d6\u00d8-\u00f6\u00f8-\u017f`;
+const ID_FIRST = `A-Za-z_${ID_LETTER_LIKE}`;
+const ID_REST = ID_FIRST + String.raw`0-9'!?\u2080-\u2089\u2090-\u209c\u1d62-\u1d6a\u2c7c`;
+const IDENTIFIER_CONTINUATION = new RegExp(String.raw`^(?:[${ID_REST}]|\.[${ID_FIRST}«])`, "u");
+
 export function moduleHeader(text, complete = true) {
   let index = 0;
   while (index < text.length) {
@@ -33,13 +43,12 @@ export function moduleHeader(text, complete = true) {
       if (depth) return complete ? "missing" : "incomplete";
     } else {
       const rest = text.slice(index);
-      if (!complete && ("module".startsWith(rest) || rest === "module/" || rest === "module-" ||
+      if (!complete && ("module".startsWith(rest) || rest === "module/" || rest === "module-" || rest === "module." ||
           rest === "/" || rest === "-")) {
         return "incomplete";
       }
       return rest.startsWith("module") && (
-        rest.length === 6 || " \r\n".includes(rest[6]) ||
-        rest.startsWith("--", 6) || rest.startsWith("/-", 6)
+        !IDENTIFIER_CONTINUATION.test(rest.slice(6))
       ) ? "present" : "missing";
     }
   }

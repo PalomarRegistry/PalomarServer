@@ -16,7 +16,7 @@ test("shared Python/browser source fixtures agree at the limit and on header syn
 });
 
 test("prefixes produce definite failures only, including truncated comments and UTF-8", async () => {
-  for (const text of ["", "/", "-- license", "/- license", "mod", "module/", "module-"]) {
+  for (const text of ["", "/", "-- license", "/- license", "mod", "module/", "module-", "module."]) {
     assert.equal(moduleHeader(text, false), "incomplete", text);
   }
   assert.deepEqual(validateLeanSource("A.lean", "module\n" + "--\n".repeat(9999), policy,
