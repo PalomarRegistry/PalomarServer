@@ -78,4 +78,8 @@ for (const fixture of fixtureDocument.cases) {
   );
 }
 
+const sourceFixture = await load(resolve(upstream, "tests", "fixtures", "lean-source-requirements.json"));
+assert.deepEqual(await load(resolve("tests", "fixtures", "lean-source-requirements.json")), sourceFixture,
+  "source requirement fixtures drifted from PalomarSubmission");
+
 console.log("Formalization repair and browser preflight contracts match PalomarSubmission.");

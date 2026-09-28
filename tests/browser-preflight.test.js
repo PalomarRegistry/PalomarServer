@@ -6,6 +6,7 @@ import { gzipSync } from "node:zlib";
 import {
   BROWSER_PREFLIGHT_POLICY,
   comparatorDeclarations,
+  browserPreflightDecision,
   duplicateJsonKeys,
   formalizationDescription,
   formalizationRepairDraft,
@@ -418,4 +419,20 @@ test("the shipped policy remains within the browser payload contract", () => {
 test("the lazy browser bundle stays below its compressed page-weight budget", async () => {
   const bundle = await readFile(new URL("../public/preflight.js", import.meta.url));
   assert.ok(gzipSync(bundle).byteLength < 100 * 1024);
+});
+
+
+test("definite source refusals match intake even when verifier policy is stale or unavailable", () => {
+  for (const current of [true, false]) {
+    for (const code of ["source.module_required", "source.file_too_long", "source.symlink_not_allowed"]) {
+      assert.deepEqual(browserPreflightDecision([{ code }], current),
+        { sourceRefused: true, guard: true });
+    }
+    assert.deepEqual(browserPreflightDecision([], current), { sourceRefused: false, guard: false });
+    assert.deepEqual(browserPreflightDecision([{ code: "license.missing", advisory: true }], current),
+      { sourceRefused: false, guard: false });
+  }
+  const metadata = [{ code: "formalization.invalid_field" }];
+  assert.deepEqual(browserPreflightDecision(metadata, true), { sourceRefused: false, guard: true });
+  assert.deepEqual(browserPreflightDecision(metadata, false), { sourceRefused: false, guard: false });
 });

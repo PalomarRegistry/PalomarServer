@@ -4,7 +4,19 @@
   "limits": {
     "source_bytes": 524288000,
     "configuration_bytes": 1048576,
-    "formalization_bytes": 262144
+    "formalization_bytes": 262144,
+    "lean_source_lines": 10000
+  },
+  "lean_sources": {
+    "module_required": true,
+    "excluded_directories": [
+      ".git",
+      ".lake"
+    ],
+    "module_exempt_filenames": [
+      "lakefile.lean"
+    ],
+    "symlinks_allowed": false
   },
   "toolchain": {
     "pattern": "^leanprover/lean4:v([0-9]+)\\.([0-9]+)\\.([0-9]+)(?:-rc([0-9]+))?$",
@@ -13,14 +25,57 @@
     "prerelease_ordering": "rc-before-release"
   },
   "formalization": {
-    "repository_roles": ["substantive-development", "thin-wrapper"],
-    "source_relationship_categories": ["adapts", "background", "formalizes", "independently-proves", "other"],
-    "classification_cardinality": {"arxiv": [1, 8], "msc2020": [0, 8]}
+    "repository_roles": [
+      "substantive-development",
+      "thin-wrapper"
+    ],
+    "source_relationship_categories": [
+      "adapts",
+      "background",
+      "formalizes",
+      "independently-proves",
+      "other"
+    ],
+    "classification_cardinality": {
+      "arxiv": [
+        1,
+        8
+      ],
+      "msc2020": [
+        0,
+        8
+      ]
+    }
   },
   "comparator": {
-    "required_keys": ["challenge_module", "permitted_axioms", "solution_module", "theorem_names"],
-    "allowed_keys": ["challenge_module", "definition_names", "enable_nanoda", "permitted_axioms", "solution_module", "theorem_names"],
-    "standard_axioms": ["Classical.choice", "Quot.sound", "propext"]
+    "required_keys": [
+      "challenge_module",
+      "permitted_axioms",
+      "solution_module",
+      "theorem_names"
+    ],
+    "allowed_keys": [
+      "challenge_module",
+      "definition_names",
+      "enable_nanoda",
+      "permitted_axioms",
+      "solution_module",
+      "theorem_names"
+    ],
+    "standard_axioms": [
+      "Classical.choice",
+      "Quot.sound",
+      "propext"
+    ]
   },
-  "deferred_checks": ["classification-taxonomies", "git-attributes-lfs", "lakefile-toml", "licensee", "release-tag", "substantive-repository", "trusted-hashes"]
+  "deferred_checks": [
+    "classification-taxonomies",
+    "git-attributes-lfs",
+    "lakefile-toml",
+    "licensee",
+    "release-tag",
+    "substantive-repository",
+    "trusted-hashes",
+    "lean-source-requirements"
+  ]
 }
