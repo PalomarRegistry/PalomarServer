@@ -1287,6 +1287,7 @@ async function inspectBrowserPreflight() {
     const {
       BROWSER_PREFLIGHT_POLICY: selectedPolicy,
       canApplyFormalizationRepair,
+      browserPreflightDecision,
       comparatorDeclarations,
       formalizationDescription,
       formalizationRepairDraft,
@@ -1334,7 +1335,7 @@ async function inspectBrowserPreflight() {
       ...(sourceResult?.diagnostics ?? []),
     ];
     const repairDiagnostics = guidedFormalizationDiagnostics(diagnostics);
-    const sourceRefused = policyCurrent && (sourceResult?.diagnostics.length ?? 0) > 0;
+    const { sourceRefused, guard } = browserPreflightDecision(diagnostics, policyCurrent);
     const repairFailure = !sourceRefused && policyCurrent && content.formalization && repairDiagnostics.length &&
       canApplyFormalizationRepair(
         content.formalization,
@@ -1346,7 +1347,6 @@ async function inspectBrowserPreflight() {
           repair_draft: formalizationRepairDraft(content.formalization),
         }
       : null;
-    const guard = policyCurrent && diagnostics.some((item) => !item.advisory);
     renderBrowserPreflight({
       fingerprint,
       repository: input.repository,

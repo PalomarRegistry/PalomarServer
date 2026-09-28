@@ -738,3 +738,13 @@ export function validatePortable(input, selectedPolicy = policy) {
 }
 
 export { inspectLeanSources, readLeanSource } from "./lean-sources.js";
+
+/** Intake itself refuses source violations; other findings await verifier policy. */
+export function browserPreflightDecision(diagnostics, policyCurrent) {
+  const sourceRefused = diagnostics.some((item) =>
+    typeof item.code === "string" && item.code.startsWith("source.") && !item.advisory);
+  return {
+    sourceRefused,
+    guard: sourceRefused || (policyCurrent && diagnostics.some((item) => !item.advisory)),
+  };
+}
