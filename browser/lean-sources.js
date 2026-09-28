@@ -84,12 +84,22 @@ export async function readLeanSource(response, maximumBytes, expectedBytes) {
       length += kept.length;
       if (kept.length !== value.length) break;
     }
+    // A declared Git blob size is not proof that the HTTP body ended. Reject
+    // extra chunks instead of turning a bounded prefix into a complete read.
+    if (
+      !ended && Number.isSafeInteger(expectedBytes) &&
+      received === expectedBytes && length === expectedBytes
+    ) {
+      const tail = await reader.read();
+      if (!tail.done) return null;
+      ended = true;
+    }
   } finally {
     await reader.cancel();
   }
   const knownSize = Number.isSafeInteger(expectedBytes);
   if (knownSize && received > expectedBytes) return null;
-  const complete = ended || (knownSize && length === expectedBytes);
+  const complete = ended;
   if (complete && knownSize && length !== expectedBytes) return null;
   const bytes = new Uint8Array(length);
   let offset = 0;

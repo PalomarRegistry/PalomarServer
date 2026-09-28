@@ -91,3 +91,20 @@ test("source failures still disclose incomplete scans, and the API deadline abor
   t.mock.timers.tick(10_000);
   assert.equal((await work).status, "incomplete");
 });
+
+
+test("declared blob length requires EOF, including separately streamed extra bytes", async () => {
+  const encoder = new TextEncoder();
+  const streamed = (chunks) => {
+    let index = 0;
+    return new Response(new ReadableStream({
+      pull(controller) {
+        if (index < chunks.length) controller.enqueue(encoder.encode(chunks[index++]));
+        else controller.close();
+      },
+    }));
+  };
+  assert.equal(await readLeanSource(streamed(["module\n", "extra bytes"]), 7, 7), null);
+  assert.deepEqual(await readLeanSource(streamed(["mod", "ule\n"]), 7, 7),
+    { text: "module\n", complete: true });
+});
