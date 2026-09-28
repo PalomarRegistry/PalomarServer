@@ -1389,3 +1389,35 @@ test("a pending directory that cannot be read is not called full", async () => {
     globalThis.fetch = previous;
   }
 });
+
+
+test("definite source failures stop ordinary API intake before pending writes", async (t) => {
+  const commit = "c".repeat(40);
+  const writes = [];
+  t.mock.method(globalThis, "fetch", async (url, options = {}) => {
+    if (options.method && options.method !== "GET") writes.push(url);
+    const path = new URL(url).pathname;
+    if (path.endsWith("/contents/pending")) return Response.json([]);
+    if (path === "/repos/owner/name") return Response.json({ private: false });
+    if (path === `/repos/owner/name/commits/${commit}`) return Response.json({ sha: commit });
+    if (path === `/repos/owner/name/git/trees/${commit}`) return Response.json({ tree: [
+      { path: "unused/Legacy.lean", type: "blob", mode: "100644", size: 12 },
+    ] });
+    if (url === `https://raw.githubusercontent.com/owner/name/${commit}/unused/Legacy.lean`) {
+      return new Response("import Init\n");
+    }
+    throw new Error(`unexpected read/write ${url}`);
+  });
+  const response = await worker.fetch(new Request("https://submit.palomar-registry.org/api/submit", {
+    method: "POST",
+    body: JSON.stringify({ repository: "owner/name", commit,
+      authorization_relationship: "maintainer", comparator_config_path: "comparator.json" }),
+  }), ENV);
+  assert.equal(response.status, 400);
+  const body = await response.json();
+  assert.equal(body.source_preflight.status, "fail");
+  assert.equal(body.source_preflight.diagnostics[0].path, "unused/Legacy.lean");
+  assert.equal(body.source_preflight.diagnostics[0].code, "source.module_required");
+  assert.equal(body.pending_secret, undefined);
+  assert.deepEqual(writes, []);
+});

@@ -15,6 +15,32 @@ is the only way in. The registry itself is at https://palomar-registry.org.
 Nothing about eligibility, metadata, or scoring is restated here. If this file
 and the policy disagree, the policy is right.
 
+## Lean source requirements
+
+Before requesting intake, ensure every regular committed Lean source file uses
+`module` and has at most 10,000 physical lines, including blank/comment lines
+and an unterminated final line. A final newline adds no line; LF/CRLF each
+terminate one line. This includes unused files, generated certificates,
+contained projects, local path dependencies, and separately declared substantive
+source repositories. Exclude `lakefile.lean`, `.git`, `.lake`, and symlinks;
+external pinned Git dependencies are outside this length cap. Challenge keeps
+its stricter 1,000-line and 100 KiB limits.
+
+Move module doc comments after `module`. Port public declarations/imports and
+exposed definition bodies as required by Lean's module system, then rebuild and
+rerun Comparator. Split oversized files into modules or reduce certificates;
+submit the corrected commit. See the policy for the binding requirements.
+
+Ordinary HTTPS intake checks at most 32 files, 1 MiB per file and 4 MiB in total,
+with a 10-second deadline and a bounded repository tree. Definite violations
+return HTTP 400 with file diagnostics before creating an authentication
+challenge. Successful intake includes `source_preflight.status` (`pass` or
+`incomplete`). A truncated tree, partial read, or unavailable GitHub response
+cannot establish a pass. Even a preliminary pass requires the complete reusable
+workflow: its preparation scans all sources, and execution confirms headers
+with Lean before builds. Registry metadata corrections retain their existing
+source validation path.
+
 ## Mechanical preflight
 
 Before `POST /api/submit`, run Palomar's complete reusable workflow at

@@ -43,6 +43,7 @@ import {
   rateRecord,
   resetRateRecord,
 } from "./admission-contract.js";
+import { sourcePreflight } from "./source-preflight.js";
 import { MAX_PREFLIGHT_REPAIR_BYTES, validateIntake } from "./intake-contract.js";
 import {
   bearerToken,
@@ -799,6 +800,16 @@ async function beginSubmission(request, env, { machine = false } = {}) {
     }
   }
 
+  const sourceCheck = registryCorrection ? null
+    : await sourcePreflight(env.GITHUB_TOKEN, repositoryName, commit);
+  if (sourceCheck?.status === "fail") {
+    return machine
+      ? json({ error: "that submission was refused",
+          problems: sourceCheck.diagnostics.map((item) => item.summary),
+          source_preflight: sourceCheck }, 400)
+      : rejected(...sourceCheck.diagnostics.map((item) => item.summary));
+  }
+
   // A pending intake, so the callback can recover exactly what was asked for
   // without trusting anything the browser carries back except an opaque nonce.
   // Two independent secrets, and they must stay independent. `nonce` locates
@@ -885,6 +896,7 @@ async function beginSubmission(request, env, { machine = false } = {}) {
       repository: repositoryName,
       commit,
       instructions: instructions.join("\n"),
+      ...(sourceCheck ? { source_preflight: sourceCheck } : {}),
     });
   }
 

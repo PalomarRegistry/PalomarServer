@@ -1,0 +1,130 @@
+// Preliminary source checks shared by the browser and HTTPS intake.
+// The verifier scans the complete immutable checkout and confirms headers with Lean.
+export const SOURCE_SCAN_FILES = 32;
+export const SOURCE_SCAN_BYTES = 4 * 1024 * 1024;
+export const SOURCE_SCAN_FILE_BYTES = 1024 * 1024;
+
+export function isLeanSourcePath(path, policy) {
+  const parts = path.split("/");
+  return path.endsWith(".lean") &&
+    !parts.some((part) => policy.lean_sources.excluded_directories.includes(part)) &&
+    !policy.lean_sources.excluded_filenames.includes(parts.at(-1));
+}
+
+export function moduleHeader(text, complete = true) {
+  let index = 0;
+  while (index < text.length) {
+    if (" \r\n".includes(text[index])) index += 1;
+    else if (text.startsWith("--", index)) {
+      const end = text.indexOf("\n", index + 2);
+      if (end < 0) return complete ? "missing" : "incomplete";
+      index = end + 1;
+    } else if (text.startsWith("/-", index) &&
+        !text.startsWith("/--", index) && !text.startsWith("/-!", index)) {
+      index += 2;
+      let depth = 1;
+      while (depth && index < text.length) {
+        if (text.startsWith("/-", index)) { depth += 1; index += 2; }
+        else if (text.startsWith("-/", index)) { depth -= 1; index += 2; }
+        else index += 1;
+      }
+      if (depth) return complete ? "missing" : "incomplete";
+    } else {
+      const rest = text.slice(index);
+      if (!complete && ("module".startsWith(rest) || rest === "module/" || rest === "module-" ||
+          rest === "/" || rest === "-")) {
+        return "incomplete";
+      }
+      return rest.startsWith("module") && (
+        rest.length === 6 || " \r\n".includes(rest[6]) ||
+        rest.startsWith("--", 6) || rest.startsWith("/-", 6)
+      ) ? "present" : "missing";
+    }
+  }
+  return complete ? "missing" : "incomplete";
+}
+
+export function validateLeanSource(path, text, policy, { complete = true } = {}) {
+  const diagnostics = [];
+  const lines = (text.match(/\n/g) || []).length +
+    Number(complete && text.length > 0 && !text.endsWith("\n"));
+  if (lines > policy.limits.lean_source_lines) {
+    diagnostics.push({
+      code: "source.file_too_long", path,
+      summary: `${path} has ${complete ? "" : "at least "}${lines.toLocaleString("en-US")} lines; each submitted Lean source file must have at most ${policy.limits.lean_source_lines.toLocaleString("en-US")} lines. Split the source into smaller modules or reduce the certificate.`,
+    });
+  }
+  if (moduleHeader(text, complete) === "missing") {
+    diagnostics.push({
+      code: "source.module_required", path,
+      summary: `${path} must begin with the module header keyword. Port the file to the module system, including public declarations/imports and exposed definitions as needed.`,
+    });
+  }
+  return diagnostics;
+}
+
+/** Read a bounded prefix without buffering an unbounded raw response. */
+export async function readLeanSource(response, maximumBytes, expectedBytes) {
+  if (!response.ok || !response.body) return null;
+  const reader = response.body.getReader();
+  const chunks = [];
+  let length = 0;
+  let ended = false;
+  let received = 0;
+  try {
+    while (length < maximumBytes) {
+      const { done, value } = await reader.read();
+      if (done) { ended = true; break; }
+      received += value.length;
+      const kept = value.subarray(0, maximumBytes - length);
+      chunks.push(kept);
+      length += kept.length;
+      if (kept.length !== value.length) break;
+    }
+  } finally {
+    await reader.cancel();
+  }
+  const knownSize = Number.isSafeInteger(expectedBytes);
+  if (knownSize && received > expectedBytes) return null;
+  const complete = ended || (knownSize && length === expectedBytes);
+  if (complete && knownSize && length !== expectedBytes) return null;
+  const bytes = new Uint8Array(length);
+  let offset = 0;
+  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length; }
+  try {
+    // Preserve a BOM: Lean does not recognize a module header after one.
+    const text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true })
+      .decode(bytes, { stream: !complete });
+    return { text, complete };
+  } catch {
+    return null;
+  }
+}
+
+export async function inspectLeanSources(entries, read, policy) {
+  const files = entries.filter((entry) => entry.type === "blob" &&
+    /^100\d{3}$/.test(entry.mode || "") && isLeanSourcePath(entry.path, policy))
+    .sort((left, right) => right.size - left.size || left.path.localeCompare(right.path));
+  const diagnostics = [];
+  let budget = SOURCE_SCAN_BYTES;
+  let checked = 0;
+  let incomplete = files.length > SOURCE_SCAN_FILES;
+  for (const entry of files.slice(0, SOURCE_SCAN_FILES)) {
+    if (!Number.isSafeInteger(entry.size) || entry.size < 0 || budget <= 0) {
+      incomplete = true;
+      continue;
+    }
+    const maximum = Math.min(budget, SOURCE_SCAN_FILE_BYTES, Math.max(entry.size, 1));
+    budget -= maximum;
+    let content;
+    try { content = await read(entry, maximum); } catch { content = null; }
+    if (content === null) { incomplete = true; continue; }
+    checked += 1;
+    incomplete ||= !content.complete;
+    diagnostics.push(...validateLeanSource(entry.path, content.text, policy, content));
+  }
+  return {
+    status: diagnostics.length ? "fail" : incomplete ? "incomplete" : "pass",
+    incomplete, diagnostics, files_checked: checked, total_files: files.length,
+  };
+}

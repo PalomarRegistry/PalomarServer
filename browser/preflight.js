@@ -736,3 +736,5 @@ export function validatePortable(input, selectedPolicy = policy) {
     ...(input.toolchain === undefined ? [] : validateToolchain(input.toolchain, selectedPolicy)),
   ];
 }
+
+export { inspectLeanSources, readLeanSource } from "./lean-sources.js";

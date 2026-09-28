@@ -1188,7 +1188,7 @@ function renderBrowserPreflight(result) {
     browserPreflightDeferred.textContent = result.guard
       ? result.repairFailure
         ? "Complete the metadata form below to prepare a pull request now, or confirm that you want full verification to continue despite these findings."
-        : "Full verification will repeat these checks and run Licensee, LFS, release, taxonomy, TOML, and thin-wrapper checks. Confirm below if you want to continue."
+        : "Full verification will repeat these checks and scan every Lean source, confirm module headers with Lean, and run Licensee, LFS, release, taxonomy, TOML, and thin-wrapper checks. Confirm below if you want to continue."
       : "Full verification will run every authoritative check after submission. This browser check does not block submission.";
   }
   let restoredEdits = [];
@@ -1284,6 +1284,8 @@ async function inspectBrowserPreflight() {
       formalizationRepairDraft,
       guidedFormalizationDiagnostics,
       inspectTree,
+      inspectLeanSources,
+      readLeanSource,
       validatePortable,
     } = await loadBrowserPreflight();
     const treeResult = inspectTree(describedLayout.entries, input, selectedPolicy);
@@ -1299,16 +1301,29 @@ async function inspectBrowserPreflight() {
       if (text === null) incomplete = true;
       else content[name] = text;
     });
-    const work = Promise.all([currentBrowserPolicy(selectedPolicy), ...reads]);
+    const sourceController = new AbortController();
+    let sourceResult = null;
+    const sourceWork = inspectLeanSources(describedLayout.entries, async (entry, maximum) => {
+      const path = entry.path.split("/").map(encodeURIComponent).join("/");
+      const response = await fetch(
+        `https://raw.githubusercontent.com/${input.repository}/${input.commit}/${path}`,
+        { signal: sourceController.signal },
+      );
+      return readLeanSource(response, maximum, entry.size);
+    }, selectedPolicy).then((result) => { sourceResult = result; });
+    const work = Promise.all([currentBrowserPolicy(selectedPolicy), sourceWork, ...reads]);
     const deadline = new Promise((resolve) => setTimeout(() => resolve([false]), 15_000));
     const values = await Promise.race([work, deadline]);
+    sourceController.abort();
     if (mine !== browserPreflightToken || fingerprint !== preflightFingerprint()) return;
     const policyCurrent = values[0] === true;
     if (!policyCurrent || Object.keys(content).length !== reads.length) incomplete = true;
+    if (!sourceResult || sourceResult.incomplete) incomplete = true;
     const portableDiagnostics = validatePortable(content, selectedPolicy);
     const diagnostics = [
       ...treeResult.diagnostics,
       ...portableDiagnostics,
+      ...(sourceResult?.diagnostics ?? []),
     ];
     const repairDiagnostics = guidedFormalizationDiagnostics(diagnostics);
     const repairFailure = policyCurrent && content.formalization && repairDiagnostics.length &&
