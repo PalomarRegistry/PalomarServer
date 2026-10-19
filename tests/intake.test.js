@@ -755,6 +755,15 @@ test("the status page keeps the key it tells the submitter to bookmark", async (
   assert.doesNotMatch(page, /never sent to any server/);
 });
 
+test("the status page shows the submission identifier", async () => {
+  // A submitter reporting a problem had only the private link, which must not
+  // be shared, and a verifier run number. The identifier is what names it.
+  const script = await readFile(new URL("../public/status.js", import.meta.url), "utf8");
+  const details = script.slice(script.indexOf("details.replaceChildren();"));
+  assert.match(details, /row\("Submission", el\("code", data\.id\)\)/);
+  assert.ok(details.indexOf('row("Submission"') < details.indexOf('row("Repository"'));
+});
+
 test("the sign-in is described as it will actually behave", () => {
   // Being signed in and having authorized this OAuth app are different states.
   assert.match(form, /You may be asked to sign in/);

@@ -1323,6 +1323,9 @@ async function poll() {
   }
 
   details.replaceChildren();
+  // The identifier is how a submitter names this submission to anyone else.
+  // The private link must never be shared, so the page has to show it.
+  if (data.id) row("Submission", el("code", data.id));
   row("Repository", link(`https://github.com/${data.repository}`, data.repository));
   row("Commit", data.commit);
   // The form fills these in for you when it can, so say what was submitted.
