@@ -93,6 +93,17 @@ export function waitingMessage(status) {
   return WAITING_MESSAGES[status] ?? null;
 }
 
+/** A post-verification render failure must not be described as a failed proof. */
+export function challengeRenderingFailure(data) {
+  if (!["verification-error", "verification-failed"].includes(data?.status)) return false;
+  if (typeof data.renderability_error === "string" && data.renderability_error.trim()) return true;
+  const lastEvent = Array.isArray(data.events) ? data.events.at(-1) : null;
+  return [
+    "Palomar could not complete the Challenge renderability check",
+    "Challenge rendering found repository changes that are required",
+  ].includes(lastEvent?.note);
+}
+
 /** The review and submitter-action controls that belong to one current status. */
 export function statusPresentation(
   status,

@@ -22,6 +22,7 @@ import {
 } from "/repair-form-contract.js";
 import {
   actionableVerificationErrors,
+  challengeRenderingFailure,
   decisionCopy,
   statusPresentation,
   verificationRunLocation,
@@ -939,13 +940,24 @@ repairFields?.addEventListener("focusout", (event) => {
 });
 
 function showStructuredFailure(data) {
-  const failure = data.failure;
+  const failure = data.failure ?? {};
   const diagnostics = Array.isArray(failure?.diagnostics) ? failure.diagnostics : [];
+  if (!diagnostics.length && challengeRenderingFailure(data) && data.renderability_error) {
+    diagnostics.push({
+      summary: "Palomar could not complete Challenge rendering.",
+      explanation: data.renderability_error,
+      owner: "palomar",
+      next_action: "Keep this submission. Palomar must inspect the rendering error and retry it after repair.",
+      repairable: false,
+    });
+  }
   if (!diagnostics.length) return false;
   verificationFailureSection.hidden = false;
   legacyFailureDetails.hidden = true;
   failureDiagnostics.replaceChildren();
-  failureHeading.textContent = failure.phase === "preparation" || failure.mode === "preflight"
+  failureHeading.textContent = challengeRenderingFailure(data)
+    ? "Challenge rendering needs attention"
+    : failure.phase === "preparation" || failure.mode === "preflight"
     ? "Preparation found these problems"
     : "Verification needs attention";
   const repairable = new Map();
@@ -1290,7 +1302,11 @@ async function poll() {
           ? "Your registry correction decision is ready."
           : data.status === "verification-failed" && !failedRun && !structuredFailure
       ? "Palomar could not complete or recover the verification run. This is a fault at our end, not with your submission."
-      : LABELS[data.status] ?? data.status;
+      : challengeRenderingFailure(data)
+        ? data.status === "verification-failed"
+          ? "Mechanical verification passed. Challenge rendering found repository changes that are required."
+          : "Mechanical verification passed, but Palomar could not complete Challenge rendering."
+        : LABELS[data.status] ?? data.status;
   }
   progress.replaceChildren();
   const waiting = waitingStatusMessage(data.status);

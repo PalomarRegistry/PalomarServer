@@ -3002,6 +3002,9 @@ export default {
           preflight_run: record.preflight_run ?? null,
           run: record.run ?? null,
           failure: record.failure ?? null,
+          renderability_error: typeof record.renderability_error === "string"
+            ? record.renderability_error.slice(0, 500)
+            : null,
           failure_digest: failureDigest,
           repair: record.repair
             ? submitterRepair(repairEntry?.value) ?? {
