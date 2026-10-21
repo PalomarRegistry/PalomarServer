@@ -33,6 +33,7 @@ test("renderability recovery renews the gate budget without shortening backoff",
   const exhausted = { ...state, run: { id: 12, conclusion: "success" },
     renderability_attempts: 3, renderability_started_at: "2026-09-15T00:00:00Z",
     renderability_error: "renderer infrastructure failed",
+    renderability_request: { request_id: "b".repeat(32), run: { id: 99 } },
     review_retry_after: "2026-09-17T00:00:00Z", review_attempts: 2,
     registration_consent: false };
   delete exhausted.failure;
@@ -40,6 +41,7 @@ test("renderability recovery renews the gate budget without shortening backoff",
   assert.equal((result.renderability_attempts ?? 0) + 1, 1);
   assert.equal(result.renderability_started_at, undefined);
   assert.equal(result.renderability_error, undefined);
+  assert.equal(result.renderability_request, undefined);
   assert.equal(result.review_retry_after, exhausted.review_retry_after);
   assert.equal(result.review_attempts, 2);
   assert.equal(result.registration_consent, false);

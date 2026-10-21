@@ -12,6 +12,8 @@ next maintenance pass. The command does not alter source, paths, authorization,
 consent, or admission backoff. It refuses withdrawn and active submissions.
 The new execution receives a fresh rendering-attempt budget, while any existing
 review retry deadline remains in force.
+Any pending render request from the previous execution is discarded; the new
+mechanical report must establish its own render inputs before a render is queued.
 The admission timestamp comes from the authenticated GitHub response, avoiding
 operator clock skew in run discovery. The attempt ID returned by an applied command is the durable audit identifier;
 a preview generates a provisional ID and does not reserve work.
