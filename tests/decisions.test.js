@@ -34,6 +34,22 @@ const ENV = {
   INTAKE_LIMITER: { limit: async () => ({ success: true }) },
 };
 
+test("render failures retain their phase without relabelling mechanical failures", async () => {
+  const { challengeRenderingFailure } = await import("../public/statuses.js");
+  assert.equal(challengeRenderingFailure({ status: "verification-error", renderability_error: "literate failed" }), true);
+  assert.equal(challengeRenderingFailure({ status: "verification-failed", events: [{
+    note: "Challenge rendering found repository changes that are required",
+  }] }), true);
+  assert.equal(challengeRenderingFailure({ status: "verification-error", events: [{
+    note: "Palomar could not complete the Challenge renderability check",
+  }] }), true);
+  assert.equal(challengeRenderingFailure({ status: "verification-error", failure: {
+    diagnostics: [{ stage: "comparator", code: "palomar.kernel_disagreement" }],
+  } }), false);
+  assert.equal(challengeRenderingFailure({ status: "withdrawn", renderability_error: "old failure" }), false);
+  assert.equal(challengeRenderingFailure({ status: "verification-failed", events: null }), false);
+});
+
 const TOKEN = "a".repeat(64);
 const TECHNICAL_MAINTAINER_ID = 477956;
 
