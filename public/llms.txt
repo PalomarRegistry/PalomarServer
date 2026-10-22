@@ -59,6 +59,38 @@ Pin both the workflow reference and its
 `pipeline_commit` input to the same full commit. A local `lake build`,
 repository-specific CI job, or standalone Comparator run is not equivalent.
 
+Use this complete call, replacing the two pipeline SHA placeholders with the
+same full PalomarSubmission commit:
+
+```yaml
+jobs:
+  palomar-preflight:
+    uses: PalomarRegistry/PalomarSubmission/.github/workflows/submission.yml@<full-commit>
+    with:
+      repository: ${{ github.repository }}
+      commit: ${{ github.sha }}
+      pipeline_commit: <same-full-commit-as-the-uses-reference>
+      request_id: preflight001
+      mode: full
+      execution_profile: palomar-standard-v1
+      options: '{"comparator_config_path":"comparator.json","authorization_relationship":"I am a responsible author or maintainer"}'
+```
+
+`request_id` must be exactly 12 lowercase alphanumeric characters; hyphens and
+underscores are not accepted. `options` must include the repository-relative
+`comparator_config_path` and an explicit `authorization_relationship`.
+The example declares that your user is a responsible author or maintainer;
+confirm the truthful relationship with them. Include `project_path` when the
+project is not at the repository root, and `formalization_metadata_path` when
+the metadata is not at the default `formalization.yaml` within that project.
+All paths are repository-relative. The workflow's supported relationship labels
+and other settings are documented in the PalomarSubmission repository.
+
+Invalid workflow inputs need correction, rather than an unchanged retry.
+Read the job summary and report artifact, correct the indicated workflow
+inputs, and rerun against the same source commit. These input errors do not
+require a source change.
+
 Submit only after the mechanical report says `status: pass`. For an OOM,
 timeout, or incomplete resource report, address the reported condition before
 retrying. A passing preflight is advisory: it does not run Challenge rendering,
