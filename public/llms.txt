@@ -86,10 +86,11 @@ the metadata is not at the default `formalization.yaml` within that project.
 All paths are repository-relative. The workflow's supported relationship labels
 and other settings are documented in the PalomarSubmission repository.
 
-Invalid workflow inputs need correction, rather than an unchanged retry.
-Read the job summary and report artifact, correct the indicated workflow
-inputs, and rerun against the same source commit. These input errors do not
-require a source change.
+When preparation reports an input error, read the job summary and report
+artifact, correct the indicated workflow inputs, and rerun against the same
+source commit. These input errors do not require a source change. Profile
+resolution and pipeline-checkout errors occur before preparation; use their
+Actions job logs to correct the profile or pinned pipeline revision.
 
 Submit only after the mechanical report says `status: pass`. For an OOM,
 timeout, or incomplete resource report, address the reported condition before
