@@ -18,6 +18,7 @@ import {
 } from "./github.js";
 import { authorizationRelationshipLabel } from "./intake-contract.js";
 import { recordedAt, statePath } from "./submission.js";
+import { escalationDecision, maybeEscalate } from "./resource-escalation.js";
 import {
   INFLIGHT_INDEX_PATH,
   inflightOpen,
@@ -209,9 +210,28 @@ export async function reconcile(env) {
   const still = [];
   let reviewerQueueUnavailable = false;
   const dispatchFailures = [];
+  const escalationFailures = [];
   for (const item of open) {
     const record = await readState(env, statePath(item.id, "state.json"));
     if (!record.value) continue;               // vanished: do not hold its slot
+    if (record.value.status === "verification-reporting") {
+      // Preserve capacity until the authenticated failure is available; this
+      // keeps automatic escalation independent of an open browser tab.
+      still.push(item);
+      continue;
+    }
+    if (escalationDecision(record.value)) {
+      try {
+        await maybeEscalate(env, record.value);
+      } catch (error) {
+        console.error("resource-retry", item.id, error?.stack ?? String(error));
+        escalationFailures.push(`${item.id}: ${error}`);
+      }
+      // A competing retry may have committed while our snapshot was stale.
+      // Keep its reservation even if our own conditional commit lost.
+      still.push(item);
+      continue;
+    }
     const phase = activeSubmissionPhase(record.value);
     if (!phase) continue;
     const pinned = record.value[phase.runField]?.id ?? null;
@@ -316,6 +336,7 @@ export async function reconcile(env) {
       clearPhaseOutbox(done, phase);
       await writeState(env, statePath(item.id, "state.json"), done,
                        `Reconcile ${item.id}`, record.sha);
+      if (settled === "verification-reporting") still.push(item);
       if (["awaiting-review", "preflight-reporting", "verification-reporting"].includes(settled)) {
         // Idempotent and cheap. A submission that settles without an entry here
         // is one the reviewer's pass never looks at. The reviewer can rebuild
@@ -405,6 +426,9 @@ export async function reconcile(env) {
   }
   if (dispatchFailures.length) {
     throw new Error(`verification dispatch retry failed: ${dispatchFailures.join("; ")}`);
+  }
+  if (escalationFailures.length) {
+    throw new Error(`resource retry failed: ${escalationFailures.join("; ")}`);
   }
   return { released: open.length - still.length, open: still.length };
 }

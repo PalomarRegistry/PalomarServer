@@ -4,7 +4,9 @@ import { isTechnicalMaintainer } from "./technical-maintainers.js";
 import { inflightOpen, reviewerOpen } from "./state-contract.js";
 import { readStateSnapshot, commitStateSnapshot } from "./github.js";
 
-export const EXECUTION_PROFILES = new Set(["palomar-standard-v1", "palomar-namespace-16x32-v1"]);
+export const EXECUTION_PROFILES = new Set([
+  "palomar-standard-v1", "palomar-namespace-16x32-v1", "palomar-namespace-32x64-v1",
+]);
 
 export function retryTransition(state, inflight, queue, { principal, reason, profile, attempt, at }) {
   if (!isTechnicalMaintainer(principal)) throw new Error("Technical Maintainer identity required");
