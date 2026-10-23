@@ -44,6 +44,7 @@ import {
   resetRateRecord,
 } from "./admission-contract.js";
 import { sourcePreflight } from "./source-preflight.js";
+import { maybeEscalate, publicFailure } from "./resource-escalation.js";
 import { MAX_PREFLIGHT_REPAIR_BYTES, validateIntake } from "./intake-contract.js";
 import {
   bearerToken,
@@ -2354,6 +2355,8 @@ async function typicalReviewSeconds(env) {
 /** Refresh a verifying submission from the run it dispatched. */
 async function refresh(env, entry) {
   const record = entry.record;
+  const escalated = await maybeEscalate(env, record);
+  if (escalated) return escalated;
   // A completed registration puts a submitter's interval back to a minute. A
   // small number of first-pass metadata corrections gets the same concession,
   // but repeated failed preflights retain their accumulated backoff.
@@ -2456,7 +2459,7 @@ async function refresh(env, entry) {
       },
     ];
   }
-  if (!activeSubmissionPhase(next) && activeSubmissionPhase(record)) {
+  if (!activeSubmissionPhase(next) && next.status !== "verification-reporting" && activeSubmissionPhase(record)) {
     // Validate the capacity contract before another index can be changed. The
     // release itself deliberately re-reads after queueing, so it does not carry
     // this older optimistic SHA across the intervening work.
@@ -2490,7 +2493,7 @@ async function refresh(env, entry) {
     // The schedule remains the backstop for a rejected dispatch.
     await dispatchReviewer(env).catch(() => false);
   }
-  if (!activeSubmissionPhase(next) && activeSubmissionPhase(record)) {
+  if (!activeSubmissionPhase(next) && next.status !== "verification-reporting" && activeSubmissionPhase(record)) {
     // Commit the terminal state before releasing capacity. If the fresh
     // compare-and-swap release then fails, scheduled reconciliation sees the
     // non-verifying record and drops the stale reservation. Releasing first
@@ -3001,7 +3004,7 @@ export default {
           created_at: record.created_at,
           preflight_run: record.preflight_run ?? null,
           run: record.run ?? null,
-          failure: record.failure ?? null,
+          failure: publicFailure(record),
           renderability_error: typeof record.renderability_error === "string"
             ? record.renderability_error.slice(0, 500)
             : null,

@@ -760,3 +760,43 @@ Rollout: merge the policy and verifier changes before deploying this server
 change; the browser's current-policy check and CI contract use the verifier's
 published projection. Deploying the server alone cannot enable the complete
 verification gate.
+
+### Resource retries
+
+Automatic resource retries are restricted to the GitHub accounts in
+[`src/resource-escalation-policy.json`](src/resource-escalation-policy.json).
+The list starts empty. To grant access, resolve the account with
+`gh api users/LOGIN --jq '{id, login}'`, add that object to `users`, and deploy
+through the normal reviewed PR process. The numeric GitHub ID is authoritative;
+the login documents the entry and may change without granting another account
+access. Adding an entry also authorizes a retry of that account's earlier
+eligible failures when their status page is next opened, subject to the normal
+in-flight limits; it does not bulk-retry the account's history. Removing the
+entry stops future automatic retries. The audit field `policy_sha256` hashes
+UTF-8 `JSON.stringify` of the parsed policy (compact JSON with no trailing
+newline), rather than the source file's formatting.
+
+Only a full verification with Reviewer-authenticated OOM or timeout evidence on
+`palomar-namespace-16x32-v1` can automatically retry. It gets one fresh attempt on
+`palomar-namespace-32x64-v1` (32 CPU / 64 GiB), with the same 19,800 second execution
+budget and the same admitted commit, authorization, registration consent and
+cooldowns. The original run and failure remain in execution history. A later
+operator retry cannot reset the automatic retry allowance. There is no 64×128
+tier enabled.
+
+The scheduled reconciler queues the retry without requiring an open browser.
+It retains admission capacity until Reviewer has authenticated the failure,
+and reserves State, reviewer queue and any needed capacity in one conditional
+commit before the durable dispatcher creates work. Competing writes require
+another pass; withdrawal wins if it precedes the retry commit. A failure is
+never inferred from candidate output, exit code 137 or a generic interrupted job.
+
+Resource failures tell submitters to contact Kim Morrison (@kim-em on GitHub),
+with their workflow URL, to request larger-runner access. Repeated submission
+does not grant access. If the larger attempt fails too, it stops for operator
+attention. Manual Technical Maintainer recovery remains available.
+
+Deployment prerequisites: merge the resource evidence changes in
+PalomarReviewer, promote that runtime and the execution contract in
+PalomarState, and enable the 32×64 profile in PalomarSubmission before deploying
+this server. Keep the allowlist empty until those prerequisites are deployed.
