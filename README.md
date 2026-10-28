@@ -335,7 +335,8 @@ request credential transport and origin classification live in
 `src/request-credentials.js`. These four modules do not perform I/O. Validated
 shared-index reads, reviewer-queue appends, admission-slot release and
 reconciliation writes, verification reconciliation, and abandoned-intake
-cleanup live in `src/submission-lifecycle.js`. The Worker in `src/index.js`
+cleanup live in `src/submission-lifecycle.js`. Durable cooldown-reset work and
+atomic resets live in `src/rate-reset.js`. The Worker in `src/index.js`
 remains the composition root: it decides which routes require credentials and
 owns body decoding, responses, authorization, request-path record and rate
 reads and optimistic writes, the admission-slot append, and route-level
@@ -345,8 +346,9 @@ Admission uses GitHub's Git Data API as a transaction boundary. The Worker
 reads the pending proof, rate record, capacity index, reviewer queue, and the
 two create-only paths at one exact `main` commit. One derived tree then consumes
 the proof and writes the submission record, capacity reservation, reviewer
-queue entry, token index, and rate update. A non-forced ref update publishes all
-of them together. If another writer moved `main`, the update is rejected and
+queue entry, token index, rate update, and pending cooldown-reset entry. A
+non-forced ref update publishes all of them together. If another writer moved
+`main`, the update is rejected and
 the complete decision is recomputed from the new head; unreachable losing tree
 and commit objects never become State. Policy refusals publish only the proof
 deletion. Damaged or unavailable State publishes nothing and leaves an agent's
@@ -386,8 +388,8 @@ three files in `state-bootstrap/index/` to `index/` and commit them. Deploying t
 Worker before that initialization deliberately leaves intake unavailable; it
 does not silently disable the owner and submitter limits.
 
-Admission is the multi-file transaction described above. Later lifecycle and
-submitter decisions remain ordered Git commits rather than one global
+Admission and cooldown resets use the multi-file transactions described here.
+Other lifecycle and submitter decisions remain ordered Git commits rather than one global
 transaction: their operations are idempotent or deliberately leave an earlier
 durable state that the next request or scheduled pass can finish. Git State
 continues to be the auditable source of truth; no separate coordinator or
@@ -494,13 +496,41 @@ turns a login into the path. The name is a digest for the same reason
 `index/tokens/` is, and the body is anonymous for the same reason again, since a
 digest for a name buys nothing if the file it names says the name.
 
-This server applies the reset, not the reviewer, even though the reviewer is
-what registers. It sees the reset when a status refresh finds the submission
-settled at `registered`, so the good news and the reset arrive on the same
-request. Letting the reviewer do it would put `TOKEN_PEPPER` in reviewer CI, and
-that pepper exists so a leaked state repository yields no live links. Somebody
-who closes the tab between consenting and that poll waits longer once, and
-opening the link again fixes it.
+The server applies resets without sharing `TOKEN_PEPPER` with reviewer CI.
+Admission atomically appends each rate-limited submission to the server-owned
+`index/rate-resets.json` queue (`schema_version: 1`, `open`: unique submission
+ids). Operator verification recovery also requeues the submission. An absent
+queue is empty for deployment compatibility; a malformed present queue fails
+closed.
+
+The existing ten-minute maintenance schedule checks up to 25 queued submissions
+per pass and rotates unfinished or broken records behind the remaining work.
+A completed registration restores the interval to sixty seconds; the existing
+limited preparation-failure concession uses the same path. Other closed
+submissions leave the cooldown unchanged and leave the queue. Failures remain
+queued and are reported without preventing unrelated resets. A status poll
+uses this same reset path as a fast path, but keeping a tab open is unnecessary.
+
+The rate change and the submission's `rate_reset_at` receipt commit atomically.
+A rejected write cannot mark an unapplied reset complete. Concurrent status
+polls and admissions retry against a fresh snapshot; a receipt already committed
+by another request prevents applying that same reset to a later submission.
+
+For submissions admitted before this queue existed, seed it from a fresh State
+checkout after deploying the server change:
+
+```bash
+node tools/rebuild-rate-reset-queue.js ../PalomarSubmissionState
+node tools/rebuild-rate-reset-queue.js --write ../PalomarSubmissionState
+```
+
+The default is a dry run. The write updates only the queue, preserves existing
+entries, and adds unfinished submissions and unacknowledged registration or
+preparation resets with numeric principals. It neither needs the pepper nor
+changes cooldowns itself. Review and push the queue; scheduled maintenance
+then catches up in bounded batches. Do not replace a live queue from a stale
+checkout: commit and push without force, and rebuild on a fresh checkout if
+the push loses a race.
 
 ## Operating a submission
 

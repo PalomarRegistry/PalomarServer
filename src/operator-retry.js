@@ -3,6 +3,7 @@ import { admissionDecision } from "./admission-contract.js";
 import { isTechnicalMaintainer } from "./technical-maintainers.js";
 import { inflightOpen, reviewerOpen } from "./state-contract.js";
 import { readStateSnapshot, commitStateSnapshot } from "./github.js";
+import { RATE_RESET_INDEX_PATH, rateResetQueue } from "./rate-reset.js";
 
 export const EXECUTION_PROFILES = new Set([
   "palomar-standard-v1", "palomar-namespace-16x32-v1", "palomar-namespace-32x64-v1",
@@ -71,12 +72,20 @@ export function retryTransition(state, inflight, queue, { principal, reason, pro
 export async function retryVerification(env, id, options, { apply = false } = {}) {
   if (!/^[0-9a-z]{12}$/.test(id)) throw new Error("invalid submission id");
   const path = `submissions/${id}/state.json`;
-  const snapshot = await readStateSnapshot(env, [path, "index/inflight.json", "index/open.json"]);
+  const snapshot = await readStateSnapshot(env, [
+    path, "index/inflight.json", "index/open.json", RATE_RESET_INDEX_PATH,
+  ]);
   const result = retryTransition(snapshot.files[path].value,
     snapshot.files["index/inflight.json"].value, snapshot.files["index/open.json"].value, options);
+  const resets = rateResetQueue(snapshot.files[RATE_RESET_INDEX_PATH].value);
+  const principalId = result.state.push_proof?.principal?.id;
+  const tracksRate = Number.isSafeInteger(principalId) && principalId > 0;
   if (apply && !await commitStateSnapshot(env, snapshot, [
     { path, value: result.state }, { path: "index/inflight.json", value: result.inflight },
     { path: "index/open.json", value: result.queue },
+    ...(tracksRate ? [{ path: RATE_RESET_INDEX_PATH, value: {
+      schema_version: 1, open: resets.includes(id) ? resets : [...resets, id],
+    } }] : []),
   ], `Operator recovery ${id} attempt ${options.attempt}`)) {
     throw new Error("State changed; no retry committed. Reread and retry the command.");
   }

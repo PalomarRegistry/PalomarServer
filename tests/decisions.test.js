@@ -3520,6 +3520,9 @@ test("a tag and a gist together admit a submission", async () => {
   assert.equal(record.value.push_proof.binding, "separately-attested");
   assert.equal(record.value.push_proof.principal.id, 4242);
   assert.equal(stub.refUpdates.length, 1, "admission used more than one branch update");
+  assert.deepEqual(stub.store.get("index/rate-resets.json"), {
+    schema_version: 1, open: [body.submission_id],
+  });
   assert.deepEqual(
     new Set(stub.refUpdates[0].map((item) => item.path)),
     new Set([
@@ -3527,6 +3530,7 @@ test("a tag and a gist together admit a submission", async () => {
       `submissions/${body.submission_id}/state.json`,
       "index/inflight.json",
       "index/open.json",
+      "index/rate-resets.json",
       `index/tokens/${record.value.token_sha256}.json`,
       await agentPrincipalPath(),
       await agentRatePath(),

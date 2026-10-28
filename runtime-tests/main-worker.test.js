@@ -222,7 +222,7 @@ test("the real callback rejects duplicate intake credentials before I/O", async 
   expect(outbound).not.toHaveBeenCalled();
 });
 
-test("the real scheduled handler runs both lifecycle maintenance reads", async () => {
+test("the real scheduled handler reads lifecycle work and pending cooldown resets", async () => {
   const requests = [];
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const request = new Request(input, init);
@@ -241,6 +241,7 @@ test("the real scheduled handler runs both lifecycle maintenance reads", async (
   expect(requests.map((request) => new URL(request.url).pathname)).toEqual([
     "/repos/PalomarRegistry/PalomarSubmissionState/contents/index/inflight.json",
     "/repos/PalomarRegistry/PalomarSubmissionState/contents/pending",
+    "/repos/PalomarRegistry/PalomarSubmissionState/contents/index/rate-resets.json",
   ]);
   for (const request of requests) {
     expect(request.method).toBe("GET");

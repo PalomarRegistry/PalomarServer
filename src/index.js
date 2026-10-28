@@ -41,8 +41,13 @@ import {
   RateContractError,
   rateDecision,
   rateRecord,
-  resetRateRecord,
 } from "./admission-contract.js";
+import {
+  RATE_RESET_INDEX_PATH,
+  ratePath,
+  rateResetQueue,
+  settleRateReset,
+} from "./rate-reset.js";
 import { sourcePreflight } from "./source-preflight.js";
 import { maybeEscalate, publicFailure } from "./resource-escalation.js";
 import { MAX_PREFLIGHT_REPAIR_BYTES, validateIntake } from "./intake-contract.js";
@@ -435,15 +440,6 @@ function isDurableContractError(error) {
 
 function reportDurableContract(error) {
   console.error(error instanceof RateContractError ? "rate-contract" : "state-contract", error.message);
-}
-
-async function readRateState(env, path) {
-  try {
-    return await readState(env, path);
-  } catch (error) {
-    if (!(error instanceof SyntaxError)) throw error;
-    throw new RateContractError(`${path} must contain valid JSON`);
-  }
 }
 
 function atRatePath(path, operation) {
@@ -974,17 +970,7 @@ async function beginRecovery(request, env) {
   });
 }
 
-// Filed under a peppered digest rather than a login, so reading the state
-// repository does not enumerate everyone who has ever submitted — the same
-// reason `index/tokens/` is shaped that way. The body names nobody either: a
-// digest for a name is worth nothing if the file it names says the name, and
-// the rate contract is an allowlist so that it cannot start saying it again.
-// An operator who needs the file for a known person derives this path with
-// `tools/rate-path.js`, which wants the pepper the deployment already has.
-async function ratePath(env, principalId) {
-  return `index/rate/${await digest(`${pepper(env)}:${principalId}`)}.json`;
-}
-
+// Like the rate index, this locator uses a peppered digest rather than a login.
 async function principalPath(env, principalId) {
   return `index/principals/${await digest(`${pepper(env)}:${principalId}`)}.json`;
 }
@@ -1418,7 +1404,7 @@ async function admitSubmission(
     ...(earlyRepair ? [repairPath, REPAIR_INDEX_PATH] : []),
     ...(principalIndexPath ? [principalIndexPath] : []),
     ...(replacedRecordPath ? [replacedRecordPath] : []),
-    ...(rate ? [rate] : []),
+    ...(rate ? [rate, RATE_RESET_INDEX_PATH] : []),
   ];
   const baseRecord = {
     ...newRecord({
@@ -1629,6 +1615,11 @@ async function admitSubmission(
         });
       }
       if (rate) {
+        const resets = rateResetQueue(files[RATE_RESET_INDEX_PATH].value);
+        changes.push({
+          path: RATE_RESET_INDEX_PATH,
+          value: { schema_version: 1, open: [...resets, id] },
+        });
         changes.push({
           path: rate,
           value: nextRateRecord({
@@ -2357,54 +2348,19 @@ async function refresh(env, entry) {
   const record = entry.record;
   const escalated = await maybeEscalate(env, record);
   if (escalated) return escalated;
-  // A completed registration puts a submitter's interval back to a minute. A
-  // small number of first-pass metadata corrections gets the same concession,
-  // but repeated failed preflights retain their accumulated backoff.
-  // This is where the server sees it: the status page and an agent both poll
-  // until the status settles, and `registered` is settled, so the good news and
-  // the reset arrive on the same request. Somebody who closes the tab between
-  // consenting and that poll waits longer once; opening the link again fixes it.
-  // The alternative, letting the reviewer reset it, would need TOKEN_PEPPER in
-  // reviewer CI, and that pepper exists so a leaked state repository yields no
-  // live links.
+  // Polling is a fast path; the durable admission queue also applies these
+  // resets on the maintenance schedule when no browser remains open.
   if (["registered", "changes-required"].includes(record.status)
       && !record.rate_reset_at && record.push_proof?.principal?.id) {
-    const path = await ratePath(env, record.push_proof.principal.id);
-    const resetAt = recordedAt();
-    // Absence already admits the next start at the floor. Do not synthesize a
-    // partial document without the historical fields required of every
-    // present rate record; a malformed present document fails closed.
-    let current;
-    let projected = null;
     try {
-      current = await readRateState(env, path);
-      const correctionConcession = record.status === "changes-required"
-        && current.value?.starts <= 2;
-      if (current.sha !== null && (record.status === "registered" || correctionConcession)) {
-        projected = atRatePath(path, () => resetRateRecord(current.value, resetAt));
-      }
+      return (await settleRateReset(env, record.id)).record;
     } catch (error) {
-      if (!(error instanceof RateContractError)) throw error;
-      // Resetting an auxiliary backoff is conservative: leaving it unapplied
-      // cannot admit another start early. Keep the registered result visible
-      // and leave the marker unset so repairing the file makes a later poll
-      // retry the reset.
+      // A reset is auxiliary to displaying an already settled result. Keep the
+      // receipt unset on failure so the schedule or a later poll retries it.
+      if (!isDurableContractError(error) && !(error instanceof StateUpdateOutcomeError)) throw error;
       reportDurableContract(error);
       return record;
     }
-    if (projected !== null) {
-      await writeState(
-        env,
-        path,
-        projected,
-        `Reset after ${record.status}`,
-        current.sha,
-      ).catch(() => {});
-    }
-    const reset = { ...record, rate_reset_at: resetAt };
-    await writeState(env, statePath(record.id, "state.json"), reset,
-                     `Reset the interval for ${record.id}`, entry.sha).catch(() => {});
-    return reset;
   }
   const phase = activeSubmissionPhase(record);
   if (!phase) return record;
