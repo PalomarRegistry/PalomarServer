@@ -19,6 +19,7 @@ import {
 import { authorizationRelationshipLabel } from "./intake-contract.js";
 import { recordedAt, statePath } from "./submission.js";
 import { escalationDecision, maybeEscalate } from "./resource-escalation.js";
+import { reconcileRateResets } from "./rate-reset.js";
 import {
   INFLIGHT_INDEX_PATH,
   inflightOpen,
@@ -488,15 +489,17 @@ export async function sweepPending(env, now = Date.now()) {
 }
 
 /**
- * Run both independent maintenance tasks and surface every failed task.
+ * Run independent maintenance tasks and surface every failed task.
  *
  * One failure must not prevent the other task from making safe progress. The
- * aggregate throw happens only after both attempts, so the platform records a
+ * aggregate throw happens only after all attempts, so the platform records a
  * failed cron invocation without abandoning cleanup that still works.
  */
 export async function scheduledMaintenance(env) {
   const failures = [];
-  for (const [what, task] of [["reconcile", reconcile], ["sweepPending", sweepPending]]) {
+  for (const [what, task] of [
+    ["reconcile", reconcile], ["sweepPending", sweepPending], ["rateResets", reconcileRateResets],
+  ]) {
     try {
       await task(env);
     } catch (error) {
