@@ -516,8 +516,11 @@ A rejected write cannot mark an unapplied reset complete. Concurrent status
 polls and admissions retry against a fresh snapshot; a receipt already committed
 by another request prevents applying that same reset to a later submission.
 
-For submissions admitted before this queue existed, seed it from a fresh State
-checkout after deploying the server change:
+Install State validation support for `index/rate-resets.json` before deploying
+this server change. An initial queue may be installed with that migration; the
+older server ignores it. For submissions admitted before this queue existed,
+seed it from a fresh State checkout, and repeat after deployment to catch any
+admissions during the deployment gap:
 
 ```bash
 node tools/rebuild-rate-reset-queue.js ../PalomarSubmissionState
