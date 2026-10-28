@@ -20,7 +20,7 @@ function stateApi(t, files) {
   const commits = new Map([[head, { files: structuredClone(files) }]]);
   const trees = new Map();
   const state = {
-    rejectReset: false, race: null, applied: [],
+    rejectReset: false, race: null, applied: [], malformed: new Set(),
     files: () => commits.get(head).files,
     commit(changes) {
       const next = { ...structuredClone(state.files()), ...changes };
@@ -46,7 +46,7 @@ function stateApi(t, files) {
       const source = commits.get(target.searchParams.get("ref") ?? head).files;
       if (!Object.hasOwn(source, path)) return new Response("", { status: 404 });
       return Response.json({
-        sha: `blob-${path}`, content: Buffer.from(JSON.stringify(source[path])).toString("base64"),
+        sha: `blob-${path}`, content: Buffer.from(state.malformed.has(path) ? "{" : JSON.stringify(source[path])).toString("base64"),
       });
     }
     if (route === "git/trees" && method === "POST") {
@@ -115,7 +115,7 @@ test("a failed reset leaves no receipt, stays queued, and succeeds on a later pa
   t.mock.method(console, "error", () => {});
   const { api, rateFile } = await fixture(t);
   api.rejectReset = true;
-  await assert.rejects(reconcileRateResets(ENV), /rate resets failed/);
+  await assert.rejects(reconcileRateResets(ENV), /GitHub 503/);
   assert.equal(api.files()[rateFile].interval_seconds, 122880);
   assert.equal(api.files()[RECORD_PATH].rate_reset_at, undefined);
   assert.deepEqual(api.files()[RATE_RESET_INDEX_PATH].open, [ID]);
@@ -239,4 +239,66 @@ test("only an absent queue defaults to empty; corrupt queues fail closed", () =>
     { schema_version: 1, open: ["bad"] }, { schema_version: 1, open: [], login: "someone" }]) {
     assert.throws(() => rateResetQueue(value), /unique submission ids/);
   }
+});
+
+test("a full backfill batch commits once and deduplicates each principal's rate file", async t => {
+  const { api, rateFile } = await fixture(t);
+  const ids = Array.from({ length: 25 }, (_, i) => String(i).padStart(12, "0"));
+  const otherRate = await ratePath(ENV, 42);
+  api.commit({
+    [RATE_RESET_INDEX_PATH]: { schema_version: 1, open: ids },
+    [otherRate]: api.files()[rateFile],
+    ...Object.fromEntries(ids.map((id, i) => [`submissions/${id}/state.json`, {
+      id, status: "registered", push_proof: { principal: { id: i % 2 ? 4242 : 42 } },
+    }])),
+  });
+  await reconcileRateResets(ENV);
+  assert.equal(api.applied.length, 1, "backfill emitted a write burst instead of one commit");
+  assert.equal(api.applied[0].filter(path => path.startsWith("index/rate/")).length, 2);
+  for (const id of ids) assert.ok(api.files()[`submissions/${id}/state.json`].rate_reset_at);
+  assert.deepEqual(api.files()[RATE_RESET_INDEX_PATH].open, []);
+});
+
+test("returning principal catches up its own registration beyond the maintenance batch", async t => {
+  const { api, rateFile } = await fixture(t);
+  const others = Array.from({ length: 50 }, (_, i) => String(i).padStart(12, "0"));
+  const key = rateFile.replace("index/rate/", "index/principals/");
+  api.commit({
+    [RATE_RESET_INDEX_PATH]: { schema_version: 1, open: [...others, ID] },
+    [key]: { schema_version: 1, submissions: [ID] },
+  });
+  await reconcileRateResets(ENV, { principalId: 4242 });
+  assert.equal(api.files()[rateFile].interval_seconds, 60);
+  assert.deepEqual(api.files()[RATE_RESET_INDEX_PATH].open, others);
+  assert.equal(api.applied.length, 1);
+});
+
+test("a delayed historical registration cannot erase cooldowns from later starts", async t => {
+  const { api, rateFile } = await fixture(t, { record: {
+    events: [{ at: "2026-08-07T00:00:00Z", status: "registered" }],
+  } });
+  await reconcileRateResets(ENV);
+  assert.equal(api.files()[rateFile].interval_seconds, 122880);
+  assert.ok(api.files()[RECORD_PATH].rate_reset_at);
+  assert.deepEqual(api.files()[RATE_RESET_INDEX_PATH].open, []);
+});
+
+test("a corrupt JSON rate file is isolated while unrelated registrations settle", async t => {
+  t.mock.method(console, "error", () => {});
+  const { api, rateFile } = await fixture(t);
+  const other = "b2c3d4e5f6a1";
+  const otherRate = await ratePath(ENV, 42);
+  api.commit({
+    [RATE_RESET_INDEX_PATH]: { schema_version: 1, open: [ID, other] },
+    [`submissions/${other}/state.json`]: {
+      id: other, status: "registered", push_proof: { principal: { id: 42 } },
+    },
+    [otherRate]: api.files()[rateFile],
+  });
+  api.malformed.add(rateFile);
+  await assert.rejects(reconcileRateResets(ENV), /rate resets failed/);
+  assert.equal(api.files()[RECORD_PATH].rate_reset_at, undefined);
+  assert.equal(api.files()[otherRate].interval_seconds, 60);
+  assert.deepEqual(api.files()[RATE_RESET_INDEX_PATH].open, [ID]);
+  assert.equal(api.applied.length, 1);
 });

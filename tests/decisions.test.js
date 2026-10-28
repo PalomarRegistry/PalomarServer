@@ -4412,6 +4412,63 @@ test("a registration puts the interval back to a minute", async () => {
   );
 });
 
+test("a returning submitter gets a pending registration reset before cooldown admission", async () => {
+  const stub = stubAgent();
+  const begun = await agentSubmit();
+  stub.state.tag = { exists: true, sha: "1".repeat(40) };
+  stub.state.gist = { exists: true, content: begun.challenge };
+  const first = await (await agentVerify({
+    pending_secret: begun.pending_secret, gist_id: "abc123",
+  })).json();
+  const ratePathName = await agentRatePath();
+  stub.store.set(ratePathName, {
+    ...stub.store.get(ratePathName), interval_seconds: 122880,
+    next_allowed_at: new Date(Date.now() + 122880000).toISOString().replace(/\.\d+Z$/, "Z"),
+  });
+  const path = statePath(first.submission_id, "state.json");
+  const record = stub.store.get(path);
+  stub.store.set(path, { ...record, status: "registered", events: [
+    ...record.events, { at: new Date().toISOString().replace(/\.\d+Z$/, "Z"), status: "registered" },
+  ] });
+  stub.store.set("index/inflight.json", { open: [] });
+  const next = await agentSubmit();
+  stub.state.gist.content = next.challenge;
+  const admitted = await agentVerify({ pending_secret: next.pending_secret, gist_id: "abc123" });
+  assert.equal(admitted.status, 200);
+  const second = await admitted.json();
+  assert.ok(stub.store.get(path).rate_reset_at);
+  assert.equal(stub.store.get(ratePathName).interval_seconds, 120);
+  assert.deepEqual(stub.store.get("index/rate-resets.json").open, [second.submission_id]);
+});
+
+test("auxiliary reset write failures do not hide an already registered result", async () => {
+  for (const status of [403, 422, 500]) {
+    const stub = stubAgent();
+    const begun = await agentSubmit();
+    stub.state.tag = { exists: true, sha: "1".repeat(40) };
+    stub.state.gist = { exists: true, content: begun.challenge };
+    const verified = await (await agentVerify({
+      pending_secret: begun.pending_secret, gist_id: "abc123",
+    })).json();
+    const path = statePath(verified.submission_id, "state.json");
+    stub.store.set(path, { ...stub.store.get(path), status: "registered" });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (url, init = {}) => {
+      if (new URL(url).pathname.endsWith("/git/trees") && init.method === "POST") {
+        return new Response("reset unavailable", { status });
+      }
+      return originalFetch(url, init);
+    };
+    const response = await worker.fetch(new Request(
+      "https://submit.palomar-registry.org/api/submission",
+      { headers: { authorization: `Bearer ${verified.access_token}` } },
+    ), ENV);
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).status, "registered");
+    assert.equal(stub.store.get(path).rate_reset_at, undefined);
+  }
+});
+
 test("a verification error preserves the accumulated backoff and cooldown", async () => {
   const stub = stubAgent();
   const begun = await agentSubmit();

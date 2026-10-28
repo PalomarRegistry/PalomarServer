@@ -505,16 +505,24 @@ closed.
 
 The existing ten-minute maintenance schedule checks up to 25 queued submissions
 per pass and rotates unfinished or broken records behind the remaining work.
+Each pass uses one commit for all receipts, deduplicated principal rate changes,
+and queue cleanup, avoiding bursts of content-creating GitHub requests.
 A completed registration restores the interval to sixty seconds; the existing
 limited preparation-failure concession uses the same path. Other closed
 submissions leave the cooldown unchanged and leave the queue. Failures remain
-queued and are reported without preventing unrelated resets. A status poll
-uses this same reset path as a fast path, but keeping a tab open is unnecessary.
+queued and are reported without preventing unrelated resets. Transport or
+authentication failures abort the batch without continuing to write. A status
+poll uses this same reset path as a fast path, but keeping a tab open is
+unnecessary. Before refusing admission for a cooldown, the server also checks
+the authenticated principal's newest 25 queued outcomes directly. Returning
+submitters therefore do not need to wait for a full maintenance-queue rotation.
 
 The rate change and the submission's `rate_reset_at` receipt commit atomically.
 A rejected write cannot mark an unapplied reset complete. Concurrent status
 polls and admissions retry against a fresh snapshot; a receipt already committed
 by another request prevents applying that same reset to a later submission.
+A delayed historical registration whose completion predates the current rate
+record's last start is acknowledged without erasing that newer cooldown.
 
 Install State validation support for `index/rate-resets.json` before deploying
 this server change. An initial queue may be installed with that migration; the
@@ -530,10 +538,16 @@ node tools/rebuild-rate-reset-queue.js --write ../PalomarSubmissionState
 The default is a dry run. The write updates only the queue, preserves existing
 entries, and adds unfinished submissions and unacknowledged registration or
 preparation resets with numeric principals. It neither needs the pepper nor
-changes cooldowns itself. Review and push the queue; scheduled maintenance
-then catches up in bounded batches. Do not replace a live queue from a stale
+changes cooldowns itself. Run `python3 tools/validate_state.py .` in the State
+checkout, then review and push the queue; scheduled maintenance catches up in
+bounded batches. Do not replace a live queue from a stale
 checkout: commit and push without force, and rebuild on a fresh checkout if
 the push loses a race.
+
+A persistently malformed record remains queued and is reported as a maintenance
+failure. Repair its document, or remove its id from `index/rate-resets.json`
+after reviewing why its reset cannot apply. Validate the full State checkout
+before committing that queue edit; other entries must remain intact.
 
 ## Operating a submission
 

@@ -47,6 +47,7 @@ import {
   ratePath,
   rateResetQueue,
   settleRateReset,
+  reconcileRateResets,
 } from "./rate-reset.js";
 import { sourcePreflight } from "./source-preflight.js";
 import { maybeEscalate, publicFailure } from "./resource-escalation.js";
@@ -1371,11 +1372,6 @@ async function admitSubmission(
       detail: [earlyRepair.problem, "Return to the submission form and check the current file."],
     };
   }
-  const id = newSubmissionId();
-  const token = newAccessToken();
-  const createdAtMs = Date.now();
-  const createdAt = new Date(createdAtMs).toISOString().replace(/\.\d+Z$/, "Z");
-  const tokenSha256 = await tokenDigest(env, token);
   const testSubmission = pending.authorization_relationship === "technical-test";
   // New proofs carry the explicit marker. Accept the existing dedicated proof
   // method too, so a choice page minted by the previous deployment does not
@@ -1388,6 +1384,23 @@ async function admitSubmission(
   const rate = proof?.principal?.id && !technicalMaintainer
     ? await ratePath(env, proof.principal.id)
     : null;
+  if (rate) {
+    try {
+      const current = await readState(env, rate);
+      if (rateDecision(current.value).refused) {
+        await reconcileRateResets(env, { principalId: proof.principal.id });
+      }
+    } catch (error) {
+      // The admission transaction still validates and enforces the current
+      // rate file. An auxiliary catch-up failure grants no admission itself.
+      console.error("admission-rate-reset", String(error?.stack ?? error));
+    }
+  }
+  const id = newSubmissionId();
+  const token = newAccessToken();
+  const createdAtMs = Date.now();
+  const createdAt = new Date(createdAtMs).toISOString().replace(/\.\d+Z$/, "Z");
+  const tokenSha256 = await tokenDigest(env, token);
   const principalIndexPath = proof?.principal?.id
     ? await principalPath(env, proof.principal.id)
     : null;
@@ -2357,8 +2370,7 @@ async function refresh(env, entry) {
     } catch (error) {
       // A reset is auxiliary to displaying an already settled result. Keep the
       // receipt unset on failure so the schedule or a later poll retries it.
-      if (!isDurableContractError(error) && !(error instanceof StateUpdateOutcomeError)) throw error;
-      reportDurableContract(error);
+      console.error("rate-reset", String(error?.stack ?? error));
       return record;
     }
   }

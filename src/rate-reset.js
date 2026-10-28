@@ -2,7 +2,7 @@
 import { CLOSED } from "../public/statuses.js";
 import { RateContractError, resetRateRecord, rateRecord } from "./admission-contract.js";
 import { readState, transactState } from "./github.js";
-import { StateContractError } from "./state-contract.js";
+import { principalSubmissions, StateContractError } from "./state-contract.js";
 import { digest, pepper, recordedAt, statePath } from "./submission.js";
 
 export const RATE_RESET_INDEX_PATH = "index/rate-resets.json";
@@ -24,93 +24,149 @@ export function rateResetQueue(value) {
   return value.open;
 }
 
-/**
- * Apply the reset and its receipt in one commit. A failed/ambiguous write never
- * leaves a receipt claiming a reset that did not land; concurrent admissions
- * and status polls re-evaluate the same fresh snapshot on ref contention.
- */
-export async function settleRateReset(env, id) {
-  const path = statePath(id, "state.json");
-  const entry = await readState(env, path);
-  if (!entry.value || entry.value.id !== id) {
-    throw new StateContractError(`${path} is missing or has a different id`);
-  }
-  if (!CLOSED.has(entry.value.status)) return { settled: false, record: entry.value };
-  if (!["registered", "changes-required"].includes(entry.value.status) || entry.value.rate_reset_at) {
-    return { settled: true, record: entry.value };
-  }
-  const principalId = entry.value.push_proof?.principal?.id;
-  if (!Number.isSafeInteger(principalId) || principalId <= 0) {
-    throw new StateContractError(`${path} has no numeric principal for its rate reset`);
-  }
-  const rate = await ratePath(env, principalId);
-  try {
-    return await transactState(env, [path, rate], files => {
-      const record = files[path].value;
-      if (!record || record.id !== id || record.push_proof?.principal?.id !== principalId) {
-        throw new StateContractError(`${path} changed its rate-reset identity`);
-      }
-      if (!["registered", "changes-required"].includes(record.status) || record.rate_reset_at) {
-        return { changes: [], result: { settled: CLOSED.has(record.status), record } };
-      }
-      const current = files[rate].value;
-      if (current !== null) rateRecord(current);
-      const at = recordedAt();
-      const reset = { ...record, rate_reset_at: at };
-      const concession = record.status === "registered" || current?.starts <= 2;
-      return {
-        changes: [
-          ...(current !== null && concession
-            ? [{ path: rate, value: resetRateRecord(current, at) }] : []),
-          { path, value: reset },
-        ],
-        message: `Settle admission interval after ${record.status} (${id})`,
-        result: { settled: true, record: reset },
-      };
-    });
-  } catch (error) {
-    if (error instanceof SyntaxError || error instanceof RateContractError) {
-      throw new RateContractError(`${rate}: ${error.message}`);
-    }
-    throw error;
-  }
+function resettable(record) {
+  return ["registered", "changes-required"].includes(record.status);
 }
 
-/** Rotate a bounded batch so active or broken records cannot starve the rest. */
-export async function reconcileRateResets(env) {
-  const queue = rateResetQueue((await readState(env, RATE_RESET_INDEX_PATH)).value);
-  const batch = queue.slice(0, BATCH_SIZE);
-  if (!batch.length) return;
-  const settled = new Set();
+function checkRecord(record, id) {
+  if (!record || record.id !== id) {
+    throw new StateContractError(`${statePath(id, "state.json")} is missing or has a different id`);
+  }
+  if (record.events !== undefined && !Array.isArray(record.events)) {
+    throw new StateContractError(`${id} has malformed status events`);
+  }
+  return record;
+}
+
+/**
+ * One batch, one commit: receipts, deduplicated rate changes and queue cleanup
+ * share a snapshot. Corrupt individual files remain queued; transport failures
+ * abort the batch rather than continuing to write against a rate-limited API.
+ */
+async function settleBatch(env, ids, { rotate = false, principalId = null } = {}) {
+  const hints = new Map();
   const failures = [];
-  for (const id of batch) {
+  const fail = (id, error) => {
+    console.error("rate-reset", id, String(error?.stack ?? error));
+    failures.push(`${id}: ${error}`);
+  };
+  for (const id of ids) {
     try {
-      if ((await settleRateReset(env, id)).settled) settled.add(id);
+      const record = checkRecord((await readState(env, statePath(id, "state.json"))).value, id);
+      const principal = record.push_proof?.principal?.id;
+      hints.set(id, {
+        principal,
+        rate: resettable(record) && !record.rate_reset_at && Number.isSafeInteger(principal) && principal > 0
+          ? await ratePath(env, principal) : null,
+      });
     } catch (error) {
-      console.error("rate-reset", id, String(error?.stack ?? error));
-      failures.push(`${id}: ${error}`);
+      if (!(error instanceof SyntaxError || error instanceof StateContractError)) throw error;
+      fail(id, error);
     }
   }
-  await transactState(env, [
-    RATE_RESET_INDEX_PATH, ...[...settled].map(id => statePath(id, "state.json")),
-  ], files => {
-    const current = rateResetQueue(files[RATE_RESET_INDEX_PATH].value);
-    const visited = new Set(batch);
-    // Operator recovery can reopen and requeue the same id after the first
-    // read. Do not erase that renewed obligation with a stale cleanup result.
-    const removable = new Set([...settled].filter(id =>
-      CLOSED.has(files[statePath(id, "state.json")].value?.status),
-    ));
-    const next = [
-      ...current.filter(id => !visited.has(id)),
-      ...current.filter(id => visited.has(id) && !removable.has(id)),
-    ];
-    return {
-      changes: JSON.stringify(current) === JSON.stringify(next) ? [] : [{
+  const paths = [...new Set([
+    RATE_RESET_INDEX_PATH, ...[...hints].flatMap(([id, hint]) => [
+      statePath(id, "state.json"), ...(hint.rate ? [hint.rate] : []),
+    ]),
+  ])];
+  const result = await transactState(env, paths, files => {
+    const queueFile = files[RATE_RESET_INDEX_PATH];
+    if (queueFile.error) throw queueFile.error;
+    const queue = rateResetQueue(queueFile.value);
+    const changes = new Map();
+    const settled = new Set();
+    const records = new Map();
+    const errors = [];
+    const at = recordedAt();
+    for (const [id, hint] of hints) {
+      try {
+        const file = files[statePath(id, "state.json")];
+        if (file.error) throw file.error;
+        const record = checkRecord(file.value, id);
+        records.set(id, record);
+        const principal = record.push_proof?.principal?.id;
+        if (principalId !== null && principal !== principalId) {
+          throw new StateContractError(`${id} does not belong to the authenticated principal`);
+        }
+        if (!CLOSED.has(record.status)) continue;
+        if (resettable(record) && !record.rate_reset_at) {
+          if (!Number.isSafeInteger(principal) || principal <= 0) {
+            throw new StateContractError(`${id} has no numeric principal for its rate reset`);
+          }
+          // A record that became registered after the hint read waits for the
+          // next pass, since its rate file is not in this exact snapshot yet.
+          if (principal !== hint.principal) throw new StateContractError(`${id} changed its principal`);
+          if (!hint.rate) continue;
+          const rateFile = files[hint.rate];
+          if (rateFile.error) throw rateFile.error;
+          const current = rateFile.value;
+          if (current !== null) rateRecord(current);
+          const completedAt = record.events?.findLast(event => event?.status === record.status)?.at;
+          if (completedAt !== undefined &&
+              (typeof completedAt !== "string" || !Number.isFinite(Date.parse(completedAt)))) {
+            throw new StateContractError(`${id} has a malformed completion time`);
+          }
+          // A delayed historic registration must not erase the cooldown earned
+          // by starts made after it completed. A legacy record without an event
+          // retains the earlier reset behavior.
+          const laterStart = current !== null && completedAt &&
+            Date.parse(current.last_start_at) > Date.parse(completedAt);
+          const concession = record.status === "registered" || current?.starts <= 2;
+          if (current !== null && concession && !laterStart) {
+            changes.set(hint.rate, { path: hint.rate, value: resetRateRecord(current, at) });
+          }
+          const reset = { ...record, rate_reset_at: at };
+          const path = statePath(id, "state.json");
+          changes.set(path, { path, value: reset });
+          records.set(id, reset);
+        }
+        settled.add(id);
+      } catch (error) {
+        if (!(error instanceof SyntaxError || error instanceof StateContractError || error instanceof RateContractError)) throw error;
+        errors.push([id, error]);
+      }
+    }
+    const visited = new Set(ids);
+    const next = rotate ? [
+      ...queue.filter(id => !visited.has(id)),
+      ...queue.filter(id => visited.has(id) && !settled.has(id)),
+    ] : queue.filter(id => !settled.has(id));
+    if (JSON.stringify(queue) !== JSON.stringify(next)) {
+      changes.set(RATE_RESET_INDEX_PATH, {
         path: RATE_RESET_INDEX_PATH, value: { schema_version: 1, open: next },
-      }],
-      message: "Advance pending admission interval resets",
+      });
+    }
+    return {
+      changes: [...changes.values()],
+      message: "Settle pending admission interval resets",
+      result: { settled, records, errors },
     };
-  });
+  }, { tolerateMalformed: true });
+  for (const [id, error] of result.errors) fail(id, error);
   if (failures.length) throw new Error(`rate resets failed: ${failures.join("; ")}`);
+  return result;
+}
+
+/** Status polling is an optional fast path to the same atomic batch logic. */
+export async function settleRateReset(env, id) {
+  const result = await settleBatch(env, [id]);
+  return { settled: result.settled.has(id), record: result.records.get(id) };
+}
+
+/**
+ * Scheduled work rotates a bounded batch. A rate-limited returning submitter
+ * catches up their newest queued outcomes directly, independent of queue size.
+ */
+export async function reconcileRateResets(env, { principalId = null } = {}) {
+  const queue = rateResetQueue((await readState(env, RATE_RESET_INDEX_PATH)).value);
+  let candidates = queue;
+  if (principalId !== null) {
+    const path = `index/principals/${await digest(`${pepper(env)}:${principalId}`)}.json`;
+    const locator = await readState(env, path);
+    const own = locator.value === null ? [] : principalSubmissions(locator.value, path);
+    const pending = new Set(queue);
+    candidates = own.filter(id => pending.has(id)).reverse();
+  }
+  const batch = candidates.slice(0, BATCH_SIZE);
+  if (batch.length) await settleBatch(env, batch, { rotate: principalId === null, principalId });
 }

@@ -146,7 +146,7 @@ function decodeState(path, data) {
  * consumption, and every projected write either belong to one parent commit
  * or none of them do.
  */
-export async function readStateSnapshot(env, paths) {
+export async function readStateSnapshot(env, paths, { tolerateMalformed = false } = {}) {
   const unique = [...new Set(paths)];
   if (unique.length !== paths.length) throw new Error("State snapshot paths must be unique");
   const ref = await call(
@@ -172,7 +172,14 @@ export async function readStateSnapshot(env, paths) {
       env.GITHUB_TOKEN,
       `/repos/${env.STATE_REPO}/contents/${encodeURI(path)}?${query}`,
     );
-    files[path] = decodeState(path, data);
+    try {
+      files[path] = decodeState(path, data);
+    } catch (error) {
+      if (!tolerateMalformed || !(error instanceof SyntaxError)) throw error;
+      // Maintenance can isolate a corrupt document without treating it as
+      // absent. Transport/authentication failures still abort the whole read.
+      files[path] = { error };
+    }
   }));
   return { headSha, treeSha, files };
 }
@@ -301,9 +308,9 @@ export async function commitStateSnapshot(env, snapshot, changes, message) {
  * change set, commit message, and value to hand to the caller. Ref contention
  * retries from a fresh head; contract conflicts raised by `project` do not.
  */
-export async function transactState(env, paths, project) {
+export async function transactState(env, paths, project, options = {}) {
   for (let attempt = 0; attempt <= MAX_WRITE_ATTEMPTS; attempt += 1) {
-    const snapshot = await readStateSnapshot(env, paths);
+    const snapshot = await readStateSnapshot(env, paths, options);
     const projected = await project(snapshot.files);
     if (projected.changes.length === 0) return projected.result;
     if (await commitStateSnapshot(
