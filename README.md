@@ -513,8 +513,9 @@ submissions leave the cooldown unchanged and leave the queue. Failures remain
 queued and are reported without preventing unrelated resets. Transport or
 authentication failures abort the batch without continuing to write. A status
 poll uses this same reset path as a fast path, but keeping a tab open is
-unnecessary. Before refusing admission for a cooldown, the server also checks
-the authenticated principal's newest 25 queued outcomes directly. Returning
+unnecessary. Before enforcing an active cooldown or doubling an expired
+interval above the floor, the server checks the authenticated principal's newest
+25 queued outcomes directly. Returning
 submitters therefore do not need to wait for a full maintenance-queue rotation.
 
 The rate change and the submission's `rate_reset_at` receipt commit atomically.
