@@ -4412,7 +4412,8 @@ test("a registration puts the interval back to a minute", async () => {
   );
 });
 
-test("a returning submitter gets a pending registration reset before cooldown admission", async () => {
+test("a returning submitter gets a pending reset before active or expired cooldown admission", async () => {
+  for (const expired of [false, true]) {
   const stub = stubAgent();
   const begun = await agentSubmit();
   stub.state.tag = { exists: true, sha: "1".repeat(40) };
@@ -4423,7 +4424,8 @@ test("a returning submitter gets a pending registration reset before cooldown ad
   const ratePathName = await agentRatePath();
   stub.store.set(ratePathName, {
     ...stub.store.get(ratePathName), interval_seconds: 122880,
-    next_allowed_at: new Date(Date.now() + 122880000).toISOString().replace(/\.\d+Z$/, "Z"),
+    last_start_at: new Date(Date.now() - 2000).toISOString().replace(/\.\d+Z$/, "Z"),
+    next_allowed_at: new Date(Date.now() + (expired ? -1000 : 122880000)).toISOString().replace(/\.\d+Z$/, "Z"),
   });
   const path = statePath(first.submission_id, "state.json");
   const record = stub.store.get(path);
@@ -4439,6 +4441,7 @@ test("a returning submitter gets a pending registration reset before cooldown ad
   assert.ok(stub.store.get(path).rate_reset_at);
   assert.equal(stub.store.get(ratePathName).interval_seconds, 120);
   assert.deepEqual(stub.store.get("index/rate-resets.json").open, [second.submission_id]);
+  }
 });
 
 test("auxiliary reset write failures do not hide an already registered result", async () => {

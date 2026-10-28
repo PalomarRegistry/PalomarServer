@@ -1387,7 +1387,8 @@ async function admitSubmission(
   if (rate) {
     try {
       const current = await readState(env, rate);
-      if (rateDecision(current.value).refused) {
+      const decision = rateDecision(current.value);
+      if (decision.refused || decision.interval > 60) {
         await reconcileRateResets(env, { principalId: proof.principal.id });
       }
     } catch (error) {
