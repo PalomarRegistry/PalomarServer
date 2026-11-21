@@ -192,7 +192,17 @@ and never appear in the repository:
 | `OAUTH_CLIENT_SECRET` | its client secret | — |
 | `GITHUB_TOKEN` | reads and atomically advances submission State, asks the reviewer to run, and reads public repository metadata for the repository being submitted | `PalomarSubmissionState`, contents and actions, plus public reads |
 | `SUBMISSION_TOKEN` | starts and reads verification runs, and reads the submitter's public ref and gist while checking a proof | `PalomarSubmission`, actions, plus public reads |
+| `STATE_APP_ID`, `STATE_APP_PRIVATE_KEY` | the **Palomar State Writer** App, whose installation token replaces `GITHUB_TOKEN` | installed on `PalomarSubmissionState` only: Contents and Actions read and write, Metadata read |
+| `SUBMISSION_APP_ID`, `SUBMISSION_APP_PRIVATE_KEY` | the **Palomar Verification Dispatcher** App, whose installation token replaces `SUBMISSION_TOKEN` | installed on `PalomarSubmission` only: Actions read and write, Metadata read |
 | `TOKEN_PEPPER` | so a leaked state repository does not yield live links, and to authenticate short-lived GitHub identity cookies under a domain-separated HMAC key | — |
+
+Each GitHub role needs either its App's ID and key or its static token. The
+Apps are preferred: an installation has its own REST allowance, while a
+personal token spends its owner's, which everything else that person runs
+shares. Store each key as PKCS#8 (`openssl pkcs8 -topk8 -nocrypt -in key.pem`
+converts the file GitHub issues). The Worker mints an installation token when
+it needs one and reuses it until five minutes before it expires. GET reads
+send the last ETag, and GitHub does not count a 304 against the allowance.
 
 The checked-in Technical Maintainer ids are the source of truth. Adding or
 removing authority is an ordinary reviewed change to
@@ -204,7 +214,7 @@ The State token's existing repository `Contents: write` grant covers the Git
 tree, commit, and non-forced reference update used for atomic admission; it
 does not need repository-administration permission.
 
-Two GitHub tokens, not one, because a fine-grained token grants the same
+Two GitHub credentials (two Apps, or two tokens), not one, because a fine-grained token grants the same
 permissions to every repository it names. A single token covering both
 repositories would carry write access to the verification code itself, and this
 server is internet-facing and takes untrusted input: a leaked secret would

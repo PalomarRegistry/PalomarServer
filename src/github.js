@@ -35,16 +35,40 @@ export class GitHubError extends Error {
 /** GitHub may have moved State even though the ref-update response was lost. */
 export class StateUpdateOutcomeError extends Error {}
 
+// GitHub does not count a conditional request answered 304 against the rate
+// limit, so a read that finds nothing changed costs no allowance. The
+// scheduled pass rereads the same open records, pending intakes and runs every
+// ten minutes, and status polls reread a submission, so most reads are that.
+// GitHub still decides freshness: a cached body is only ever returned on its
+// own 304, so a compare-and-swap never works from a stale sha.
+const conditional = new Map();
+const MAX_CONDITIONAL = 512;
+
 async function call(token, path, init = {}) {
+  const read = !init.method || init.method === "GET";
+  const cached = read ? conditional.get(path) : undefined;
   const response = await fetch(`${API}${path}`, {
     ...init,
-    headers: { ...headers(token), ...(init.headers ?? {}) },
+    headers: {
+      ...headers(token),
+      ...(cached ? { "if-none-match": cached.etag } : {}),
+      ...(init.headers ?? {}),
+    },
   });
+  if (cached && response.status === 304) return structuredClone(cached.body);
+  if (read) conditional.delete(path);
   if (response.status === 404) return null;
   if (!response.ok) {
     throw new GitHubError(response.status, (await response.text()).slice(0, 300));
   }
-  return response.status === 204 ? true : response.json();
+  if (response.status === 204) return true;
+  const body = await response.json();
+  const etag = response.headers.get("etag");
+  if (read && etag) {
+    conditional.set(path, { etag, body: structuredClone(body) });
+    if (conditional.size > MAX_CONDITIONAL) conditional.delete(conditional.keys().next().value);
+  }
+  return body;
 }
 
 /**

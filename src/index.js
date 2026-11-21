@@ -50,6 +50,7 @@ import {
   reconcileRateResets,
 } from "./rate-reset.js";
 import { sourcePreflight } from "./source-preflight.js";
+import { withInstallationTokens } from "./github-app.js";
 import { maybeEscalate, publicFailure } from "./resource-escalation.js";
 import { MAX_PREFLIGHT_REPAIR_BYTES, validateIntake } from "./intake-contract.js";
 import {
@@ -313,10 +314,12 @@ function submitterRepair(repair) {
 // two of them fail silently rather than loudly if they are missing: TOKEN_PEPPER
 // would have degraded every peppered digest to an unsalted one, and the OAuth
 // pair would have sent submitters to GitHub to be refused there instead of here.
+// Each GitHub role is satisfied by its App's key or by a static token; see
+// `src/github-app.js`.
 const REQUIRED_SECRETS = [
   "TOKEN_PEPPER",
-  "GITHUB_TOKEN",
-  "SUBMISSION_TOKEN",
+  ["STATE_APP_PRIVATE_KEY", "GITHUB_TOKEN"],
+  ["SUBMISSION_APP_PRIVATE_KEY", "SUBMISSION_TOKEN"],
   "OAUTH_CLIENT_ID",
   "OAUTH_CLIENT_SECRET",
 ];
@@ -2485,14 +2488,16 @@ export default {
       console.log("maintenance", "scheduled writes paused");
       return;
     }
-    await scheduledMaintenance(env);
+    await scheduledMaintenance(await withInstallationTokens(env));
   },
 
   async fetch(request, env) {
     const url = new URL(request.url);
 
     try {
-      const missing = REQUIRED_SECRETS.filter((name) => !env[name]);
+      const missing = REQUIRED_SECRETS
+        .filter((names) => ![names].flat().some((name) => env[name]))
+        .map((names) => [names].flat().join(" or "));
 
       // Answered ahead of the refusal below, because a health endpoint that
       // stops answering when the configuration is wrong cannot report the one
@@ -2524,6 +2529,8 @@ export default {
           503,
         );
       }
+
+      env = await withInstallationTokens(env);
 
       // Account moves need a short, observable interval in which state cannot
       // change while the final copy and index rekey are made. Keep status and
