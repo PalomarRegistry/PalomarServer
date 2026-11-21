@@ -189,9 +189,9 @@ and never appear in the repository:
 | Secret | What it is | Reach |
 | --- | --- | --- |
 | `OAUTH_CLIENT_ID` | GitHub OAuth App client id, for public identity and submission push-access checks | — |
-| `OAUTH_CLIENT_SECRET` | its client secret | — |
+| `OAUTH_CLIENT_SECRET` | its client secret; with the id, also the credential for reading an agent's secret challenge gist, since the gists API refuses App installation tokens | public gists by id |
 | `GITHUB_TOKEN` | reads and atomically advances submission State, asks the reviewer to run, and reads public repository metadata for the repository being submitted | `PalomarSubmissionState`, contents and actions, plus public reads |
-| `SUBMISSION_TOKEN` | starts and reads verification runs, and reads the submitter's public ref and gist while checking a proof | `PalomarSubmission`, actions, plus public reads |
+| `SUBMISSION_TOKEN` | starts and reads verification runs, and reads the submitter's public ref while checking a proof | `PalomarSubmission`, actions, plus public reads |
 | `STATE_APP_ID`, `STATE_APP_PRIVATE_KEY` | the **Palomar State Writer** App, whose installation token replaces `GITHUB_TOKEN` | installed on `PalomarSubmissionState` only: Contents and Actions read and write, Metadata read |
 | `SUBMISSION_APP_ID`, `SUBMISSION_APP_PRIVATE_KEY` | the **Palomar Verification Dispatcher** App, whose installation token replaces `SUBMISSION_TOKEN` | installed on `PalomarSubmission` only: Actions read and write, Metadata read |
 | `TOKEN_PEPPER` | so a leaked state repository does not yield live links, and to authenticate short-lived GitHub identity cookies under a domain-separated HMAC key | — |

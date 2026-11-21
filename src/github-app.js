@@ -8,15 +8,17 @@
  * able to write the verification code in `PalomarSubmission`.
  *
  * Each App's key is stored as PKCS#8 (`openssl pkcs8 -topk8 -nocrypt` converts
- * the PKCS#1 file GitHub issues). A deployment without an App's key falls back
- * to the static token of the same role, which is what tests and local
- * development use.
+ * the PKCS#1 file GitHub issues). A deployment without an App's ID and key
+ * falls back to the static token of the same role, which is what tests and
+ * local development use.
  */
 
 const API = "https://api.github.com";
 
-// Only the token string and its expiry outlive a request.
+// Only the token string and its expiry outlive a request, plus the mint in
+// flight, so concurrent requests on a cold isolate share one.
 const tokens = new Map();
+const minting = new Map();
 
 function base64Url(bytes) {
   let binary = "";
@@ -57,23 +59,41 @@ async function appCall(jwt, path, init = {}) {
   return response.json();
 }
 
-/** A token for the App installed on `repository`, renewed five minutes early. */
-export async function installationToken(appId, privateKey, repository, now = Date.now()) {
-  const cached = tokens.get(repository);
-  if (cached && cached.expiresAt - now > 5 * 60_000) return cached.token;
+async function mint(appId, privateKey, repository, now) {
   const jwt = await appJwt(appId, privateKey, now);
   const { id } = await appCall(jwt, `/repos/${repository}/installation`);
   const minted = await appCall(jwt, `/app/installations/${id}/access_tokens`, { method: "POST" });
-  tokens.set(repository, { token: minted.token, expiresAt: Date.parse(minted.expires_at) });
-  return minted.token;
+  return { token: minted.token, expiresAt: Date.parse(minted.expires_at) };
+}
+
+/**
+ * A token for the App installed on `repository`, renewed five minutes early.
+ * A failed renewal keeps using the cached token until it actually expires.
+ */
+export async function installationToken(appId, privateKey, repository, now = Date.now()) {
+  const key = `${appId}:${repository}`;
+  const cached = tokens.get(key);
+  if (cached && cached.expiresAt - now > 5 * 60_000) return cached.token;
+  if (!minting.has(key)) {
+    minting.set(key, mint(appId, privateKey, repository, now)
+      .then((fresh) => tokens.set(key, fresh))
+      .finally(() => minting.delete(key)));
+  }
+  try {
+    await minting.get(key);
+  } catch (error) {
+    if (!cached || cached.expiresAt <= now) throw error;
+    console.error("github-app", repository, String(error));
+  }
+  return tokens.get(key).token;
 }
 
 /** `env` with each role's token minted from its App, where that App is configured. */
 export async function withInstallationTokens(env) {
   const [state, submission] = await Promise.all([
-    env.STATE_APP_PRIVATE_KEY &&
+    env.STATE_APP_ID && env.STATE_APP_PRIVATE_KEY &&
       installationToken(env.STATE_APP_ID, env.STATE_APP_PRIVATE_KEY, env.STATE_REPO),
-    env.SUBMISSION_APP_PRIVATE_KEY &&
+    env.SUBMISSION_APP_ID && env.SUBMISSION_APP_PRIVATE_KEY &&
       installationToken(env.SUBMISSION_APP_ID, env.SUBMISSION_APP_PRIVATE_KEY, env.SUBMISSION_REPO),
   ]);
   return {

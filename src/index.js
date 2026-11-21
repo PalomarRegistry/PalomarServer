@@ -314,14 +314,15 @@ function submitterRepair(repair) {
 // two of them fail silently rather than loudly if they are missing: TOKEN_PEPPER
 // would have degraded every peppered digest to an unsalted one, and the OAuth
 // pair would have sent submitters to GitHub to be refused there instead of here.
-// Each GitHub role is satisfied by its App's key or by a static token; see
+// Each entry lists alternatives, any one of which must be complete. A GitHub
+// role is satisfied by its App's ID and key or by a static token; see
 // `src/github-app.js`.
 const REQUIRED_SECRETS = [
-  "TOKEN_PEPPER",
-  ["STATE_APP_PRIVATE_KEY", "GITHUB_TOKEN"],
-  ["SUBMISSION_APP_PRIVATE_KEY", "SUBMISSION_TOKEN"],
-  "OAUTH_CLIENT_ID",
-  "OAUTH_CLIENT_SECRET",
+  [["TOKEN_PEPPER"]],
+  [["STATE_APP_ID", "STATE_APP_PRIVATE_KEY"], ["GITHUB_TOKEN"]],
+  [["SUBMISSION_APP_ID", "SUBMISSION_APP_PRIVATE_KEY"], ["SUBMISSION_TOKEN"]],
+  [["OAUTH_CLIENT_ID"]],
+  [["OAUTH_CLIENT_SECRET"]],
 ];
 
 const PAUSED_OPERATIONS = new Set([
@@ -1758,7 +1759,7 @@ async function verifySubmission(request, env) {
     ? { ok: true }
     : await challengeTag(env.SUBMISSION_TOKEN, repository, challenge, commit);
   let gist = tag.ok
-    ? await challengeGist(env.SUBMISSION_TOKEN, body.gist_id, challenge, {
+    ? await challengeGist(env, body.gist_id, challenge, {
         issuedAt: pending.value.created_at,
       })
     : { ok: false };
@@ -2496,8 +2497,8 @@ export default {
 
     try {
       const missing = REQUIRED_SECRETS
-        .filter((names) => ![names].flat().some((name) => env[name]))
-        .map((names) => [names].flat().join(" or "));
+        .filter((options) => !options.some((names) => names.every((name) => env[name])))
+        .map((options) => options.map((names) => names.join(" and ")).join(" or "));
 
       // Answered ahead of the refusal below, because a health endpoint that
       // stops answering when the configuration is wrong cannot report the one

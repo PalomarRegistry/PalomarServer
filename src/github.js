@@ -40,13 +40,17 @@ export class StateUpdateOutcomeError extends Error {}
 // scheduled pass rereads the same open records, pending intakes and runs every
 // ten minutes, and status polls reread a submission, so most reads are that.
 // GitHub still decides freshness: a cached body is only ever returned on its
-// own 304, so a compare-and-swap never works from a stale sha.
+// own 304, so a compare-and-swap never works from a stale sha. Keyed by
+// credential as well as path, because what a read returns can depend on who
+// asks, and limited to small bodies so a run list cannot fill the isolate.
 const conditional = new Map();
-const MAX_CONDITIONAL = 512;
+const MAX_CONDITIONAL = 256;
+const MAX_CONDITIONAL_BYTES = 64 * 1024;
 
 async function call(token, path, init = {}) {
   const read = !init.method || init.method === "GET";
-  const cached = read ? conditional.get(path) : undefined;
+  const key = `${token}\0${path}`;
+  const cached = read ? conditional.get(key) : undefined;
   const response = await fetch(`${API}${path}`, {
     ...init,
     headers: {
@@ -55,20 +59,20 @@ async function call(token, path, init = {}) {
       ...(init.headers ?? {}),
     },
   });
-  if (cached && response.status === 304) return structuredClone(cached.body);
-  if (read) conditional.delete(path);
+  if (cached && response.status === 304) return JSON.parse(cached.text);
+  if (read) conditional.delete(key);
   if (response.status === 404) return null;
   if (!response.ok) {
     throw new GitHubError(response.status, (await response.text()).slice(0, 300));
   }
   if (response.status === 204) return true;
-  const body = await response.json();
+  const text = await response.text();
   const etag = response.headers.get("etag");
-  if (read && etag) {
-    conditional.set(path, { etag, body: structuredClone(body) });
+  if (read && etag && text.length <= MAX_CONDITIONAL_BYTES) {
+    conditional.set(key, { etag, text });
     if (conditional.size > MAX_CONDITIONAL) conditional.delete(conditional.keys().next().value);
   }
-  return body;
+  return JSON.parse(text);
 }
 
 /**
@@ -670,11 +674,23 @@ export async function challengeTag(token, name, challenge, commit) {
  * sets `owner`, and answers immediately, which is why this and not the events
  * feed: that is documented at anything up to six hours.
  */
-export async function challengeGist(token, id, challenge, { issuedAt = null } = {}) {
+export async function challengeGist(env, id, challenge, { issuedAt = null } = {}) {
   if (!/^[0-9a-f]{1,64}$/i.test(String(id ?? ""))) {
     return { ok: false, reason: "that is not a gist id" };
   }
-  const gist = await call(token, `/gists/${id}`);
+  // The gists API refuses App installation tokens. A secret gist is readable
+  // by anyone holding its id, so read it as the OAuth App, whose client
+  // credentials carry an allowance of their own for public reads.
+  const response = await fetch(`${API}/gists/${id}`, {
+    headers: {
+      ...headers(""),
+      authorization: `Basic ${btoa(`${env.OAUTH_CLIENT_ID}:${env.OAUTH_CLIENT_SECRET}`)}`,
+    },
+  });
+  if (!response.ok && response.status !== 404) {
+    throw new GitHubError(response.status, (await response.text()).slice(0, 300));
+  }
+  const gist = response.ok ? await response.json() : null;
   if (!gist) return { ok: false, reason: "no such gist" };
   const files = Object.values(gist.files ?? {});
   if (!files.some((file) => String(file?.content ?? "").trim() === challenge)) {

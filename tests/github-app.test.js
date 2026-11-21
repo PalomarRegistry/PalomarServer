@@ -79,3 +79,15 @@ test("a State reread GitHub answers 304 returns the cached document", async () =
   });
   assert.deepEqual(seen, [null, '"v1"']);
 });
+
+test("an App key without its App ID does not count as configured", async () => {
+  const { default: worker } = await import("../src/index.js");
+  const env = {
+    TOKEN_PEPPER: "p", OAUTH_CLIENT_ID: "c", OAUTH_CLIENT_SECRET: "s", SUBMISSION_TOKEN: "d",
+    STATE_APP_PRIVATE_KEY: "key", INTAKE_LIMITER: { limit: async () => ({ success: true }) },
+  };
+  const response = await worker.fetch(new Request("https://submit.example/healthz"), env);
+  assert.equal(response.status, 503);
+  const configured = await worker.fetch(new Request("https://submit.example/healthz"), { ...env, STATE_APP_ID: "11" });
+  assert.equal(configured.status, 200);
+});
