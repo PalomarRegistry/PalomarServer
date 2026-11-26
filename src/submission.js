@@ -164,18 +164,30 @@ export function withdrawnRecord(record, { at, note }) {
 export function newRecord({
   id, repositoryName, commit, owner, submitter, existingId, context, authorization,
   requestedPaths = {}, testSubmission = false, registryCorrection = null,
-  confidentialRunRepository = null,
+  confidential = null,
 }) {
   return {
     schema_version: 1,
     id,
     // Present only on a confidential record, so a public record keeps exactly
     // the shape it always had. Its run repository is fixed at admission: it
-    // is where the first run goes, and every later lookup checks it.
-    ...(confidentialRunRepository
+    // is where the first run goes, and every later lookup checks it. The
+    // fields are those of contract v2 section 3.9 that admission knows; the
+    // lifecycle actor adds its phase and version later.
+    ...(confidential
       ? {
           visibility: "confidential",
-          confidential: { run_repository: confidentialRunRepository },
+          confidential: {
+            schema: 2,
+            run_repository: confidential.runRepository,
+            source: {
+              route: confidential.route ?? "public",
+              repository_id: confidential.repositoryId ?? null,
+              owner_id: confidential.ownerId ?? null,
+              installation_id: confidential.installationId ?? null,
+            },
+            owner_principal_id: confidential.ownerPrincipalId ?? null,
+          },
         }
       : {}),
     status: "verifying",

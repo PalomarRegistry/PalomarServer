@@ -187,47 +187,14 @@ back to your user: `/submissions` (the submission form's **Find my
 submissions** action) lets them authenticate with GitHub and receive a fresh
 link while the submission is still in progress.
 
-## Confidential submissions
+## Confidential submissions are not open to agents yet
 
-A submission can be confidential instead: it is verified and reviewed
-privately, and nothing about it becomes public until your user releases it.
-Choose this at intake, because a submission that starts in public cannot
-become confidential later. Add one field to step 1:
-
-    POST /api/submit
-    {..., "visibility": "confidential"}
-
-Absent means `"public"`. A confidential submission must be a new result: it is
-refused together with `existing_id`, and a Registry correction cannot be
-confidential. For now the repository must be public; the submission is
-confidential, not the repository.
-
-What changes:
-
-- Step 1 answers nothing about the source: no `source_preflight`, because the
-  caller has not yet proved who they are. Run the reusable workflow yourself
-  first (below) so that problems surface before you submit.
-- Verification runs in a private Palomar repository rather than the public
-  `PalomarSubmission` run list, and the State commit that records the intake
-  names no repository.
-- Use the neutral tag `refs/tags/c-CHALLENGE` in step 2 rather than
-  `palomar-verify-CHALLENGE`. A tag's creation and deletion stay in a public
-  repository's event feed, and the neutral name does not say Palomar. The
-  `instructions` in the step 1 response already carry the right name, and step
-  5 must delete that same tag.
-- `GET /api/submission` returns `"visibility": "confidential"` and a `run` with
-  `"visibility": "private"` and no URL, because the run page opens only for
-  Palomar's members. When the run has finished,
-  `GET /api/submission/diagnostics` returns its jobs, their step names and
-  conclusions, and its failure annotations, bounded, for the token holder's own
-  run only.
-- For a complete log during preflight, run the reusable workflow in a private
-  repository of your own; its logs then stay private too.
-
-Confidential means not made public, not unseen. GitHub, Namespace, OpenAI and
-Cloudflare process the source and metadata exactly as for a public submission,
-and Palomar's Technical Maintainers can read the private record. Say so to your
-user before choosing this mode. The same admission limits and cooldowns apply.
+Palomar is building a confidential mode, in which a submission is verified and
+reviewed privately and nothing about it becomes public until its author
+releases it. For now it admits only Technical Maintainer test submissions made
+through the browser. `POST /api/submit` with `"visibility": "confidential"` is
+refused, and so is any value other than `"public"` or `"confidential"`. Do not
+look for another way in; this section will say when that changes.
 
 ## A Technical Maintainer may make a Registry correction through the API
 

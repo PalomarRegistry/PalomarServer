@@ -178,39 +178,52 @@ test("the intake validation matrix for visibility", () => {
   }
 });
 
+function browser(path, form, env = ENV, cookie = "") {
+  return worker.fetch(new Request(`https://submit.palomar-registry.org${path}`, {
+    method: "POST",
+    headers: { "sec-fetch-site": "same-origin", ...(cookie ? { cookie } : {}) },
+    body: new URLSearchParams(form),
+  }), env);
+}
+
 test("confidential intake is refused before any GitHub call where it cannot run privately", async () => {
   const { calls } = stubGitHub();
   const env = { ...ENV };
   delete env.CONFIDENTIAL_RUNS_REPO;
-  const response = await agent("/api/submit", SUBMISSION, env);
+  const response = await browser("/submit", SUBMISSION, env);
   assert.equal(response.status, 400);
-  assert.match(JSON.stringify(await response.json()), /not available/);
+  assert.match(await response.text(), /not available/);
   assert.deepEqual(calls, []);
 });
 
-test("a private repository is still refused for a confidential submission", async () => {
-  const { messages } = stubGitHub({ repo: { id: 77, private: true, owner: { login: "owner" } } });
+test("the agent route cannot start a confidential submission yet", async () => {
+  const { calls } = stubGitHub();
   const response = await agent("/api/submit", SUBMISSION);
   assert.equal(response.status, 400);
-  assert.match(JSON.stringify(await response.json()), /cannot read private repositories yet/);
+  assert.match(JSON.stringify(await response.json()), /not open to the agent route/);
+  assert.deepEqual(calls.filter((call) => !call.endsWith("/contents/pending")), []);
+});
+
+test("a private repository is still refused for a confidential submission", async () => {
+  const { messages } = stubGitHub({ repo: { id: 77, private: true, owner: { login: "owner", id: 5 } } });
+  const response = await browser("/submit", SUBMISSION);
+  assert.equal(response.status, 400);
+  assert.match(await response.text(), /cannot read private repositories yet/);
   assert.deepEqual(messages, []);
 });
 
 test("confidential intake answers nothing about the source before the proof", async () => {
-  const { calls, messages, store } = stubGitHub();
-  const response = await agent("/api/submit", SUBMISSION);
-  assert.equal(response.status, 200);
-  const body = await response.json();
-  assert.equal(body.source_preflight, undefined);
-  assert.equal(body.visibility, "confidential");
+  const { calls, messages, store } = stubGitHub({
+    repo: { id: 77, private: false, owner: { login: "owner", id: 5 } },
+  });
+  const response = await browser("/submit", SUBMISSION);
+  assert.equal(response.status, 303);
   // No tree or file read: the preflight is skipped, not merely hidden.
   assert.ok(!calls.some((call) => /git\/trees|raw\.githubusercontent/.test(call)), calls.join("\n"));
-  // The neutral tag, which does not say Palomar in a public event feed.
-  assert.match(body.instructions, new RegExp(`refs/tags/c-${body.challenge}`));
-  assert.doesNotMatch(body.instructions, /palomar-verify-/);
   assert.deepEqual(messages, ["Begin submission"]);
   const pending = [...store.entries()].find(([path]) => path.startsWith("pending/"))[1];
   assert.equal(pending.visibility, "confidential");
+  assert.equal(pending.repository_owner_id, 5);
 });
 
 test("a public intake keeps its preflight and its commit message", async () => {
@@ -224,65 +237,104 @@ test("a public intake keeps its preflight and its commit message", async () => {
   const body = await (await agent("/api/submit", publicSubmission)).json();
   assert.ok(body.source_preflight);
   assert.match(body.instructions, /palomar-verify-/);
+  assert.equal(body.visibility, undefined);
   assert.deepEqual(messages, [`Begin submission for ${REPOSITORY}`]);
   assert.equal(calls.length > 0, true);
 });
 
-async function admitConfidential({ tagPrefix = "c-" } = {}) {
+test("the neutral challenge tag is read under its own prefix", async () => {
+  const { challengeTag, NEUTRAL_CHALLENGE_TAG_PREFIX } = await import("../src/github.js");
+  assert.equal(NEUTRAL_CHALLENGE_TAG_PREFIX, "c-");
+  const challenge = "9".repeat(64);
+  const { calls } = stubGitHub({ tags: { [`c-${challenge}`]: COMMIT } });
+  assert.deepEqual(
+    await challengeTag("t", REPOSITORY, challenge, COMMIT, { prefix: NEUTRAL_CHALLENGE_TAG_PREFIX }),
+    { ok: true },
+  );
+  assert.equal((await challengeTag("t", REPOSITORY, challenge, COMMIT)).ok, false);
+  assert.ok(calls.some((call) => call.endsWith(`/git/ref/tags/c-${challenge}`)));
+});
+
+const TECHNICAL_MAINTAINER_ID = 477956;
+const BINDING = "9".repeat(64);
+
+/** Finish a browser sign-in for a confidential pending intake. */
+async function signIn({ id = TECHNICAL_MAINTAINER_ID, login = "maintainer", push = true } = {}) {
+  const { digest } = await import("../src/submission.js");
+  const nonce = "8".repeat(64);
+  const pendingPath = `pending/${await digest(nonce)}.json`;
   const stub = stubGitHub({
     files: {
       "index/inflight.json": { open: [] },
       "index/open.json": { schema_version: 1, open: [] },
+      [pendingPath]: {
+        schema_version: 2,
+        binding_sha256: await digest(BINDING),
+        method: "oauth",
+        challenge: "7".repeat(64),
+        repository_id: 77,
+        attempts: 0,
+        repository: REPOSITORY,
+        commit: COMMIT,
+        existing_id: null,
+        context: null,
+        requested_paths: { project_path: null, comparator_config_path: "comparator.json",
+          formalization_metadata_path: null },
+        authorization_relationship: "maintainer",
+        authorization_evidence: null,
+        visibility: "confidential",
+        repository_owner_id: 5,
+        created_at: new Date().toISOString(),
+      },
     },
+    repo: { id: 77, private: false, owner: { login: "owner", id: 5 }, permissions: { push } },
   });
-  const begun = await (await agent("/api/submit", SUBMISSION)).json();
-  stub.messages.length = 0;
-  const tags = { [`${tagPrefix}${begun.challenge}`]: COMMIT };
-  const gist = {
-    public: false,
-    created_at: new Date().toISOString(),
-    owner: { type: "User", login: "someone", id: 4242 },
-    files: { "palomar.txt": { content: begun.challenge } },
-  };
   const inner = globalThis.fetch;
   globalThis.fetch = async (url, init = {}) => {
-    const path = new URL(url).pathname;
-    const tag = /^\/repos\/owner\/project\/git\/ref\/tags\/(.+)$/.exec(path);
-    if (tag) {
-      return tags[tag[1]]
-        ? Response.json({ object: { type: "commit", sha: tags[tag[1]] } })
-        : new Response("", { status: 404 });
+    const target = new URL(url);
+    if (target.hostname === "github.com" && target.pathname.endsWith("/access_token")) {
+      return Response.json({ access_token: "oauth-token" });
     }
-    if (path.startsWith("/gists/")) return Response.json(gist);
+    if (target.pathname === "/user") return Response.json({ login, id });
     return inner(url, init);
   };
-  const response = await agent("/api/verify", { pending_secret: begun.pending_secret, gist_id: "abc123" });
-  return { ...stub, response, begun };
+  const name = `__Host-palomar_intake_${(await digest(nonce)).slice(0, 16)}`;
+  const response = await worker.fetch(new Request(
+    `https://submit.palomar-registry.org/oauth/callback?code=c&state=${nonce}`,
+    { headers: { cookie: `${name}=${BINDING}` } },
+  ), ENV);
+  return { ...stub, response };
 }
 
-test("an admitted confidential submission dispatches only to the private caller", async () => {
-  const { response, store, dispatches, messages, begun } = await admitConfidential();
-  assert.equal(response.status, 200);
-  const body = await response.json();
-  assert.match(body.next, new RegExp(`refs/tags/c-${begun.challenge}`));
-  const record = store.get(statePath(body.submission_id, "state.json"));
+test("a Technical Maintainer's confidential submission is admitted as a test and runs privately", async () => {
+  const { response, store, dispatches, messages } = await signIn();
+  assert.equal(response.status, 303);
+  const [path, record] = [...store.entries()].find(([key]) => key.endsWith("/state.json"));
+  assert.ok(path);
   assert.equal(record.visibility, "confidential");
-  assert.deepEqual(record.confidential, { run_repository: RUNS });
+  assert.equal(record.test_submission, true);
+  assert.equal(record.authorization.relationship, "technical-test");
+  assert.deepEqual(record.confidential, {
+    schema: 2,
+    run_repository: RUNS,
+    source: { route: "public", repository_id: 77, owner_id: 5, installation_id: null },
+    owner_principal_id: TECHNICAL_MAINTAINER_ID,
+  });
   assert.equal(dispatches.length, 1);
   assert.equal(dispatches[0].repository, RUNS);
   assert.equal(dispatches[0].workflow, "verify.yml");
-  assert.equal(dispatches[0].body.inputs.request_id, body.submission_id);
+  assert.equal(dispatches[0].body.inputs.request_id, record.id);
   // No State commit made for this submission names its source.
   assert.ok(messages.length > 0);
-  for (const message of messages) {
-    assert.doesNotMatch(message, /owner|project/, message);
-  }
+  for (const message of messages) assert.doesNotMatch(message, /owner|project/, message);
 });
 
-test("a confidential proof still accepts the older tag prefix", async () => {
-  const { response, begun } = await admitConfidential({ tagPrefix: "palomar-verify-" });
-  assert.equal(response.status, 200);
-  assert.match((await response.json()).next, new RegExp(`palomar-verify-${begun.challenge}`));
+test("anyone else's confidential submission is refused until invitations exist", async () => {
+  const { response, store, dispatches } = await signIn({ id: 4242, login: "someone" });
+  assert.equal(response.status, 403);
+  assert.match(await response.text(), /not open yet/);
+  assert.ok(![...store.keys()].some((key) => key.endsWith("/state.json")));
+  assert.deepEqual(dispatches, []);
 });
 
 function confidentialRecord(overrides = {}) {

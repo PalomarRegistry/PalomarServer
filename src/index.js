@@ -731,6 +731,11 @@ async function beginSubmission(request, env, { machine = false } = {}) {
   if (confidential && !confidentialRunsConfigured(env)) {
     return rejected("Confidential submissions are not available on this deployment yet.");
   }
+  // The agent route cannot make a technical test, and until invitations exist
+  // a technical test is the only confidential submission admitted.
+  if (confidential && machine) {
+    return rejected("Confidential submissions are not open to the agent route yet.");
+  }
 
   if (relationship === "palomar-maintainer" && !registryCorrection) {
     return rejected("The registry correction is missing.");
@@ -867,7 +872,9 @@ async function beginSubmission(request, env, { machine = false } = {}) {
     authorization_evidence: evidence,
     ...(preflightRepair ? { preflight_repair: preflightRepair } : {}),
     ...(registryCorrection ? { registry_correction: registryCorrection } : {}),
-    ...(confidential ? { visibility: "confidential" } : {}),
+    ...(confidential
+      ? { visibility: "confidential", repository_owner_id: repo.owner?.id ?? null }
+      : {}),
     created_at: recordedAt(),
   };
   try {
@@ -1385,6 +1392,15 @@ async function admitSubmission(
     preserveOnRefusal = false,
   },
 ) {
+  if (pending.visibility === "confidential" && pending.authorization_relationship !== "technical-test") {
+    return {
+      refused: true,
+      retryable: false,
+      status: 403,
+      title: "Confidential submissions are not open yet",
+      detail: ["For now only Palomar Technical Maintainers can make a confidential test submission."],
+    };
+  }
   if (pending.visibility === "confidential" && !confidentialRunsConfigured(env)) {
     // The intake was accepted by a deployment that could run it privately and
     // this one cannot. Admitting it would leave nowhere safe to dispatch to.
@@ -1472,8 +1488,14 @@ async function admitSubmission(
           : {}),
       },
       registryCorrection: pending.registry_correction ?? null,
-      confidentialRunRepository: pending.visibility === "confidential"
-        ? env.CONFIDENTIAL_RUNS_REPO
+      confidential: pending.visibility === "confidential"
+        ? {
+            runRepository: env.CONFIDENTIAL_RUNS_REPO,
+            route: "public",
+            repositoryId: pending.repository_id ?? null,
+            ownerId: pending.repository_owner_id ?? null,
+            ownerPrincipalId: proof?.principal?.id ?? null,
+          }
         : null,
     }),
     push_proof: proof,
@@ -2136,7 +2158,13 @@ async function completeSubmission(request, env) {
     ));
   }
 
-  const technicalTest = requestedTechnicalTest || (
+  // Until invitations exist, confidential intake is open only to Technical
+  // Maintainer tests, so an allowlisted account's confidential submission is
+  // always recorded as one, push access or not.
+  const confidentialTest = pending.value.visibility === "confidential" && technicalMaintainer &&
+    viewer.private !== true &&
+    (pending.value.repository_id == null || viewer.id === pending.value.repository_id);
+  const technicalTest = requestedTechnicalTest || confidentialTest || (
     !requestedRegistryCorrection &&
     !viewer?.permissions?.push &&
     technicalMaintainer &&
