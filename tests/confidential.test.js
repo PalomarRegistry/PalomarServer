@@ -260,7 +260,8 @@ const TECHNICAL_MAINTAINER_ID = 477956;
 const BINDING = "9".repeat(64);
 
 /** Finish a browser sign-in for a confidential pending intake. */
-async function signIn({ id = TECHNICAL_MAINTAINER_ID, login = "maintainer", push = true } = {}) {
+async function signIn({ id = TECHNICAL_MAINTAINER_ID, login = "maintainer", push = true,
+  relationship = "maintainer" } = {}) {
   const { digest } = await import("../src/submission.js");
   const nonce = "8".repeat(64);
   const pendingPath = `pending/${await digest(nonce)}.json`;
@@ -281,7 +282,7 @@ async function signIn({ id = TECHNICAL_MAINTAINER_ID, login = "maintainer", push
         context: null,
         requested_paths: { project_path: null, comparator_config_path: "comparator.json",
           formalization_metadata_path: null },
-        authorization_relationship: "maintainer",
+        authorization_relationship: relationship,
         authorization_evidence: null,
         visibility: "confidential",
         repository_owner_id: 5,
@@ -527,4 +528,11 @@ test("public intake is unaffected by every switch value", async () => {
     assert.equal(response.status, 200, mode);
     assert.deepEqual(messages, [`Begin submission for ${REPOSITORY}`]);
   }
+});
+
+test("claiming the test relationship does not admit a confidential submission", async () => {
+  const { response, store, dispatches } = await signIn({ id: 4242, login: "someone", relationship: "technical-test" });
+  assert.equal(response.status, 403);
+  assert.ok(![...store.keys()].some((key) => key.endsWith("/state.json")));
+  assert.deepEqual(dispatches, []);
 });
