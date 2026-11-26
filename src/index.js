@@ -1395,8 +1395,12 @@ async function admitSubmission(
   // Checked again at admission: the switch may have been turned off since
   // the intake began, and admission is what dispatches work.
   const intakeMode = confidentialIntakeMode(env);
+  // A test relationship in the pending record is only a claim; the proof's
+  // checked membership of the numeric principal is what admits one.
+  const checkedTest = pending.authorization_relationship === "technical-test" &&
+    proof?.technical_maintainer === true && isTechnicalMaintainer(proof?.principal);
   if (pending.visibility === "confidential" && (intakeMode === "off" || (
-    intakeMode !== "invited" && pending.authorization_relationship !== "technical-test"
+    intakeMode !== "invited" && !checkedTest
   ) || ((pending.source_route ?? "public") !== "public" &&
     !["test-private", "invited"].includes(intakeMode)))) {
     return {
