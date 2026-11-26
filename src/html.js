@@ -233,6 +233,8 @@ export function intakeForm(
           source and its metadata, and Palomar&rsquo;s Technical Maintainers can
           read the private record. The repository itself stays exactly as
           visible as it already is, and for now it must be a public repository.
+          Until journal invitations open, only Palomar Technical Maintainers can
+          make a confidential submission, and it is recorded as a test.
         </p>
       </fieldset>
 
