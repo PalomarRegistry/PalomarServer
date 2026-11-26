@@ -32,6 +32,11 @@
     // Without both values confidential intake is refused.
     "CONFIDENTIAL_RUNS_REPO": "PalomarRegistry/PalomarConfidentialRuns",
     "CONFIDENTIAL_VERIFY_WORKFLOW": "verify.yml",
+    // The single activation switch for confidential intake (contract v2.1
+    // 6.3): off | test-public | test-private | invited. Stage 1 sets
+    // test-public once ST-1, REV-1, SUB-1 and RUNS-1 are in place; any doubt
+    // means off. Public intake is unaffected by every value.
+    "CONFIDENTIAL_INTAKE": "off",
     "STATE_REPO": "PalomarRegistry/PalomarSubmissionState",
     "VERIFY_WORKFLOW": "submission.yml",
     "REVIEW_WORKFLOW": "reviewer.yml",
