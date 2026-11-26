@@ -119,6 +119,11 @@ import {
   dashboardPrincipal,
 } from "./dashboard-auth.js";
 import { isTechnicalMaintainer } from "./technical-maintainers.js";
+import {
+  authorizationExhausted,
+  authorizePrivateRepository,
+  NOT_AUTHORIZED,
+} from "./confidential/private-intake.js";
 import { dashboardHtml, withDashboardActions } from "./dashboard.js";
 import { SECURITY_HEADERS } from "./response-security.js";
 // One vocabulary for "this submission has stopped moving", shared with the
@@ -783,17 +788,30 @@ async function beginSubmission(request, env, { machine = false } = {}) {
   }
 
   const repo = await fetchRepository(env.GITHUB_TOKEN, repositoryName);
-  if (!repo) {
+  // A confidential intake of a repository that is not publicly readable takes
+  // the Source App route, but only once that route is activated, and it says
+  // nothing about the repository until the submitter has signed in: whether
+  // it is private, missing or misspelled, the answer here is the same
+  // redirect, and the authorization after sign-in gives one identical refusal.
+  const sourceRoute = confidential && (!repo || repo.private) && privateIntakeActive(env);
+  if (sourceRoute) {
+    // Nothing below may read the repository with Palomar's own credentials.
+  } else if (confidential && (!repo || repo.private)) {
+    // One answer for missing and private alike.
+    return rejected(
+      "Palomar cannot read private repositories yet. A confidential submission of a public repository is accepted.",
+    );
+  } else if (!repo) {
     return rejected(`${repositoryName} could not be read. Palomar accepts public repositories only.`);
   }
-  if (repo.private) {
+  if (!sourceRoute && repo.private) {
     return rejected(
       confidential
         ? "Palomar cannot read private repositories yet. A confidential submission of a public repository is accepted."
         : "Palomar records point at source anyone can inspect, so submissions must be public.",
     );
   }
-  if (!(await resolveCommit(env.SUBMISSION_TOKEN, repositoryName, commit))) {
+  if (!sourceRoute && !(await resolveCommit(env.SUBMISSION_TOKEN, repositoryName, commit))) {
     return rejected(`${commit} was not found in ${repositoryName}.`);
   }
   if (registryCorrection) {
@@ -861,7 +879,7 @@ async function beginSubmission(request, env, { machine = false } = {}) {
       ? registryCorrection ? "maintainer-gist" : "tag-and-gist"
       : "oauth",
     challenge,
-    repository_id: repo.id ?? null,
+    repository_id: sourceRoute ? null : repo.id ?? null,
     attempts: 0,
     repository: repositoryName,
     commit,
@@ -873,7 +891,11 @@ async function beginSubmission(request, env, { machine = false } = {}) {
     ...(preflightRepair ? { preflight_repair: preflightRepair } : {}),
     ...(registryCorrection ? { registry_correction: registryCorrection } : {}),
     ...(confidential
-      ? { visibility: "confidential", repository_owner_id: repo.owner?.id ?? null }
+      ? {
+          visibility: "confidential",
+          source_route: sourceRoute ? "source-app" : "public",
+          repository_owner_id: sourceRoute ? null : repo.owner?.id ?? null,
+        }
       : {}),
     created_at: recordedAt(),
   };
@@ -1501,9 +1523,10 @@ async function admitSubmission(
       confidential: pending.visibility === "confidential"
         ? {
             runRepository: env.CONFIDENTIAL_RUNS_REPO,
-            route: "public",
+            route: pending.source_route ?? "public",
             repositoryId: pending.repository_id ?? null,
             ownerId: pending.repository_owner_id ?? null,
+            installationId: pending.installation_id ?? null,
             ownerPrincipalId: proof?.principal?.id ?? null,
           }
         : null,
@@ -1961,6 +1984,111 @@ function confidentialIntakeMode(env) {
   return ["off", "test-public", "test-private", "invited"].includes(mode) ? mode : "off";
 }
 
+/** Is the Source App route for private repositories switched on? */
+function privateIntakeActive(env) {
+  // The activation switch (contract v2.1 6.3): private intake stays off until
+  // the private snapshot, evidence, deletion and lifecycle stack has passed
+  // acceptance and the switch says `test-private` or `invited`.
+  return ["test-private", "invited"].includes(confidentialIntakeMode(env)) &&
+    Boolean(env.SOURCE_APP_ID && env.SOURCE_APP_PRIVATE_KEY);
+}
+
+/**
+ * Finish a confidential sign-in for a repository on the Source App route.
+ *
+ * Identity is already established by the OAuth exchange. Repository
+ * authorization comes next and answers one identical refusal for every
+ * repository-dependent failure; only after it succeeds is anything about the
+ * repository used. The sign-in is spent either way.
+ */
+async function completePrivateSubmission(env, { nonce, pendingPath, pending, principal, submitter, origin }) {
+  const spent = { "set-cookie": await intakeCookie(nonce, null, { clear: true }) };
+  const discard = async (why) => {
+    if (!(await deleteState(env, pendingPath, pending.sha, why))) {
+      console.error("pending", `could not discard ${pendingPath}`);
+    }
+  };
+  if (!privateIntakeActive(env)) {
+    await discard("Discard an intake on an inactive route");
+    return html(errorPage(env, "Confidential submissions are not open yet",
+      spentSignInProblems([])), 403, spent);
+  }
+  if (await authorizationExhausted(env, principal.id)) {
+    return html(errorPage(env, "Too many refused confidential submissions",
+      spentSignInProblems(["Wait an hour before trying again."])), 429, spent);
+  }
+  const authorized = await authorizePrivateRepository(env, {
+    repositoryName: pending.value.repository,
+    principal,
+    commit: pending.value.commit,
+  });
+  if (!authorized.ok) {
+    await discard("Discard an unauthorized confidential intake");
+    return authorized.transient
+      ? html(errorPage(env, "Palomar could not reach GitHub just now",
+          spentSignInProblems(["Nothing was recorded. Try again in a moment."])), 503, spent)
+      : html(errorPage(env, "Palomar could not confirm that you may submit this repository",
+          spentSignInProblems([NOT_AUTHORIZED.detail])), 403, spent);
+  }
+  const technicalMaintainer = isTechnicalMaintainer(principal);
+  const admittedPending = {
+    ...pending.value,
+    repository_id: authorized.repository.id,
+    repository_owner_id: authorized.repository.owner_id,
+    installation_id: authorized.installation_id,
+    ...(technicalMaintainer
+      ? { authorization_relationship: "technical-test", authorization_evidence: null }
+      : {}),
+  };
+  const proof = {
+    schema_version: 1,
+    method: technicalMaintainer ? "technical-team-test" : "oauth",
+    binding: technicalMaintainer ? "active-technical-team-membership" : "same-account",
+    verified_at: recordedAt(),
+    repository_id: authorized.repository.id,
+    commit: pending.value.commit,
+    principal,
+    // Write access was read through the Source App installation on the
+    // repository, with the signed-in account's numeric id.
+    source_route: "source-app",
+    ...(technicalMaintainer ? { technical_maintainer: true } : {}),
+  };
+  let admitted;
+  try {
+    admitted = await admitSubmission(env, {
+      pendingPath,
+      pendingSha: pending.sha,
+      pending: admittedPending,
+      owner: String(authorized.repository.full_name ?? "").split("/")[0] || null,
+      submitter,
+      proof,
+    });
+  } catch (error) {
+    if (error instanceof StateUpdateOutcomeError) {
+      console.error("private-admission", error.message);
+      return html(errorPage(env, "Submission intake outcome is unknown", [
+        "Do not start another submission yet; ask the registry operator to inspect State.",
+      ]), 503, spent);
+    }
+    if (!isDurableContractError(error)) console.error("private-admission", error?.stack ?? String(error));
+    else reportDurableContract(error);
+    return html(errorPage(env, "Submission intake is temporarily unavailable",
+      spentSignInProblems(["This is ours to fix, not yours."])), 503, spent);
+  }
+  if (admitted.refused) {
+    return html(errorPage(env, admitted.title, spentSignInProblems(admitted.detail)),
+      admitted.status, spent);
+  }
+  return new Response(null, {
+    status: 303,
+    headers: {
+      location: `${origin}/s#${admitted.token}`,
+      ...spent,
+      ...SECURITY_HEADERS,
+    },
+  });
+}
+
 /** Answer one structurally unusable browser binding without touching State. */
 async function refusedIntakeCredential(env, nonce) {
   return html(
@@ -2123,6 +2251,12 @@ async function completeSubmission(request, env) {
     return identified(html(errorPage(env, "That sign-in is already waiting for your choice", [
       "Return to the choice page, or start again from the submission form.",
     ]), 409));
+  }
+
+  if (pending.value.source_route === "source-app") {
+    return identified(await completePrivateSubmission(env, {
+      nonce, pendingPath, pending, principal, submitter, origin: url.origin,
+    }));
   }
 
   const viewer = await fetchRepository(granted.access_token, pending.value.repository);
