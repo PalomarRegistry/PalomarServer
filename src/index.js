@@ -728,12 +728,12 @@ async function beginSubmission(request, env, { machine = false } = {}) {
   const technicalTest = relationship === "technical-test";
   const confidential = submission.visibility === "confidential";
 
-  if (confidential && !confidentialRunsConfigured(env)) {
+  if (confidential && (!confidentialRunsConfigured(env) || confidentialIntakeMode(env) === "off")) {
     return rejected("Confidential submissions are not available on this deployment yet.");
   }
   // The agent route cannot make a technical test, and until invitations exist
   // a technical test is the only confidential submission admitted.
-  if (confidential && machine) {
+  if (confidential && machine && confidentialIntakeMode(env) !== "invited") {
     return rejected("Confidential submissions are not open to the agent route yet.");
   }
 
@@ -1392,7 +1392,13 @@ async function admitSubmission(
     preserveOnRefusal = false,
   },
 ) {
-  if (pending.visibility === "confidential" && pending.authorization_relationship !== "technical-test") {
+  // Checked again at admission: the switch may have been turned off since
+  // the intake began, and admission is what dispatches work.
+  const intakeMode = confidentialIntakeMode(env);
+  if (pending.visibility === "confidential" && (intakeMode === "off" || (
+    intakeMode !== "invited" && pending.authorization_relationship !== "technical-test"
+  ) || ((pending.source_route ?? "public") !== "public" &&
+    !["test-private", "invited"].includes(intakeMode)))) {
     return {
       refused: true,
       retryable: false,
@@ -1935,6 +1941,20 @@ async function verifySubmission(request, env) {
       `for the browser, and it refuses a caller that is not one.`,
     ].join("\n"),
   });
+}
+
+/**
+ * The single activation switch for confidential intake (contract v2.1 6.3).
+ *
+ * `off` admits nothing; `test-public` admits Technical Maintainer tests of
+ * public repositories; `test-private` adds Technical Maintainer tests of
+ * private repositories through the Source App; `invited` adds invited
+ * journal submissions. Anything else, including absence, reads as `off`.
+ * Public intake is unaffected by every value.
+ */
+function confidentialIntakeMode(env) {
+  const mode = String(env.CONFIDENTIAL_INTAKE ?? "off");
+  return ["off", "test-public", "test-private", "invited"].includes(mode) ? mode : "off";
 }
 
 /** Answer one structurally unusable browser binding without touching State. */

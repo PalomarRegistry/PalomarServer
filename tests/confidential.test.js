@@ -26,6 +26,7 @@ const ENV = {
   VERIFY_WORKFLOW: "submission.yml",
   CONFIDENTIAL_RUNS_REPO: RUNS,
   CONFIDENTIAL_VERIFY_WORKFLOW: "verify.yml",
+  CONFIDENTIAL_INTAKE: "test-public",
   GITHUB_TOKEN: "state-token",
   SUBMISSION_TOKEN: "dispatch-token",
   TOKEN_PEPPER: "test-pepper",
@@ -479,4 +480,51 @@ test("the status page reads a private run's diagnostics only through Palomar", a
   assert.equal(privateVerificationRun({ id: 9, status: "completed", conclusion: "success",
     visibility: "private" }), null);
   assert.equal(privateVerificationRun({ id: 9, status: "completed", conclusion: "failure" }), null);
+});
+
+test("the activation switch admits nothing when off, unknown or absent", async () => {
+  for (const mode of ["off", "", "on", "Test-Public", undefined]) {
+    const env = { ...ENV, CONFIDENTIAL_INTAKE: mode };
+    if (mode === undefined) delete env.CONFIDENTIAL_INTAKE;
+    const { calls } = stubGitHub();
+    const response = await browser("/submit", SUBMISSION, env);
+    assert.equal(response.status, 400, String(mode));
+    assert.match(await response.text(), /not available/);
+    assert.deepEqual(calls.filter((call) => !call.endsWith("/contents/pending")), []);
+  }
+});
+
+test("admission rechecks the switch, so turning it off stops a begun intake", async () => {
+  const saved = ENV.CONFIDENTIAL_INTAKE;
+  ENV.CONFIDENTIAL_INTAKE = "off";
+  try {
+    const { response, store, dispatches } = await signIn();
+    assert.equal(response.status, 403);
+    assert.ok(![...store.keys()].some((key) => key.endsWith("/state.json")));
+    assert.deepEqual(dispatches, []);
+  } finally {
+    ENV.CONFIDENTIAL_INTAKE = saved;
+  }
+});
+
+test("test-public admits no private-route intake, and invited is needed for the agent route", async () => {
+  const { calls } = stubGitHub();
+  const agentResponse = await agent("/api/submit", SUBMISSION, { ...ENV, CONFIDENTIAL_INTAKE: "test-private" });
+  assert.equal(agentResponse.status, 400);
+  assert.ok(!calls.some((call) => call.includes("/repos/owner/project")));
+});
+
+test("public intake is unaffected by every switch value", async () => {
+  for (const mode of ["off", "test-public", "test-private", "invited", "garbage"]) {
+    const { messages } = stubGitHub();
+    globalThis.fetch = ((inner) => async (url, init) => {
+      if (/git\/trees/.test(String(url))) return Response.json({ tree: [] });
+      return inner(url, init);
+    })(globalThis.fetch);
+    const publicSubmission = { ...SUBMISSION };
+    delete publicSubmission.visibility;
+    const response = await agent("/api/submit", publicSubmission, { ...ENV, CONFIDENTIAL_INTAKE: mode });
+    assert.equal(response.status, 200, mode);
+    assert.deepEqual(messages, [`Begin submission for ${REPOSITORY}`]);
+  }
 });
