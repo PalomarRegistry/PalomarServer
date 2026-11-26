@@ -28,7 +28,7 @@ function base64Url(bytes) {
 
 const json64 = (value) => base64Url(new TextEncoder().encode(JSON.stringify(value)));
 
-async function appJwt(appId, pem, now) {
+export async function appJwt(appId, pem, now) {
   const der = Uint8Array.from(
     atob(pem.replace(/-----(BEGIN|END) PRIVATE KEY-----|\s/g, "")),
     (character) => character.charCodeAt(0),

@@ -248,3 +248,28 @@ test("the real scheduled handler reads lifecycle work and pending cooldown reset
     expect(request.headers.get("authorization")).toBe("Bearer runtime-test-state-token");
   }
 });
+
+test("workerd verifies a GitHub-shaped OIDC token and refuses a tampered one", async () => {
+  const { OIDC_AUDIENCE, OIDC_ISSUER, OidcRefusal, resetJwksCache, verifyJwt } =
+    await import("../src/confidential/oidc.js");
+  const pair = await crypto.subtle.generateKey(
+    { name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]),
+      hash: "SHA-256" },
+    true, ["sign", "verify"],
+  );
+  const jwk = { ...(await crypto.subtle.exportKey("jwk", pair.publicKey)), kid: "k1" };
+  const encode = (value) => btoa(String.fromCharCode(...new TextEncoder().encode(JSON.stringify(value))))
+    .replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+  const now = Math.floor(Date.now() / 1000);
+  const unsigned = `${encode({ alg: "RS256", kid: "k1" })}.${encode({
+    iss: OIDC_ISSUER, aud: OIDC_AUDIENCE, iat: now, nbf: now, exp: now + 300 })}`;
+  const signature = new Uint8Array(await crypto.subtle.sign(
+    "RSASSA-PKCS1-v1_5", pair.privateKey, new TextEncoder().encode(unsigned)));
+  const token = `${unsigned}.${btoa(String.fromCharCode(...signature))
+    .replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "")}`;
+  resetJwksCache();
+  vi.spyOn(globalThis, "fetch").mockImplementation(async () => Response.json({ keys: [jwk] }));
+  expect((await verifyJwt(token)).iss).toBe(OIDC_ISSUER);
+  const tampered = `${token.slice(0, -4)}AAAA`;
+  await expect(verifyJwt(tampered)).rejects.toBeInstanceOf(OidcRefusal);
+});
