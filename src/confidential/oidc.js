@@ -127,14 +127,12 @@ export async function verifyJwt(token, { now = Date.now() } = {}) {
   const seconds = Math.floor(now / 1000);
   if (claims.iss !== OIDC_ISSUER) refuse("iss");
   if (claims.aud !== OIDC_AUDIENCE) refuse("aud");
-  for (const name of ["exp", "iat"]) {
+  for (const name of ["exp", "iat", "nbf"]) {
     if (!Number.isSafeInteger(claims[name])) refuse(name);
   }
   if (claims.exp <= seconds) refuse("exp");
   if (claims.iat > seconds + SKEW_S) refuse("iat");
-  if (claims.nbf !== undefined && (!Number.isSafeInteger(claims.nbf) || claims.nbf > seconds + SKEW_S)) {
-    refuse("nbf");
-  }
+  if (claims.nbf > seconds + SKEW_S) refuse("nbf");
   if (claims.exp - claims.iat > MAX_LIFETIME_S) refuse("lifetime");
   return claims;
 }
@@ -229,7 +227,11 @@ export async function validateBrokerToken(env, token, operation,
     run_attempt: String(claims.run_attempt),
     repository_id: row.repository_id,
   };
-  const identity = { repository_id: row.repository_id, workflow: claims.job_workflow_ref.slice(0, -41) };
+  const identity = {
+    repository_id: row.repository_id,
+    workflow: claims.job_workflow_ref.slice(0, -41),
+    caller: claims.workflow_ref,
+  };
   if (row.origin === "runs") {
     if (!list(env.CONFIDENTIAL_PIPELINE_ALLOWLIST).includes(pinned)) refuse("pipeline-not-allowed");
     if (typeof isRevoked !== "function") refuse("revocation-unchecked");

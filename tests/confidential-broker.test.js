@@ -26,12 +26,13 @@ import {
   newToken,
   TOKEN_RE,
 } from "../src/confidential/tokens.js";
-import { mintSourceReadToken } from "../src/confidential/source-app.js";
+import { mintSourceReadToken, resolveRepositoryId } from "../src/confidential/source-app.js";
 import {
   authorizationExhausted,
   authorizePrivateRepository,
   MAX_FAILURES_PER_HOUR,
   NOT_AUTHORIZED,
+  setAuthorizationFloorForTests,
 } from "../src/confidential/private-intake.js";
 import { digest, statePath } from "../src/submission.js";
 
@@ -156,6 +157,7 @@ test("a valid runs-repository token validates and names its binding and pin", as
     identity: {
       repository_id: "2000",
       workflow: "PalomarRegistry/PalomarSubmission/.github/workflows/confidential-snapshot.yml",
+      caller: `${RUNS}/.github/workflows/verify.yml@refs/heads/main`,
     },
   });
 });
@@ -170,6 +172,7 @@ test("each JWT check refuses on its own", async () => {
     ["exp", runsClaims({ exp: SECONDS - 1 })],
     ["iat", runsClaims({ iat: SECONDS + 120, exp: SECONDS + 300 })],
     ["nbf", runsClaims({ nbf: SECONDS + 120 })],
+    ["nbf", runsClaims({ nbf: undefined })],
     ["lifetime", runsClaims({ iat: SECONDS - 10, exp: SECONDS + 600 })],
     ["owner", runsClaims({ repository_owner_id: "9999" })],
     ["visibility", runsClaims({ repository_visibility: "public" })],
@@ -296,75 +299,108 @@ test("the caller file must be the canonical template with exactly pin P", async 
 });
 
 const BINDING = { run_id: "555", run_attempt: "1", repository_id: "2000" };
-const SNAPSHOT = { repository_id: "2000", workflow: "PalomarRegistry/PalomarSubmission/.github/workflows/confidential-snapshot.yml" };
-const VALIDATE = { repository_id: "2000", workflow: "PalomarRegistry/PalomarSubmission/.github/workflows/confidential-validate.yml" };
+const CALLER = `${RUNS}/.github/workflows/verify.yml@refs/heads/main`;
+const SNAPSHOT = { repository_id: "2000", caller: CALLER,
+  workflow: "PalomarRegistry/PalomarSubmission/.github/workflows/confidential-snapshot.yml" };
+const VALIDATE = { repository_id: "2000", caller: CALLER,
+  workflow: "PalomarRegistry/PalomarSubmission/.github/workflows/confidential-validate.yml" };
+const FENCES = { generation: 0, evidence_revision: null, release_attempt: null };
 
 function snapshotTicket(overrides = {}) {
   return issueTicket({
-    ticketHash: "f".repeat(64), operation: "snapshot", submissionId: "a1b2c3d4e5f6",
-    generation: 0, nonce: "0".repeat(32), admitted: { commit: "1".repeat(40) }, now: NOW, ...overrides,
+    ticketHash: "f".repeat(64), operations: ["snapshot", "validate"], submissionId: "a1b2c3d4e5f6",
+    generation: 0, nonce: "0".repeat(32), admitted: { commit: "1".repeat(40), pipeline_commit: P },
+    now: NOW, ...overrides,
   });
 }
 
 function present(ticket, operation, overrides = {}) {
   return presentTicket(ticket, {
     operation, binding: BINDING, identity: operation === "validate" ? VALIDATE : SNAPSHOT,
-    generation: 0, now: NOW + 1000, ...overrides,
+    pipelineCommit: P, fences: FENCES, snapshotComplete: true, now: NOW + 1000, ...overrides,
   });
 }
 
-test("first use binds a ticket; the same binding retries within its budget", () => {
+test("a ticket names one of the contract's progressions and its fences", () => {
+  assert.throws(() => snapshotTicket({ operations: ["validate"] }));
+  assert.throws(() => snapshotTicket({ operations: ["snapshot", "publish"] }));
+  assert.throws(() => snapshotTicket({ admitted: { commit: "1".repeat(40) } }));
+  assert.throws(() => snapshotTicket({ operations: ["evidence"] }));
+  assert.throws(() => snapshotTicket({ operations: ["publish"] }));
+  assert.equal(snapshotTicket({ operations: ["restore", "evidence"], evidenceRevision: 2 }).evidence_revision, 2);
+});
+
+test("first use binds a ticket; the same binding retries within each operation's budget", () => {
   let ticket = snapshotTicket();
+  assert.equal(present(ticket, "validate").poisoned, true, "validate before any snapshot capability");
   for (let mint = 1; mint <= MAX_MINTS; mint += 1) {
     const outcome = present(ticket, "snapshot");
     assert.equal(outcome.ok, true);
     assert.equal(outcome.mint, mint);
     ticket = outcome.ticket;
   }
-  assert.deepEqual(ticket.bound, { ...BINDING, workflow: SNAPSHOT.workflow });
-  const fourth = present(ticket, "snapshot");
-  assert.equal(fourth.ok, false);
-  assert.equal(fourth.poisoned, true);
-  assert.equal(present(fourth.ticket, "snapshot").ok, false);
-});
-
-test("validation has its own budget after the snapshot binds, in the same run only", () => {
-  let ticket = snapshotTicket();
-  assert.equal(present(ticket, "validate").poisoned, true, "validate before snapshot");
-  for (let mint = 0; mint < MAX_MINTS; mint += 1) ticket = present(ticket, "snapshot").ticket;
+  assert.deepEqual(ticket.bound, { ...BINDING, caller: CALLER });
+  // Snapshot retries did not touch validation's budget.
+  assert.equal(present(ticket, "validate", { snapshotComplete: false }).error, "snapshot-incomplete");
   for (let mint = 1; mint <= MAX_MINTS; mint += 1) {
     const outcome = present(ticket, "validate");
     assert.equal(outcome.ok, true, `validate ${mint}`);
-    assert.equal(outcome.operation, "validate");
     ticket = outcome.ticket;
   }
-  assert.equal(present(ticket, "validate").poisoned, true);
-  const fresh = present(snapshotTicket(), "snapshot").ticket;
-  assert.equal(present(fresh, "validate", { binding: { ...BINDING, run_id: "556" } }).poisoned, true);
+  assert.equal(present(ticket, "validate").poisoned, true, "a fourth validate");
+  assert.equal(present(present(ticket, "snapshot").ticket, "snapshot").ok, false, "a fourth snapshot");
 });
 
-test("a duplicate run is refused without poisoning; any other misuse poisons", () => {
+test("a doubled dispatch is refused as a duplicate for every operation, without poisoning", () => {
   const bound = present(snapshotTicket(), "snapshot").ticket;
-  const duplicate = present(bound, "snapshot", { binding: { ...BINDING, run_id: "556" } });
-  assert.equal(duplicate.error, "duplicate-run");
-  assert.equal(duplicate.poisoned, undefined);
-  assert.deepEqual(duplicate.duplicate, { run_id: "556" });
-  // The elected run carries on.
-  assert.equal(present(duplicate.ticket, "snapshot").ok, true);
-  for (const overrides of [
-    { binding: { ...BINDING, repository_id: "3000" } },
-    { identity: { ...SNAPSHOT, workflow: "PalomarRegistry/PalomarSubmission/.github/workflows/confidential-restore.yml" } },
-    { binding: { ...BINDING, run_attempt: "2" } },
-    { generation: 1 },
-    { now: NOW + 7 * 60 * 60_000 },
-  ]) {
-    const outcome = present(bound, "snapshot", overrides);
-    assert.equal(outcome.poisoned, true, JSON.stringify(overrides));
+  for (const operation of ["snapshot", "validate"]) {
+    const duplicate = present(bound, operation, { binding: { ...BINDING, run_id: "556" } });
+    assert.equal(duplicate.error, "duplicate-run", operation);
+    assert.equal(duplicate.poisoned, undefined);
+    assert.deepEqual(duplicate.ticket, bound, "the duplicate changed nothing");
   }
-  assert.equal(present(bound, "publish").poisoned, true);
+  assert.equal(present(bound, "validate").ok, true, "the elected run carries on");
+});
+
+test("every other misuse poisons the ticket", () => {
+  const bound = present(snapshotTicket(), "snapshot").ticket;
+  for (const [what, operation, overrides] of [
+    ["another repository", "snapshot", { binding: { ...BINDING, repository_id: "3000" } }],
+    ["another caller", "snapshot", { identity: { ...SNAPSHOT, caller: `${RUNS}/.github/workflows/render.yml@refs/heads/main` } }],
+    ["another attempt", "snapshot", { binding: { ...BINDING, run_attempt: "2" } }],
+    ["another pipeline", "snapshot", { pipelineCommit: "c".repeat(40) }],
+    ["another pipeline on validate", "validate", { pipelineCommit: "9".repeat(40) }],
+    ["a later generation", "snapshot", { fences: { ...FENCES, generation: 1 } }],
+    ["expiry", "snapshot", { now: NOW + 7 * 60 * 60_000 }],
+    ["an operation outside the list", "publish", {}],
+    ["restore on a snapshot ticket", "restore", {}],
+  ]) {
+    assert.equal(present(bound, operation, overrides).poisoned, true, what);
+  }
+  // A pipeline other than the admitted one cannot even take first use.
+  assert.equal(present(snapshotTicket(), "snapshot", { pipelineCommit: "c".repeat(40) }).poisoned, true);
   assert.equal(presentTicket(poisonTicket(bound, { reason: "withdrawn", now: NOW }), {
-    operation: "snapshot", binding: BINDING, identity: SNAPSHOT, generation: 0, now: NOW,
+    operation: "snapshot", binding: BINDING, identity: SNAPSHOT, pipelineCommit: P, fences: FENCES, now: NOW,
   }).ok, false);
+});
+
+test("State tickets follow restore then evidence, fenced by the evidence revision", () => {
+  const stateCaller = "PalomarRegistry/PalomarSubmissionState/.github/workflows/reviewer.yml@refs/heads/main";
+  const identity = { repository_id: "3000", caller: stateCaller,
+    workflow: "PalomarRegistry/PalomarReviewer/.github/workflows/confidential-objects.yml" };
+  const binding = { ...BINDING, repository_id: "3000" };
+  const fences = { ...FENCES, evidence_revision: 4 };
+  let ticket = issueTicket({ ticketHash: "e".repeat(64), operations: ["restore", "evidence"],
+    submissionId: "a1b2c3d4e5f6", generation: 0, nonce: "0".repeat(32), admitted: null, now: NOW,
+    evidenceRevision: 4 });
+  const ask = (operation, extra = {}) => presentTicket(ticket, {
+    operation, binding, identity, fences, now: NOW + 1000, ...extra });
+  assert.equal(ask("evidence").poisoned, true, "evidence before restore");
+  ticket = ask("restore").ticket;
+  const evidence = ask("evidence");
+  assert.equal(evidence.ok, true);
+  assert.equal(presentTicket(evidence.ticket, { operation: "evidence", binding, identity,
+    fences: { ...fences, evidence_revision: 5 }, now: NOW + 2000 }).poisoned, true, "stale revision");
 });
 
 test("token kinds hash into separate namespaces", async () => {
@@ -398,8 +434,8 @@ const SOURCE_ENV = { ...ENV, SOURCE_APP_ID: "42", SOURCE_APP_PRIVATE_KEY: APP_PE
  */
 function stubSource(scenario = {}) {
   const {
-    installed = true, exists = true, isPrivate = true, role = "write", tag = true, commitKnown = true,
-    mintResponse = null, outage = false, store = new Map(), userId = 4242,
+    installed = true, exists = true, isPrivate = true, permission = "write", tag = true, commitKnown = true,
+    mintResponse = null, outage = false, store = new Map(), userId = 4242, fullName = "owner/secret",
   } = scenario;
   const requests = [];
   const revoked = [];
@@ -413,10 +449,14 @@ function stubSource(scenario = {}) {
       const path = decodeURI(target.pathname.slice(state.length));
       if (method === "GET") {
         return store.has(path)
-          ? Response.json({ content: Buffer.from(JSON.stringify(store.get(path))).toString("base64"), sha: "s" })
+          ? Response.json({ content: Buffer.from(JSON.stringify(store.get(path))).toString("base64"),
+              sha: `sha-${JSON.stringify(store.get(path)).length}` })
           : new Response("", { status: 404 });
       }
-      store.set(path, JSON.parse(Buffer.from(JSON.parse(init.body).content, "base64").toString()));
+      const body = JSON.parse(init.body);
+      const current = store.has(path) ? `sha-${JSON.stringify(store.get(path)).length}` : null;
+      if ((body.sha ?? null) !== current) return new Response("", { status: 409 });
+      store.set(path, JSON.parse(Buffer.from(body.content, "base64").toString()));
       return Response.json({});
     }
     if (outage) return new Response("", { status: 502 });
@@ -424,10 +464,18 @@ function stubSource(scenario = {}) {
       return installed ? Response.json({ id: 99 }) : new Response("", { status: 404 });
     }
     if (target.pathname === "/app/installations/99/access_tokens" && method === "POST") {
+      const body = JSON.parse(init.body);
+      if (body.repositories) {
+        if (!exists) return Response.json({ message: "no such repository" }, { status: 422 });
+        return Response.json({
+          token: "ghs_metadata", repository_selection: "selected", permissions: { metadata: "read" },
+          repositories: [{ id: 777, full_name: fullName }],
+        }, { status: 201 });
+      }
       return Response.json(mintResponse ?? {
         token: "ghs_source", expires_at: "2026-11-26T13:00:00Z", repository_selection: "selected",
         permissions: { contents: "read", metadata: "read" },
-        repositories: [{ id: 777, full_name: "owner/secret" }],
+        repositories: [{ id: 777, full_name: fullName }],
       }, { status: 201 });
     }
     if (target.pathname === "/installation/token" && method === "DELETE") {
@@ -435,12 +483,10 @@ function stubSource(scenario = {}) {
       return new Response(null, { status: 204 });
     }
     if (target.pathname === "/repos/owner/secret") {
-      return exists
-        ? Response.json({ id: 777, full_name: "owner/secret", private: isPrivate, owner: { id: 5 } })
-        : new Response("", { status: 404 });
+      return Response.json({ id: 777, full_name: fullName, private: isPrivate, owner: { id: 5 } });
     }
     if (target.pathname.startsWith("/repos/owner/secret/collaborators/")) {
-      return Response.json({ permission: role === "maintain" ? "write" : role, role_name: role,
+      return Response.json({ permission, role_name: permission === "write" ? "custom-writer" : permission,
         user: { id: userId } });
     }
     if (target.pathname.startsWith("/repos/owner/secret/git/ref/tags/c-")) {
@@ -456,9 +502,11 @@ function stubSource(scenario = {}) {
   return { requests, revoked, store };
 }
 
-test("a source token is minted for exactly one repository with exactly read permissions", async () => {
+setAuthorizationFloorForTests(0);
+
+test("a content token is minted by numeric id with exactly read permissions", async () => {
   const { requests, revoked } = stubSource();
-  const minted = await mintSourceReadToken(SOURCE_ENV, 99, { repositoryId: 777 });
+  const minted = await mintSourceReadToken(SOURCE_ENV, 99, 777);
   assert.equal(minted.token, "ghs_source");
   const mint = requests.find((item) => item.path.endsWith("/access_tokens"));
   assert.deepEqual(mint.body, { repository_ids: [777], permissions: { contents: "read", metadata: "read" } });
@@ -477,11 +525,21 @@ test("a source token is minted for exactly one repository with exactly read perm
       repositories: [{ id: 778 }] },
   ]) {
     const stub = stubSource({ mintResponse });
-    await assert.rejects(mintSourceReadToken(SOURCE_ENV, 99, { repositoryId: 777 }));
+    await assert.rejects(mintSourceReadToken(SOURCE_ENV, 99, 777));
     assert.deepEqual(stub.revoked, ["Bearer t"], JSON.stringify(mintResponse));
   }
-  await assert.rejects(mintSourceReadToken(SOURCE_ENV, 99, {}));
-  await assert.rejects(mintSourceReadToken(SOURCE_ENV, 99, { repositoryId: 777, repositoryName: "owner/secret" }));
+  await assert.rejects(mintSourceReadToken(SOURCE_ENV, 99, "owner/secret"));
+  await assert.rejects(mintSourceReadToken(SOURCE_ENV, 99));
+});
+
+test("the repository id is learnt from a metadata-only token that is revoked at once", async () => {
+  const { requests, revoked } = stubSource();
+  assert.equal(await resolveRepositoryId(SOURCE_ENV, 99, "owner/secret"), 777);
+  const mint = requests.find((item) => item.path.endsWith("/access_tokens"));
+  assert.deepEqual(mint.body, { repositories: ["secret"], permissions: { metadata: "read" } });
+  assert.deepEqual(revoked, ["Bearer ghs_metadata"]);
+  stubSource({ fullName: "owner/other" });
+  await assert.rejects(resolveRepositoryId(SOURCE_ENV, 99, "owner/secret"));
 });
 
 const PRINCIPAL = { id: 4242, login: "someone" };
@@ -492,58 +550,102 @@ function authorize(extra = {}) {
   });
 }
 
-test("private repository authorization succeeds only with every proof, and revokes its token", async () => {
-  for (const role of ["write", "maintain", "admin"]) {
-    const { revoked, requests } = stubSource({ role });
+test("private repository authorization needs every proof, and revokes every token", async () => {
+  for (const permission of ["write", "admin"]) {
+    const { revoked, requests, store } = stubSource({ permission });
     const result = await authorize({ challenge: "9".repeat(64) });
     assert.deepEqual(result, {
       ok: true, installation_id: 99,
       repository: { id: 777, full_name: "owner/secret", owner_id: 5 },
     });
-    assert.deepEqual(revoked, ["Bearer ghs_source"]);
-    // Never an installation-wide token: every mint names one repository.
-    for (const item of requests.filter((entry) => entry.path.endsWith("/access_tokens"))) {
-      assert.deepEqual(Object.keys(item.body).sort(), ["permissions", "repositories"]);
-      assert.deepEqual(item.body.repositories, ["secret"]);
+    assert.deepEqual(revoked.sort(), ["Bearer ghs_metadata", "Bearer ghs_source"]);
+    // A success gives its reservation back.
+    assert.deepEqual([...store.values()][0].attempts, []);
+    // Content is only ever read with the id-scoped token.
+    for (const item of requests.filter((entry) => entry.path.startsWith("/repos/owner/secret/") &&
+        !entry.path.endsWith("/installation"))) {
+      assert.equal(item.auth, "Bearer ghs_source");
     }
   }
 });
 
-test("every repository-dependent failure gives one identical answer and is counted", async () => {
+test("every repository-dependent failure gives one identical answer and stays counted", async () => {
   const outcomes = [];
   for (const scenario of [
     { installed: false },
     { exists: false },
     { isPrivate: false },
-    { role: "read" },
-    { role: "triage" },
+    { permission: "read" },
+    { permission: "triage" },
+    { userId: 1 },
     { tag: false, challenge: true },
     { commitKnown: false },
   ]) {
     const { revoked, store } = stubSource(scenario);
     const result = await authorize(scenario.challenge ? { challenge: "9".repeat(64) } : {});
     outcomes.push(JSON.stringify(result));
-    if (scenario.installed !== false) assert.deepEqual(revoked, ["Bearer ghs_source"], JSON.stringify(scenario));
-    assert.equal([...store.values()][0].failures.length, 1);
+    if (!scenario.installed === false || scenario.installed === undefined) {
+      assert.ok(revoked.length <= 2);
+    }
+    assert.equal([...store.values()][0].attempts.length, 1, JSON.stringify(scenario));
   }
   assert.deepEqual(new Set(outcomes), new Set([JSON.stringify({ ok: false, transient: false })]));
-  // An outage is told apart and not counted.
+  // An outage is told apart and gives its reservation back.
   const { store } = stubSource({ outage: true });
   assert.deepEqual(await authorize(), { ok: false, transient: true });
-  assert.equal(store.size, 0);
+  assert.deepEqual([...store.values()][0].attempts, []);
 });
 
-test("ten refused authorizations in an hour exhaust the principal", async () => {
+test("refusals are released at one floor, whatever path they took", async () => {
+  setAuthorizationFloorForTests(300);
+  try {
+    const timings = [];
+    for (const scenario of [{ installed: false }, { permission: "read" }, { commitKnown: false }]) {
+      stubSource(scenario);
+      const started = Date.now();
+      await authorize();
+      timings.push(Date.now() - started);
+    }
+    for (const elapsed of timings) assert.ok(elapsed >= 300 && elapsed < 600, String(timings));
+  } finally {
+    setAuthorizationFloorForTests(0);
+  }
+});
+
+test("ten attempts in an hour exhaust the principal, counted before any probe", async () => {
   const store = new Map();
   for (let index = 0; index < MAX_FAILURES_PER_HOUR; index += 1) {
     stubSource({ installed: false, store });
     assert.equal(await authorizationExhausted(SOURCE_ENV, PRINCIPAL.id, NOW), false);
     await authorize();
   }
-  stubSource({ store });
+  const { requests } = stubSource({ store });
   assert.equal(await authorizationExhausted(SOURCE_ENV, PRINCIPAL.id, NOW), true);
-  // An hour later the window has moved on.
+  assert.deepEqual(await authorize(), { ok: false, exhausted: true });
+  assert.ok(!requests.some((item) => item.path.includes("installation")), "no probe once exhausted");
   assert.equal(await authorizationExhausted(SOURCE_ENV, PRINCIPAL.id, NOW + 61 * 60_000), false);
+});
+
+test("concurrent attempts cannot all pass a check made before any is counted", async () => {
+  const store = new Map();
+  stubSource({ installed: false, store });
+  const results = await Promise.all(Array.from({ length: 20 }, () => authorize()));
+  const reserved = results.filter((item) => !item.busy && !item.exhausted);
+  assert.ok(reserved.length <= MAX_FAILURES_PER_HOUR, JSON.stringify(results));
+  // A write that lost the race is reported busy rather than counted twice.
+  const raced = new Map();
+  stubSource({ installed: false, store: raced });
+  const inner = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    if ((init.method ?? "GET") === "PUT" && String(url).includes("/confidential-authorization/")) {
+      return new Response("", { status: 409 });
+    }
+    return inner(url, init);
+  };
+  raced.set("unused", {});
+  const lost = await authorize();
+  assert.equal(lost.busy, true);
+  assert.ok([...store.values()][0].attempts.length <= MAX_FAILURES_PER_HOUR);
 });
 
 const TECHNICAL_MAINTAINER = { id: 477956, login: "maintainer" };
@@ -625,13 +727,13 @@ test("an activated private route admits a Technical Maintainer test after author
     { route: "source-app", repository_id: 777, owner_id: 5, installation_id: 99 });
   assert.equal(record.push_proof.source_route, "source-app");
   assert.equal(store.has(pendingPath), false);
-  assert.deepEqual(revoked, ["Bearer ghs_source"]);
+  assert.deepEqual(revoked.sort(), ["Bearer ghs_metadata", "Bearer ghs_source"]);
   assert.ok(store.has(statePath(record.id, "state.json")));
 });
 
 test("the private route refuses identically, and stays shut until activated", async () => {
   const bodies = [];
-  for (const scenario of [{ installed: false }, { role: "read" }, { exists: false }, { isPrivate: false }]) {
+  for (const scenario of [{ installed: false }, { permission: "read" }, { exists: false }, { isPrivate: false }]) {
     const { response, store } = await privateSignIn({ env: ACTIVE, scenario });
     assert.equal(response.status, 403);
     bodies.push(await response.text());

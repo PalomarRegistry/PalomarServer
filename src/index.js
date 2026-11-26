@@ -120,7 +120,6 @@ import {
 } from "./dashboard-auth.js";
 import { isTechnicalMaintainer } from "./technical-maintainers.js";
 import {
-  authorizationExhausted,
   authorizePrivateRepository,
   NOT_AUTHORIZED,
 } from "./confidential/private-intake.js";
@@ -2013,15 +2012,26 @@ async function completePrivateSubmission(env, { nonce, pendingPath, pending, pri
     return html(errorPage(env, "Confidential submissions are not open yet",
       spentSignInProblems([])), 403, spent);
   }
-  if (await authorizationExhausted(env, principal.id)) {
-    return html(errorPage(env, "Too many refused confidential submissions",
-      spentSignInProblems(["Wait an hour before trying again."])), 429, spent);
+  const technicalMaintainer = isTechnicalMaintainer(principal);
+  if (pending.value.authorization_relationship === "technical-test" && !technicalMaintainer) {
+    await discard("Discard a test requested by a nonmember");
+    return html(errorPage(env, "This submission is not authorized",
+      spentSignInProblems(["Choose one of the authorization relationships offered on the submission form."])),
+    403, spent);
   }
   const authorized = await authorizePrivateRepository(env, {
     repositoryName: pending.value.repository,
     principal,
     commit: pending.value.commit,
   });
+  if (authorized.exhausted) {
+    return html(errorPage(env, "Too many refused confidential submissions",
+      spentSignInProblems(["Wait an hour before trying again."])), 429, spent);
+  }
+  if (authorized.busy) {
+    return html(errorPage(env, "Another confidential submission is being checked",
+      spentSignInProblems(["Wait for it to finish, then try again."])), 409, spent);
+  }
   if (!authorized.ok) {
     await discard("Discard an unauthorized confidential intake");
     return authorized.transient
@@ -2030,7 +2040,6 @@ async function completePrivateSubmission(env, { nonce, pendingPath, pending, pri
       : html(errorPage(env, "Palomar could not confirm that you may submit this repository",
           spentSignInProblems([NOT_AUTHORIZED.detail])), 403, spent);
   }
-  const technicalMaintainer = isTechnicalMaintainer(principal);
   const admittedPending = {
     ...pending.value,
     repository_id: authorized.repository.id,

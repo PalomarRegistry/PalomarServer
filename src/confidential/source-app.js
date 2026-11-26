@@ -12,6 +12,18 @@ import { appJwt } from "../github-app.js";
 
 const API = "https://api.github.com";
 const WANTED = { contents: "read", metadata: "read" };
+// Every Source App request is bounded, so a refusal's timing is set by the
+// caller's response floor rather than by how far the checks got.
+const SOURCE_TIMEOUT_MS = 1_200;
+
+/** A bounded fetch whose timeout or network failure is a transient error. */
+async function sourceFetch(url, init = {}) {
+  try {
+    return await fetch(url, { ...init, signal: AbortSignal.timeout(SOURCE_TIMEOUT_MS) });
+  } catch {
+    throw new SourceAppError("GitHub did not answer", { transient: true });
+  }
+}
 
 export class SourceAppError extends Error {
   constructor(message, { transient = false } = {}) {
@@ -44,7 +56,7 @@ function failed(response, what) {
 
 /** The Source App installation on one repository, or null when there is none. */
 export async function sourceInstallationId(env, repositoryName) {
-  const response = await fetch(`${API}/repos/${repositoryName}/installation`, {
+  const response = await sourceFetch(`${API}/repos/${repositoryName}/installation`, {
     headers: headers(`Bearer ${await jwt(env)}`),
   });
   if (response.status === 404) return null;
@@ -59,41 +71,58 @@ function exactPermissions(permissions) {
     permissions.contents === "read" && permissions.metadata === "read";
 }
 
-/**
- * Mint a read-only token for one repository of one installation.
- *
- * `repositoryId` is the contract's form. Intake does not yet know the numeric
- * id when it first mints (only the name the submitter typed), so it may pass
- * `repositoryName` instead; the response must then name exactly one
- * repository with that name, and its id is returned so every later mint uses
- * the id. In both cases anything but exactly one repository and exactly the
- * two read permissions revokes the token and fails.
- */
-export async function mintSourceReadToken(env, installationId, { repositoryId = null, repositoryName = null } = {}) {
-  if (!Number.isSafeInteger(installationId)) throw new SourceAppError("invalid installation");
-  if ((repositoryId === null) === (repositoryName === null)) {
-    throw new SourceAppError("name exactly one repository");
-  }
-  if (repositoryId !== null && !Number.isSafeInteger(repositoryId)) {
-    throw new SourceAppError("invalid repository id");
-  }
-  const scope = repositoryId !== null
-    ? { repository_ids: [repositoryId] }
-    : { repositories: [String(repositoryName).split("/")[1]] };
-  const response = await fetch(`${API}/app/installations/${installationId}/access_tokens`, {
-    method: "POST",
-    headers: { ...headers(`Bearer ${await jwt(env)}`), "content-type": "application/json" },
-    body: JSON.stringify({ ...scope, permissions: WANTED }),
-  });
-  if (!response.ok) throw failed(response, "token mint");
-  const minted = await response.json();
+function scopedTo(minted, permissionsOk, matches) {
   const repositories = Array.isArray(minted?.repositories) ? minted.repositories : [];
   const only = repositories.length === 1 ? repositories[0] : null;
-  const matches = only !== null && (repositoryId !== null
-    ? only.id === repositoryId
-    : String(only.full_name ?? "").toLowerCase() === String(repositoryName).toLowerCase());
-  if (typeof minted?.token !== "string" || !matches || !exactPermissions(minted.permissions) ||
-      minted.repository_selection !== "selected") {
+  return typeof minted?.token === "string" && only !== null && matches(only) &&
+    permissionsOk(minted.permissions) && minted.repository_selection === "selected" ? only : null;
+}
+
+async function mint(env, installationId, body) {
+  const response = await sourceFetch(`${API}/app/installations/${installationId}/access_tokens`, {
+    method: "POST",
+    headers: { ...headers(`Bearer ${await jwt(env)}`), "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) throw failed(response, "token mint");
+  return response.json();
+}
+
+/**
+ * The numeric id of the repository a submitter named, before any content can
+ * be read.
+ *
+ * Intake knows only the name. The numeric id is learnt from a token that can
+ * read nothing but metadata, scoped to that one name, checked to name exactly
+ * that one repository, and revoked at once; every content token is then
+ * minted by id (`mintSourceReadToken`). The alternative, listing the
+ * installation's repositories, would need an installation-wide token.
+ */
+export async function resolveRepositoryId(env, installationId, repositoryName) {
+  if (!Number.isSafeInteger(installationId)) throw new SourceAppError("invalid installation");
+  const name = String(repositoryName).split("/")[1];
+  const minted = await mint(env, installationId, { repositories: [name], permissions: { metadata: "read" } });
+  const only = scopedTo(minted,
+    (permissions) => Object.keys(permissions ?? {}).length === 1 && permissions.metadata === "read",
+    (repository) => String(repository.full_name ?? "").toLowerCase() === String(repositoryName).toLowerCase());
+  if (typeof minted?.token === "string") await revokeSourceToken(minted.token);
+  if (!only || !Number.isSafeInteger(only.id)) {
+    throw new SourceAppError("the metadata token was not exactly the one requested");
+  }
+  return only.id;
+}
+
+/**
+ * Mint a read-only token for exactly one repository, by numeric id, with
+ * exactly Contents: read and Metadata: read. Anything else in GitHub's answer
+ * revokes the token and fails. Never cached, never installation-wide.
+ */
+export async function mintSourceReadToken(env, installationId, repositoryId) {
+  if (!Number.isSafeInteger(installationId)) throw new SourceAppError("invalid installation");
+  if (!Number.isSafeInteger(repositoryId)) throw new SourceAppError("invalid repository id");
+  const minted = await mint(env, installationId, { repository_ids: [repositoryId], permissions: WANTED });
+  const only = scopedTo(minted, exactPermissions, (repository) => repository.id === repositoryId);
+  if (!only) {
     if (typeof minted?.token === "string") await revokeSourceToken(minted.token);
     throw new SourceAppError("the minted token was not exactly the one requested");
   }
@@ -111,6 +140,7 @@ export async function revokeSourceToken(token) {
     await fetch(`${API}/installation/token`, {
       method: "DELETE",
       headers: headers(`Bearer ${token}`),
+      signal: AbortSignal.timeout(SOURCE_TIMEOUT_MS),
     });
   } catch {
     // The token expires within an hour regardless.
@@ -119,7 +149,7 @@ export async function revokeSourceToken(token) {
 
 /** One GET with a source token: the parsed body, null on 404, or an error. */
 export async function sourceGet(token, path) {
-  const response = await fetch(`${API}${path}`, { headers: headers(`Bearer ${token}`) });
+  const response = await sourceFetch(`${API}${path}`, { headers: headers(`Bearer ${token}`) });
   if (response.status === 404 || response.status === 422) return null;
   if (!response.ok) throw failed(response, "source read");
   return response.json();

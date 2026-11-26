@@ -262,7 +262,7 @@ test("workerd verifies a GitHub-shaped OIDC token and refuses a tampered one", a
     .replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
   const now = Math.floor(Date.now() / 1000);
   const unsigned = `${encode({ alg: "RS256", kid: "k1" })}.${encode({
-    iss: OIDC_ISSUER, aud: OIDC_AUDIENCE, iat: now, exp: now + 300 })}`;
+    iss: OIDC_ISSUER, aud: OIDC_AUDIENCE, iat: now, nbf: now, exp: now + 300 })}`;
   const signature = new Uint8Array(await crypto.subtle.sign(
     "RSASSA-PKCS1-v1_5", pair.privateKey, new TextEncoder().encode(unsigned)));
   const token = `${unsigned}.${btoa(String.fromCharCode(...signature))

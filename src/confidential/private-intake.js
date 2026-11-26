@@ -6,18 +6,26 @@
  * OAuth sign-in, or later the agent gist proof). Every way this can fail
  * that depends on the repository (no installation, no such repository, a
  * public repository on this route, no write permission, a missing or wrong
- * tag, an unknown commit) gives one identical answer, so the route is no
- * oracle on another account's private repositories. Only a GitHub outage is
- * told apart, as "temporarily unavailable", and it is not counted.
+ * tag, an unknown commit) gives one identical answer, and every answer other
+ * than success is released no earlier than a fixed floor after the attempt
+ * began, so neither the body nor the timing is an oracle on another account's
+ * private repositories. Only a GitHub outage is told apart, as "temporarily
+ * unavailable", and it is not counted.
  *
- * Only the submitted repository is ever read with the Source App, and the
+ * Each attempt reserves one of the principal's ten hourly attempts before it
+ * touches the repository, with a conditional State write, so concurrent
+ * attempts cannot all pass a check made before any of them is counted. A
+ * success or an outage gives the reservation back.
+ *
+ * Only the submitted repository is ever read with the Source App, and every
  * token is revoked before this returns.
  */
 
-import { readState, writeState } from "../github.js";
+import { GitHubError, readState, writeState } from "../github.js";
 import { digest, pepper } from "../submission.js";
 import {
   mintSourceReadToken,
+  resolveRepositoryId,
   revokeSourceToken,
   SourceAppError,
   sourceGet,
@@ -32,76 +40,141 @@ export const NOT_AUTHORIZED = Object.freeze({
 
 export const MAX_FAILURES_PER_HOUR = 10;
 const HOUR_MS = 60 * 60_000;
-const WRITE_ROLES = new Set(["admin", "maintain", "write"]);
+// The base permission GitHub reports: maintain reads as write, and a custom
+// role reports its base. Admin or write may submit.
+const WRITE_PERMISSIONS = new Set(["admin", "write"]);
 
-async function failurePath(env, principalId) {
+// Longer than the slowest refusal path (six bounded requests and the
+// accounting write), so every refusal is released at the same moment.
+let floorMs = 9_000;
+
+/** For tests only: shorten the response floor. */
+export function setAuthorizationFloorForTests(ms) {
+  floorMs = ms;
+}
+
+function iso(now) {
+  return new Date(now).toISOString().replace(/\.\d+Z$/, "Z");
+}
+
+async function attemptsPath(env, principalId) {
   return `index/confidential-authorization/${await digest(`${pepper(env)}:${principalId}`)}.json`;
 }
 
 function recent(value, now) {
-  const failures = Array.isArray(value?.failures) ? value.failures : [];
-  return failures.filter((at) => {
-    const time = Date.parse(at);
-    return Number.isFinite(time) && now - time < HOUR_MS;
+  const attempts = Array.isArray(value?.attempts) ? value.attempts : [];
+  return attempts.filter((item) => {
+    const time = Date.parse(item?.at);
+    return typeof item?.id === "string" && Number.isFinite(time) && now - time < HOUR_MS;
   });
 }
 
-/** Has this principal used up its failed authorizations for the hour? */
+/** Has this principal used up its attempts for the hour? */
 export async function authorizationExhausted(env, principalId, now = Date.now()) {
-  const stored = await readState(env, await failurePath(env, principalId));
+  const stored = await readState(env, await attemptsPath(env, principalId));
   return recent(stored.value, now).length >= MAX_FAILURES_PER_HOUR;
 }
 
-async function recordFailure(env, principalId, now) {
-  const path = await failurePath(env, principalId);
+/**
+ * Reserve one attempt: `{reserved: id}`, `{exhausted: true}` or `{busy: true}`
+ * when another attempt by the same principal changed the file first.
+ */
+async function reserve(env, principalId, now) {
+  const path = await attemptsPath(env, principalId);
   const stored = await readState(env, path);
-  const failures = [...recent(stored.value, now),
-    new Date(now).toISOString().replace(/\.\d+Z$/, "Z")];
-  await writeState(env, path, { schema_version: 1, failures }, "Record a refused authorization",
-    stored.sha);
+  const attempts = recent(stored.value, now);
+  if (attempts.length >= MAX_FAILURES_PER_HOUR) return { exhausted: true };
+  const id = crypto.randomUUID();
+  try {
+    await writeState(env, path, { schema_version: 1, attempts: [...attempts, { id, at: iso(now) }] },
+      "Reserve an authorization attempt", stored.sha);
+  } catch (error) {
+    if (error instanceof GitHubError && [409, 422].includes(error.status)) return { busy: true };
+    throw error;
+  }
+  return { reserved: id };
+}
+
+/** Give a reservation back after a success or an outage. Best effort. */
+async function giveBack(env, principalId, id, now) {
+  try {
+    const path = await attemptsPath(env, principalId);
+    const stored = await readState(env, path);
+    const attempts = recent(stored.value, now).filter((item) => item.id !== id);
+    await writeState(env, path, { schema_version: 1, attempts }, "Return an authorization attempt",
+      stored.sha);
+  } catch (error) {
+    console.error("confidential-authorization", "could not return a reservation",
+      String(error?.message ?? error));
+  }
+}
+
+function sleepUntil(deadline) {
+  const wait = deadline - Date.now();
+  return wait > 0 ? new Promise((resolve) => setTimeout(resolve, wait)) : Promise.resolve();
 }
 
 /**
  * Establish that `principal` may submit `repositoryName` confidentially.
  *
- * Answers `{ok: true, repository: {id, full_name, owner_id}, installation_id}`
- * or `{ok: false, transient}`; with `transient` false the caller answers
- * `NOT_AUTHORIZED` and the failure has been counted.
+ * Answers `{ok: true, repository: {id, full_name, owner_id}, installation_id}`,
+ * `{ok: false, transient: false}` (answer `NOT_AUTHORIZED`; the attempt stays
+ * counted), `{ok: false, transient: true}` (an outage), `{ok: false,
+ * exhausted: true}` or `{ok: false, busy: true}`.
  *
  * `challenge`, when given, requires the agent proof tag
  * `refs/tags/c-<challenge>` to be a lightweight tag at `commit`.
  */
 export async function authorizePrivateRepository(env, { repositoryName, principal, commit, challenge = null,
   now = Date.now() }) {
-  let token = null;
+  const started = Date.now();
+  const deadline = started + floorMs;
+  if (!Number.isSafeInteger(principal?.id) || typeof principal?.login !== "string") {
+    await sleepUntil(deadline);
+    return { ok: false, transient: false };
+  }
+  const reservation = await reserve(env, principal.id, now);
+  if (!reservation.reserved) {
+    await sleepUntil(deadline);
+    return { ok: false, ...reservation };
+  }
+  const tokens = [];
   let outcome;
   try {
     outcome = await check();
   } catch (error) {
-    outcome = error instanceof SourceAppError && error.transient
-      ? { ok: false, transient: true }
-      : error instanceof SourceAppError ? { ok: false, transient: false } : null;
-    if (outcome === null) throw error;
+    if (!(error instanceof SourceAppError)) throw error;
+    outcome = { ok: false, transient: error.transient };
   } finally {
-    if (token) await revokeSourceToken(token);
+    await Promise.all(tokens.map(revokeSourceToken));
   }
-  if (!outcome.ok && !outcome.transient) await recordFailure(env, principal.id, now);
+  if (outcome.ok || outcome.transient) await giveBack(env, principal.id, reservation.reserved, now);
+  if (!outcome.ok) await sleepUntil(deadline);
   return outcome;
 
   async function check() {
     const no = { ok: false, transient: false };
-    if (!Number.isSafeInteger(principal?.id) || typeof principal?.login !== "string") return no;
     const installationId = await sourceInstallationId(env, repositoryName);
     if (installationId === null) return no;
-    const minted = await mintSourceReadToken(env, installationId, { repositoryName });
-    token = minted.token;
+    let repositoryId;
+    try {
+      repositoryId = await resolveRepositoryId(env, installationId, repositoryName);
+    } catch (error) {
+      if (error instanceof SourceAppError && !error.transient) return no;
+      throw error;
+    }
+    const minted = await mintSourceReadToken(env, installationId, repositoryId);
+    tokens.push(minted.token);
+    const token = minted.token;
     const repo = await sourceGet(token, `/repos/${repositoryName}`);
-    if (!repo || repo.id !== minted.repository_id || repo.private !== true) return no;
+    if (!repo || repo.id !== repositoryId || repo.private !== true ||
+        String(repo.full_name ?? "").toLowerCase() !== String(repositoryName).toLowerCase()) {
+      return no;
+    }
     const permission = await sourceGet(
       token, `/repos/${repositoryName}/collaborators/${encodeURIComponent(principal.login)}/permission`,
     );
-    const role = permission?.role_name ?? permission?.permission;
-    if (!WRITE_ROLES.has(role) || (permission?.user?.id !== undefined && permission.user.id !== principal.id)) {
+    if (!WRITE_PERMISSIONS.has(permission?.permission) || permission?.user?.id !== principal.id) {
       return no;
     }
     if (challenge !== null) {
