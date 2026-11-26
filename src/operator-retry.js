@@ -5,8 +5,12 @@ import { inflightOpen, reviewerOpen } from "./state-contract.js";
 import { readStateSnapshot, commitStateSnapshot } from "./github.js";
 import { RATE_RESET_INDEX_PATH, rateResetQueue } from "./rate-reset.js";
 
+// The AWS profile's runner exists only while a Technical Maintainer has launched
+// one (PalomarSubmission ops/aws-runner), so it is reachable here and never from
+// the automatic resource retry.
 export const EXECUTION_PROFILES = new Set([
   "palomar-standard-v1", "palomar-namespace-16x32-v1", "palomar-namespace-32x64-v1",
+  "palomar-aws-r7i-16xlarge-v1",
 ]);
 
 export function retryTransition(state, inflight, queue, { principal, reason, profile, attempt, at }) {
