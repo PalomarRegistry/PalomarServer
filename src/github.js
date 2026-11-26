@@ -507,13 +507,22 @@ export async function deleteState(env, path, sha, message) {
  */
 export async function dispatchVerification(
   env,
-  { repositoryName, commit, requestId, options, mode = "full", executionProfile, executionAttempt },
+  {
+    repositoryName, commit, requestId, options, mode = "full", executionProfile, executionAttempt,
+    origin = null, extraInputs = null,
+  },
 ) {
   if (!new Set(["preflight", "full", "correction"]).has(mode)) {
     throw new Error("invalid verification mode");
   }
+  // A confidential submission runs in the private caller repository, whose
+  // run list, inputs, logs and artifacts only its members can read. The same
+  // dispatch credential reaches it: the Submission App installation is
+  // extended to that repository rather than a second secret being added.
+  const repository = origin?.repository ?? env.SUBMISSION_REPO;
+  const workflow = origin?.workflow ?? env.VERIFY_WORKFLOW;
   const response = await fetch(
-    `${API}/repos/${env.SUBMISSION_REPO}/actions/workflows/${env.VERIFY_WORKFLOW}/dispatches`,
+    `${API}/repos/${repository}/actions/workflows/${workflow}/dispatches`,
     {
       method: "POST",
       headers: { ...headers(env.SUBMISSION_TOKEN), "content-type": "application/json" },
@@ -531,6 +540,7 @@ export async function dispatchVerification(
           ...(options && Object.keys(options).length
             ? { options: JSON.stringify(options) }
             : {}),
+          ...(extraInputs ?? {}),
         },
       }),
     },
@@ -588,16 +598,25 @@ function describeRun(run) {
 export async function findVerificationRun(
   env,
   requestId,
-  { pinnedRunId = null, since = null, mode = "full", executionAttempt = null } = {},
+  {
+    pinnedRunId = null, since = null, mode = "full", executionAttempt = null, origin = null,
+  } = {},
 ) {
   if (!new Set(["preflight", "full", "correction"]).has(mode)) {
     throw new Error("invalid verification mode");
   }
-  let expected = mode === "preflight"
-    ? `Preflight submission ${requestId}`
-    : mode === "correction"
-      ? `Validate registry correction ${requestId}`
-      : `Verify submission ${requestId}`;
+  const repository = origin?.repository ?? env.SUBMISSION_REPO;
+  const workflow = origin?.workflow ?? env.VERIFY_WORKFLOW;
+  // The private caller sets one run name for every mode (the template in the
+  // confidential design, section 2.4), and a reusable workflow's own run-name
+  // is ignored when it is called, so a confidential run is matched on that.
+  let expected = origin?.private
+    ? `Verify ${requestId}`
+    : mode === "preflight"
+      ? `Preflight submission ${requestId}`
+      : mode === "correction"
+        ? `Validate registry correction ${requestId}`
+        : `Verify submission ${requestId}`;
   if (executionAttempt) {
     if (!/^[0-9a-f]{32}$/.test(executionAttempt)) throw new Error("invalid execution attempt");
     expected += ` [${executionAttempt}]`;
@@ -606,7 +625,7 @@ export async function findVerificationRun(
   if (pinnedRunId) {
     const run = await call(
       env.SUBMISSION_TOKEN,
-      `/repos/${env.SUBMISSION_REPO}/actions/runs/${pinnedRunId}`,
+      `/repos/${repository}/actions/runs/${pinnedRunId}`,
     );
     // The repository comes from the path and the workflow and event were
     // established when this id was first discovered and written to private
@@ -624,7 +643,7 @@ export async function findVerificationRun(
     query.set("page", String(page));
     const data = await call(
       env.SUBMISSION_TOKEN,
-      `/repos/${env.SUBMISSION_REPO}/actions/workflows/${env.VERIFY_WORKFLOW}/runs?${query}`,
+      `/repos/${repository}/actions/workflows/${workflow}/runs?${query}`,
     );
     const runs = data?.workflow_runs ?? [];
     const run = runs.find((item) => item.name === expected);
@@ -637,6 +656,57 @@ export async function findVerificationRun(
   return { run: null, complete: false };
 }
 
+const MAX_DIAGNOSTIC_JOBS = 3;
+const MAX_DIAGNOSTIC_ANNOTATIONS = 50;
+
+/**
+ * Bounded diagnostics for one run in a private repository.
+ *
+ * The browser reads a public run's jobs and annotations from GitHub itself.
+ * A private run's are readable only with the dispatch credential, so the
+ * Worker reads them on the token holder's behalf: the latest jobs (names,
+ * conclusions and step names) and the failure annotations of at most three
+ * failed jobs. Nothing else of the run, and never its logs.
+ */
+export async function runDiagnostics(env, repository, runId) {
+  const jobs = (await call(
+    env.SUBMISSION_TOKEN,
+    `/repos/${repository}/actions/runs/${runId}/jobs?filter=latest&per_page=100`,
+  ))?.jobs ?? [];
+  const described = jobs.slice(0, 20).map((job) => ({
+    id: job.id,
+    name: String(job.name ?? "").slice(0, 200),
+    status: job.status ?? null,
+    conclusion: job.conclusion ?? null,
+    steps: (Array.isArray(job.steps) ? job.steps : []).slice(0, 50).map((step) => ({
+      name: String(step?.name ?? "").slice(0, 200),
+      conclusion: step?.conclusion ?? null,
+    })),
+  }));
+  const failed = described.filter((job) => job.conclusion === "failure").slice(0, MAX_DIAGNOSTIC_JOBS);
+  const annotations = [];
+  for (const job of failed) {
+    const found = await call(
+      env.SUBMISSION_TOKEN,
+      `/repos/${repository}/check-runs/${job.id}/annotations?per_page=100`,
+    );
+    for (const item of Array.isArray(found) ? found : []) {
+      if (annotations.length >= MAX_DIAGNOSTIC_ANNOTATIONS) break;
+      annotations.push({
+        annotation_level: item?.annotation_level ?? null,
+        title: String(item?.title ?? "").slice(0, 200),
+        message: String(item?.message ?? "").slice(0, 2000),
+      });
+    }
+  }
+  return {
+    jobs: described.map((job) => ({
+      name: job.name, status: job.status, conclusion: job.conclusion, steps: job.steps,
+    })),
+    annotations,
+  };
+}
+
 /**
  * The tag an agent created to prove it can write to the repository.
  *
@@ -647,15 +717,20 @@ export async function findVerificationRun(
  * object the proof is about is never one step removed from the object it names.
  */
 export const CHALLENGE_TAG_PREFIX = "palomar-verify-";
+// A tag's creation and deletion stay in a public repository's event feed, so a
+// confidential submission of a public repository is told to use a prefix that
+// does not name Palomar. It still has to be a prefix: GitHub refuses a ref
+// whose name is 64 hex characters.
+export const NEUTRAL_CHALLENGE_TAG_PREFIX = "c-";
 
-export async function challengeTag(token, name, challenge, commit) {
+export async function challengeTag(token, name, challenge, commit, { prefix = CHALLENGE_TAG_PREFIX } = {}) {
   // Prefixed, and not only for tidiness: GitHub refuses a branch or tag whose
   // name is 40 or 64 hex characters, because it could not be told apart from a
   // SHA, and the challenge is 64 hex. The prefix also means a maintainer who
   // notices the tag can tell what it was, rather than finding an unexplained
   // hex string appear and vanish on their repository.
   const ref = await call(
-    token, `/repos/${name}/git/ref/tags/${CHALLENGE_TAG_PREFIX}${challenge}`,
+    token, `/repos/${name}/git/ref/tags/${prefix}${challenge}`,
   );
   if (!ref) return { ok: false, reason: "no tag by that name exists in the repository" };
   if (ref.object?.type !== "commit") {

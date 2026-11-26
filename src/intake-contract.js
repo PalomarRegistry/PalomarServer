@@ -17,6 +17,10 @@ const RELATIONSHIPS = new Set([
   "maintainer", "approved", "technical-test", "palomar-maintainer",
 ]);
 export const MAX_PREFLIGHT_REPAIR_BYTES = 64_000;
+// Where the first workflow runs is decided here, at intake, and never later: a
+// submission that started publicly has already leaked, so it cannot become
+// confidential. Absent means public, which keeps every existing client exact.
+export const VISIBILITIES = new Set(["public", "confidential"]);
 // The verifier speaks the long form; the form and the record speak the short.
 const RELATIONSHIP_LABELS = {
   maintainer: "I am a responsible author or maintainer",
@@ -60,6 +64,8 @@ export function validateIntake(fields) {
   const evidence = String(fields.get("authorization_evidence") ?? "").trim().slice(0, 4000);
   const rawPreflightRepair = String(fields.get("preflight_repair") ?? "");
   const registryCorrection = String(fields.get("registry_correction") ?? "");
+  const rawVisibility = String(fields.get("visibility") ?? "").trim();
+  const visibility = rawVisibility || "public";
   const preflightRepair = new TextEncoder().encode(rawPreflightRepair).length <= MAX_PREFLIGHT_REPAIR_BYTES
     ? rawPreflightRepair : "";
 
@@ -79,6 +85,7 @@ export function validateIntake(fields) {
     formalization_metadata_path: String(fields.get("formalization_metadata_path") ?? ""),
     ...(preflightRepair ? { preflight_repair: preflightRepair } : {}),
     ...(registryCorrection ? { registry_correction: registryCorrection } : {}),
+    ...(rawVisibility ? { visibility: rawVisibility } : {}),
   };
 
   const problems = [];
@@ -98,6 +105,23 @@ export function validateIntake(fields) {
     problems.push(
       "Comparator configuration is required. Give the repository-relative path to the one configuration this entry records.",
     );
+  }
+  if (!VISIBILITIES.has(visibility)) {
+    problems.push("Visibility must be public or confidential.");
+  } else if (visibility === "confidential") {
+    // Confidential mode is for new results only in v1. A new version or a
+    // correction names a public entry, and a guided repair opens a public
+    // pull request on the repository, so each would make public what this mode
+    // promises to hold back.
+    if (rawExistingId) {
+      problems.push("A confidential submission must be a new result; it cannot name an existing Palomar ID.");
+    }
+    if (relationship === "palomar-maintainer" || registryCorrection) {
+      problems.push("A registry correction cannot be confidential.");
+    }
+    if (rawPreflightRepair) {
+      problems.push("A confidential submission cannot ask Palomar to open a repair pull request.");
+    }
   }
   for (const [name, value] of [
     ["Project directory", projectPath],
@@ -128,6 +152,7 @@ export function validateIntake(fields) {
       authorization_evidence: !["technical-test", "palomar-maintainer"].includes(relationship) && evidence
         ? evidence : null,
       ...(registryCorrection ? { registry_correction: registryCorrection } : {}),
+      ...(visibility === "confidential" ? { visibility } : {}),
     },
   };
 }
