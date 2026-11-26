@@ -840,7 +840,10 @@ Only a full verification with Reviewer-authenticated OOM or timeout evidence on
 budget and the same admitted commit, authorization, registration consent and
 cooldowns. The original run and failure remain in execution history. A later
 operator retry cannot reset the automatic retry allowance. There is no 64×128
-tier enabled.
+Namespace tier enabled. A Technical Maintainer may instead select the
+operator-only `palomar-aws-r7i-16xlarge-v1` profile (64 CPU / 512 GiB) with
+`tools/retry-verification.mjs --profile`, after launching its one-job EC2 runner
+as PalomarSubmission's `ops/aws-runner` describes; no automatic retry selects it.
 
 The scheduled reconciler queues the retry without requiring an open browser.
 It retains admission capacity until Reviewer has authenticated the failure,

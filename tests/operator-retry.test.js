@@ -26,6 +26,9 @@ test("recovery rejects withdrawn, active, unapproved, unauthorized and occupied 
   assert.equal(retryTransition(state, { open: [] }, queue,
     { ...options, profile: "palomar-namespace-16x32-v1" }).state.execution.profile,
   "palomar-namespace-16x32-v1");
+  assert.equal(retryTransition(state, { open: [] }, queue,
+    { ...options, profile: "palomar-aws-r7i-16xlarge-v1" }).state.execution.profile,
+  "palomar-aws-r7i-16xlarge-v1");
   assert.throws(() => retryTransition(state, { open: [{ id: "bcdefghijklm", owner: "other", submitter: "user", at: options.at }] }, queue, options));
 });
 
