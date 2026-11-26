@@ -15,6 +15,7 @@ import {
   StateUpdateOutcomeError,
   findVerificationRun,
   CHALLENGE_TAG_PREFIX,
+  NEUTRAL_CHALLENGE_TAG_PREFIX,
   challengeGist,
   challengeTag,
   deleteState,
@@ -25,6 +26,7 @@ import {
   repository as fetchRepository,
   repositoryTextFile,
   resolveCommit,
+  runDiagnostics,
   writeState,
   transactState,
 } from "./github.js";
@@ -108,6 +110,8 @@ import {
   PENDING_TTL_MS,
   release,
   scheduledMaintenance,
+  confidentialRunsConfigured,
+  verificationOrigin,
 } from "./submission-lifecycle.js";
 import {
   beginDashboardLogin,
@@ -722,6 +726,11 @@ async function beginSubmission(request, env, { machine = false } = {}) {
     authorization_evidence: evidence,
   } = submission;
   const technicalTest = relationship === "technical-test";
+  const confidential = submission.visibility === "confidential";
+
+  if (confidential && !confidentialRunsConfigured(env)) {
+    return rejected("Confidential submissions are not available on this deployment yet.");
+  }
 
   if (relationship === "palomar-maintainer" && !registryCorrection) {
     return rejected("The registry correction is missing.");
@@ -774,7 +783,9 @@ async function beginSubmission(request, env, { machine = false } = {}) {
   }
   if (repo.private) {
     return rejected(
-      "Palomar records point at source anyone can inspect, so submissions must be public.",
+      confidential
+        ? "Palomar cannot read private repositories yet. A confidential submission of a public repository is accepted."
+        : "Palomar records point at source anyone can inspect, so submissions must be public.",
     );
   }
   if (!(await resolveCommit(env.SUBMISSION_TOKEN, repositoryName, commit))) {
@@ -802,7 +813,11 @@ async function beginSubmission(request, env, { machine = false } = {}) {
     }
   }
 
-  const sourceCheck = registryCorrection ? null
+  // A confidential intake answers nothing about the source before the proof:
+  // until identity and repository authorization are complete, the caller is
+  // anyone, and a preflight diagnostic is an oracle on the source's contents.
+  // The full verifier checks every file anyway.
+  const sourceCheck = registryCorrection || confidential ? null
     : await sourcePreflight(env.GITHUB_TOKEN, repositoryName, commit);
   if (sourceCheck?.status === "fail") {
     return machine
@@ -852,6 +867,7 @@ async function beginSubmission(request, env, { machine = false } = {}) {
     authorization_evidence: evidence,
     ...(preflightRepair ? { preflight_repair: preflightRepair } : {}),
     ...(registryCorrection ? { registry_correction: registryCorrection } : {}),
+    ...(confidential ? { visibility: "confidential" } : {}),
     created_at: recordedAt(),
   };
   try {
@@ -859,7 +875,9 @@ async function beginSubmission(request, env, { machine = false } = {}) {
       env,
       `pending/${await digest(nonce)}.json`,
       pending,
-      `Begin submission for ${repositoryName}`,
+      // State history is read by more people than the submission is, so a
+      // confidential intake's commit names nothing about its source.
+      confidential ? "Begin submission" : `Begin submission for ${repositoryName}`,
     );
   } catch {
     // Nothing the submitter did wrong, and nothing they should have to retype.
@@ -884,7 +902,7 @@ async function beginSubmission(request, env, { machine = false } = {}) {
           `Create a tag at the commit you are submitting. Creating a ref needs the`,
           `same write access an ordinary browser submission checks for, which is why it is here:`,
           `  gh api -X POST repos/${repositoryName}/git/refs \\`,
-          `    -f ref=refs/tags/${CHALLENGE_TAG_PREFIX}${challenge} -f sha=${commit}`,
+          `    -f ref=refs/tags/${confidential ? NEUTRAL_CHALLENGE_TAG_PREFIX : CHALLENGE_TAG_PREFIX}${challenge} -f sha=${commit}`,
           `Then a secret gist carrying the same challenge, which is what tells`,
           `Palomar who you are, since a ref records no author:`,
           `  echo '{"public":false,"files":{"palomar.txt":{"content":"${challenge}"}}}' \\`,
@@ -897,6 +915,7 @@ async function beginSubmission(request, env, { machine = false } = {}) {
       challenge,
       repository: repositoryName,
       commit,
+      ...(confidential ? { visibility: "confidential" } : {}),
       instructions: instructions.join("\n"),
       ...(sourceCheck ? { source_preflight: sourceCheck } : {}),
     });
@@ -1366,6 +1385,17 @@ async function admitSubmission(
     preserveOnRefusal = false,
   },
 ) {
+  if (pending.visibility === "confidential" && !confidentialRunsConfigured(env)) {
+    // The intake was accepted by a deployment that could run it privately and
+    // this one cannot. Admitting it would leave nowhere safe to dispatch to.
+    return {
+      refused: true,
+      retryable: true,
+      status: 503,
+      title: "Confidential submissions are temporarily unavailable",
+      detail: ["Nothing was consumed. Try again later."],
+    };
+  }
   const earlyRepair = await authoritativeEarlyRepair(env, pending, proof);
   if (earlyRepair?.problem) {
     return {
@@ -1442,6 +1472,9 @@ async function admitSubmission(
           : {}),
       },
       registryCorrection: pending.registry_correction ?? null,
+      confidentialRunRepository: pending.visibility === "confidential"
+        ? env.CONFIDENTIAL_RUNS_REPO
+        : null,
     }),
     push_proof: proof,
     created_at: createdAt,
@@ -1755,9 +1788,23 @@ async function verifySubmission(request, env) {
     }, 409);
   }
 
-  const tag = registryCorrection
+  const confidential = pending.value.visibility === "confidential";
+  // A confidential intake is told to use the neutral prefix, and the older
+  // one is still accepted so an agent following the general instructions is
+  // not refused for it.
+  let tagPrefix = confidential ? NEUTRAL_CHALLENGE_TAG_PREFIX : CHALLENGE_TAG_PREFIX;
+  let tag = registryCorrection
     ? { ok: true }
-    : await challengeTag(env.SUBMISSION_TOKEN, repository, challenge, commit);
+    : await challengeTag(env.SUBMISSION_TOKEN, repository, challenge, commit, { prefix: tagPrefix });
+  if (confidential && !tag.ok) {
+    const fallback = await challengeTag(
+      env.SUBMISSION_TOKEN, repository, challenge, commit, { prefix: CHALLENGE_TAG_PREFIX },
+    );
+    if (fallback.ok) {
+      tag = fallback;
+      tagPrefix = CHALLENGE_TAG_PREFIX;
+    }
+  }
   let gist = tag.ok
     ? await challengeGist(env, body.gist_id, challenge, {
         issuedAt: pending.value.created_at,
@@ -1858,7 +1905,7 @@ async function verifySubmission(request, env) {
       ...(
         registryCorrection
           ? []
-          : [`  gh api -X DELETE repos/${repository}/git/refs/tags/${CHALLENGE_TAG_PREFIX}${challenge}`]
+          : [`  gh api -X DELETE repos/${repository}/git/refs/tags/${tagPrefix}${challenge}`]
       ),
       `  gh api -X DELETE gists/${body.gist_id}`,
       `Then send Authorization: Bearer <access_token> on the status and`,
@@ -2361,6 +2408,78 @@ async function typicalReviewSeconds(env) {
   return Math.round(sorted[Math.floor(sorted.length / 2)]);
 }
 
+/**
+ * The run as the token holder may see it.
+ *
+ * A public run is returned exactly as recorded. A private run's URL names the
+ * private caller repository and opens only for its members, so it is withheld
+ * and the run is marked private; the status page asks
+ * `/api/submission/diagnostics` for what it would otherwise read from GitHub.
+ */
+function submitterRun(run, confidential) {
+  if (!run) return null;
+  if (!confidential) return run;
+  return {
+    id: run.id ?? null,
+    status: run.status ?? null,
+    conclusion: run.conclusion ?? null,
+    started_at: run.started_at ?? null,
+    visibility: "private",
+  };
+}
+
+// Completed runs do not change, so their diagnostics are kept per isolate.
+// Bounded so that a burst of different submissions cannot grow it.
+const diagnosticsCache = new Map();
+const MAX_DIAGNOSTICS_CACHE = 64;
+
+/**
+ * Bounded diagnostics for the token holder's own private run.
+ *
+ * The run is the one pinned in the record, read from the record's own run
+ * repository; nothing the caller sends can name another. A public run is
+ * refused, because its diagnostics are public and the browser reads them
+ * without spending Palomar's credential.
+ */
+async function submissionDiagnostics(env, record) {
+  if (record.visibility !== "confidential") {
+    return json({ error: "this submission's run is public; read it from GitHub" }, 409);
+  }
+  let origin;
+  try {
+    origin = verificationOrigin(env, record);
+  } catch (error) {
+    if (!(error instanceof StateContractError)) throw error;
+    reportDurableContract(error);
+    return json({ error: "diagnostics are temporarily unavailable" }, 503);
+  }
+  const run = record.run;
+  if (!Number.isSafeInteger(run?.id)) return json({ error: "no verification run yet" }, 404);
+  if (run.status !== "completed") {
+    return json({ error: "the verification run has not finished" }, 409);
+  }
+  const key = `${origin.repository}:${run.id}`;
+  let diagnostics = diagnosticsCache.get(key);
+  if (!diagnostics) {
+    try {
+      diagnostics = await runDiagnostics(env, origin.repository, run.id);
+    } catch (error) {
+      if (!(error instanceof GitHubError)) throw error;
+      console.error("run-diagnostics", record.id, error.message);
+      return json({ error: "diagnostics are temporarily unavailable" }, 503);
+    }
+    diagnosticsCache.set(key, diagnostics);
+    if (diagnosticsCache.size > MAX_DIAGNOSTICS_CACHE) {
+      diagnosticsCache.delete(diagnosticsCache.keys().next().value);
+    }
+  }
+  return json({
+    run: submitterRun(run, true),
+    jobs: diagnostics.jobs,
+    annotations: diagnostics.annotations,
+  });
+}
+
 /** Refresh a verifying submission from the run it dispatched. */
 async function refresh(env, entry) {
   const record = entry.record;
@@ -2382,6 +2501,7 @@ async function refresh(env, entry) {
   const phase = activeSubmissionPhase(record);
   if (!phase) return record;
   const { run } = await findVerificationRun(env, record.id, {
+    origin: verificationOrigin(env, record),
     pinnedRunId: record[phase.runField]?.id ?? null,
     since: record.execution?.started_at ?? record.created_at,
     executionAttempt: record.execution?.attempt,
@@ -2945,6 +3065,12 @@ export default {
         await dispatchRepairer(env).catch(() => false);
         return json(result, 202);
       }
+      if (request.method === "GET" && url.pathname === "/api/submission/diagnostics") {
+        // Guarded like /api/submission: it spends the shared GitHub budget.
+        const entry = await caller(env, request, { mutating: true });
+        if (entry instanceof Response) return entry;
+        return submissionDiagnostics(env, entry.record);
+      }
       if (request.method === "GET" && url.pathname === "/api/submission") {
         // A GET, but `refresh` writes records, releases capacity, spends the
         // shared GitHub budget and dispatches reviewer work, so it is guarded
@@ -2961,6 +3087,7 @@ export default {
           reportDurableContract(error);
           return json({ error: "submission status is temporarily unavailable" }, 503);
         }
+        const confidential = record.visibility === "confidential";
         const failureDigest = record.failure
           ? await digest(JSON.stringify(record.failure))
           : null;
@@ -2979,8 +3106,9 @@ export default {
             Object.entries(record.requested_paths ?? {}).filter(([, value]) => value),
           ),
           created_at: record.created_at,
-          preflight_run: record.preflight_run ?? null,
-          run: record.run ?? null,
+          ...(confidential ? { visibility: "confidential" } : {}),
+          preflight_run: submitterRun(record.preflight_run, confidential),
+          run: submitterRun(record.run, confidential),
           failure: publicFailure(record),
           renderability_error: typeof record.renderability_error === "string"
             ? record.renderability_error.slice(0, 500)

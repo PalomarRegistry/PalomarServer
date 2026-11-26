@@ -62,6 +62,7 @@ export function intakeForm(
     .some((name) => String(values[name] ?? "") !== "");
   const manualRegistrationOpen = String(values.existing_id ?? "") !== "";
   const approvalApplies = values.authorization_relationship === "approved";
+  const confidential = values.visibility === "confidential";
   const recoveryAction = `<form method="get" action="/submissions">
         <button type="submit" class="secondary" id="find-submissions">Authenticate and find my submissions</button>
       </form>`;
@@ -208,6 +209,30 @@ export function intakeForm(
         <p class="hint">
           If this repository is only a thin wrapper around another formalization,
           answer about that underlying repository, not the wrapper.
+        </p>
+      </fieldset>
+
+      <fieldset id="visibility-choice" aria-describedby="visibility-hint">
+        <legend>Visibility</legend>
+        <label class="choice">
+          <input type="radio" name="visibility" value="public"
+                 ${confidential ? "" : "checked"}>
+          Public: verification runs in public, and registration makes the record public
+        </label>
+        <label class="choice">
+          <input type="radio" name="visibility" value="confidential"
+                 ${confidential ? "checked" : ""}>
+          Confidential: verified and reviewed privately, and nothing about this
+          submission becomes public until you release it
+        </label>
+        <p class="hint" id="visibility-hint">
+          Choose this now: a submission that starts in public cannot become
+          confidential later. Confidential mode is for new results, so it cannot
+          name an existing Palomar ID. It means not made public; it does not mean
+          unseen. GitHub, Namespace, OpenAI and Cloudflare still process the
+          source and its metadata, and Palomar&rsquo;s Technical Maintainers can
+          read the private record. The repository itself stays exactly as
+          visible as it already is, and for now it must be a public repository.
         </p>
       </fieldset>
 

@@ -121,10 +121,52 @@ async function failUnrecoverableRun(env, item, record, phase, note) {
   );
 }
 
+/** Is this deployment configured to run confidential submissions privately? */
+export function confidentialRunsConfigured(env) {
+  return typeof env.CONFIDENTIAL_RUNS_REPO === "string" &&
+    /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(env.CONFIDENTIAL_RUNS_REPO) &&
+    typeof env.CONFIDENTIAL_VERIFY_WORKFLOW === "string" &&
+    /^[A-Za-z0-9_.-]+\.ya?ml$/.test(env.CONFIDENTIAL_VERIFY_WORKFLOW);
+}
+
+/**
+ * Where a record's verification runs, decided by its durable visibility.
+ *
+ * A confidential record names its run repository, and that name must still
+ * be the configured one. Anything else fails closed: dispatching a
+ * confidential submission to the public repository would make public exactly what
+ * the mode exists to hold back, and there is no later undo.
+ */
+export function verificationOrigin(env, record) {
+  if (record?.visibility === undefined || record?.visibility === "public") {
+    if (record?.confidential !== undefined) {
+      throw new StateContractError(`${record?.id}: a public record carries a confidential block`);
+    }
+    return { repository: env.SUBMISSION_REPO, workflow: env.VERIFY_WORKFLOW, private: false };
+  }
+  if (record.visibility !== "confidential") {
+    throw new StateContractError(`${record.id}: unknown visibility`);
+  }
+  const repository = record.confidential?.run_repository;
+  if (!confidentialRunsConfigured(env) || repository !== env.CONFIDENTIAL_RUNS_REPO) {
+    throw new StateContractError(
+      `${record.id}: confidential run repository is not the configured one`,
+    );
+  }
+  return { repository, workflow: env.CONFIDENTIAL_VERIFY_WORKFLOW, private: true };
+}
+
 /** Dispatch the verification described entirely by one durable State record. */
 export function dispatchSubmissionVerification(env, record, mode = "full") {
   const effectiveMode = record.registry_correction ? "correction" : mode;
+  let origin;
+  try {
+    origin = verificationOrigin(env, record);
+  } catch (error) {
+    return Promise.reject(error);
+  }
   return dispatchVerification(env, {
+    origin,
     repositoryName: record.repository,
     commit: record.commit,
     requestId: record.id,
@@ -236,7 +278,18 @@ export async function reconcile(env) {
     const phase = activeSubmissionPhase(record.value);
     if (!phase) continue;
     const pinned = record.value[phase.runField]?.id ?? null;
+    let origin;
+    try {
+      origin = verificationOrigin(env, record.value);
+    } catch (error) {
+      if (!(error instanceof StateContractError)) throw error;
+      reportStateContract(error);
+      dispatchFailures.push(`${item.id}: ${error.message}`);
+      still.push(item);
+      continue;
+    }
     const { run, complete } = await findVerificationRun(env, item.id, {
+      origin,
       pinnedRunId: pinned,
       since: record.value.execution?.started_at ?? record.value.created_at,
       executionAttempt: record.value.execution?.attempt,
