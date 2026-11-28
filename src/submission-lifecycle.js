@@ -6,6 +6,7 @@
  * policy and HTTP presentation stay in the Worker composition root.
  */
 
+import { confidentialRunsConfigured } from "./confidential-intake.js";
 import {
   deleteState,
   dispatchVerification,
@@ -119,14 +120,6 @@ async function failUnrecoverableRun(env, item, record, phase, note) {
     `Fail unrecoverable ${phase.mode} ${item.id}`,
     record.sha,
   );
-}
-
-/** Is this deployment configured to run confidential submissions privately? */
-export function confidentialRunsConfigured(env) {
-  return typeof env.CONFIDENTIAL_RUNS_REPO === "string" &&
-    /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(env.CONFIDENTIAL_RUNS_REPO) &&
-    typeof env.CONFIDENTIAL_VERIFY_WORKFLOW === "string" &&
-    /^[A-Za-z0-9_.-]+\.ya?ml$/.test(env.CONFIDENTIAL_VERIFY_WORKFLOW);
 }
 
 /**

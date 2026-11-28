@@ -607,9 +607,9 @@ export async function findVerificationRun(
   }
   const repository = origin?.repository ?? env.SUBMISSION_REPO;
   const workflow = origin?.workflow ?? env.VERIFY_WORKFLOW;
-  // The private caller sets one run name for every mode (the template in the
-  // confidential design, section 2.4), and a reusable workflow's own run-name
-  // is ignored when it is called, so a confidential run is matched on that.
+  // The private caller sets one run name, `Verify <id>`, for every mode, and a
+  // reusable workflow's own run-name is ignored when it is called, so a
+  // confidential run is matched on that.
   let expected = origin?.private
     ? `Verify ${requestId}`
     : mode === "preflight"
@@ -656,57 +656,6 @@ export async function findVerificationRun(
   return { run: null, complete: false };
 }
 
-const MAX_DIAGNOSTIC_JOBS = 3;
-const MAX_DIAGNOSTIC_ANNOTATIONS = 50;
-
-/**
- * Bounded diagnostics for one run in a private repository.
- *
- * The browser reads a public run's jobs and annotations from GitHub itself.
- * A private run's are readable only with the dispatch credential, so the
- * Worker reads them on the token holder's behalf: the latest jobs (names,
- * conclusions and step names) and the failure annotations of at most three
- * failed jobs. Nothing else of the run, and never its logs.
- */
-export async function runDiagnostics(env, repository, runId) {
-  const jobs = (await call(
-    env.SUBMISSION_TOKEN,
-    `/repos/${repository}/actions/runs/${runId}/jobs?filter=latest&per_page=100`,
-  ))?.jobs ?? [];
-  const described = jobs.slice(0, 20).map((job) => ({
-    id: job.id,
-    name: String(job.name ?? "").slice(0, 200),
-    status: job.status ?? null,
-    conclusion: job.conclusion ?? null,
-    steps: (Array.isArray(job.steps) ? job.steps : []).slice(0, 50).map((step) => ({
-      name: String(step?.name ?? "").slice(0, 200),
-      conclusion: step?.conclusion ?? null,
-    })),
-  }));
-  const failed = described.filter((job) => job.conclusion === "failure").slice(0, MAX_DIAGNOSTIC_JOBS);
-  const annotations = [];
-  for (const job of failed) {
-    const found = await call(
-      env.SUBMISSION_TOKEN,
-      `/repos/${repository}/check-runs/${job.id}/annotations?per_page=100`,
-    );
-    for (const item of Array.isArray(found) ? found : []) {
-      if (annotations.length >= MAX_DIAGNOSTIC_ANNOTATIONS) break;
-      annotations.push({
-        annotation_level: item?.annotation_level ?? null,
-        title: String(item?.title ?? "").slice(0, 200),
-        message: String(item?.message ?? "").slice(0, 2000),
-      });
-    }
-  }
-  return {
-    jobs: described.map((job) => ({
-      name: job.name, status: job.status, conclusion: job.conclusion, steps: job.steps,
-    })),
-    annotations,
-  };
-}
-
 /**
  * The tag an agent created to prove it can write to the repository.
  *
@@ -717,20 +666,15 @@ export async function runDiagnostics(env, repository, runId) {
  * object the proof is about is never one step removed from the object it names.
  */
 export const CHALLENGE_TAG_PREFIX = "palomar-verify-";
-// A tag's creation and deletion stay in a public repository's event feed, so a
-// confidential submission of a public repository is told to use a prefix that
-// does not name Palomar. It still has to be a prefix: GitHub refuses a ref
-// whose name is 64 hex characters.
-export const NEUTRAL_CHALLENGE_TAG_PREFIX = "c-";
 
-export async function challengeTag(token, name, challenge, commit, { prefix = CHALLENGE_TAG_PREFIX } = {}) {
+export async function challengeTag(token, name, challenge, commit) {
   // Prefixed, and not only for tidiness: GitHub refuses a branch or tag whose
   // name is 40 or 64 hex characters, because it could not be told apart from a
   // SHA, and the challenge is 64 hex. The prefix also means a maintainer who
   // notices the tag can tell what it was, rather than finding an unexplained
   // hex string appear and vanish on their repository.
   const ref = await call(
-    token, `/repos/${name}/git/ref/tags/${prefix}${challenge}`,
+    token, `/repos/${name}/git/ref/tags/${CHALLENGE_TAG_PREFIX}${challenge}`,
   );
   if (!ref) return { ok: false, reason: "no tag by that name exists in the repository" };
   if (ref.object?.type !== "commit") {

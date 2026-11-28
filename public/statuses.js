@@ -210,20 +210,6 @@ export function verificationRunLocation(run) {
 }
 
 /**
- * A confidential submission's unsuccessful private run.
- *
- * Its URL is withheld, because it opens only for members of the private
- * repository; the run id is enough for the page to ask Palomar for bounded
- * diagnostics instead.
- */
-export function privateVerificationRun(run) {
-  if (run?.visibility !== "private" || run.status !== "completed" ||
-      !run.conclusion || run.conclusion === "success") return null;
-  const runId = Number(run.id);
-  return Number.isSafeInteger(runId) ? { runId, private: true } : null;
-}
-
-/**
  * Turn public GitHub check annotations into bounded, actionable diagnostics.
  * Text remains text in the caller; repository-controlled markup is never used.
  */

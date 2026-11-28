@@ -26,7 +26,6 @@ import {
   decisionCopy,
   statusPresentation,
   verificationRunLocation,
-  privateVerificationRun,
   waitingMessage as waitingStatusMessage,
 } from "/statuses.js";
 import { submissionRequest, validSubmissionToken } from "/submission-request.js";
@@ -1142,44 +1141,6 @@ repairForm?.addEventListener("submit", async (event) => {
 let lastFailureDigest = null;
 let lastFailureProfileVersion = null;
 
-/**
- * Show a private run's bounded diagnostics, read through Palomar.
- *
- * The run belongs to a private repository the submitter cannot open, so the
- * Worker reads its jobs and failure annotations with the dispatch credential
- * and returns them to this tab's own token. Palomar chooses the run from the
- * record; the page cannot name another.
- */
-async function showPrivateVerificationFailure(location) {
-  const mine = ++failureDisplayToken;
-  verificationFailureSection.hidden = false;
-  verificationErrors.replaceChildren(el("li", "Retrieving the detailed error…"));
-  verificationRunContext.replaceChildren();
-  let messages = [];
-  try {
-    const response = await submissionRequest(token, "/api/submission/diagnostics");
-    if (response.ok) {
-      const body = await response.json();
-      messages = actionableVerificationErrors(
-        body.annotations,
-        (body.jobs ?? []).filter((job) => job?.conclusion === "failure").flatMap((job) => job.steps ?? []),
-      );
-    }
-  } catch {
-    // The record and its structured failure remain the complete account.
-  }
-  if (mine !== failureDisplayToken) return;
-  if (!messages.length) {
-    messages = ["Palomar could not retrieve the detailed error automatically."];
-  }
-  verificationErrors.replaceChildren(...messages.map((message) => el("li", message)));
-  verificationRunContext.replaceChildren(document.createTextNode(
-    "This verification ran privately, so its run page is not public. " +
-    "To see the complete log, run the reusable workflow in a private repository of your own.",
-  ));
-  shownFailureRun = location.runId;
-}
-
 /** Show public, bounded check annotations without asking for a GitHub credential. */
 async function showVerificationFailure(run) {
   const location = verificationRunLocation(run);
@@ -1326,8 +1287,7 @@ async function poll() {
     return;
   }
 
-  const failedRun = verificationRunLocation(data.run ?? data.preflight_run) ??
-    privateVerificationRun(data.run ?? data.preflight_run);
+  const failedRun = verificationRunLocation(data.run ?? data.preflight_run);
   lastFailureDigest = data.failure_digest ?? null;
   lastFailureProfileVersion = data.failure?.profile_version ?? null;
   const structuredFailure = showStructuredFailure(data);
@@ -1395,7 +1355,7 @@ async function poll() {
   if (data.preflight_run?.url) row("Preflight run", link(data.preflight_run.url, data.preflight_run.url.split("/").pop()));
   if (data.run?.url) row("Verification run", link(data.run.url, data.run.url.split("/").pop()));
   if (data.run?.visibility === "private") {
-    row("Verification run", `${data.run.id} (private: confidential submissions run where only Palomar can read them)`);
+    row("Verification run", `${data.run.id ?? ""} (private: confidential submissions run where only Palomar can read them)`);
   }
 
   events.replaceChildren();
@@ -1501,8 +1461,7 @@ async function poll() {
   // page. Never hold the repository, progress, or run link behind GitHub.
   if (!structuredFailure && data.status === "verification-failed" && failedRun && shownFailureRun !== failedRun.runId) {
     legacyFailureDetails.hidden = false;
-    if (failedRun.private) void showPrivateVerificationFailure(failedRun);
-    else void showVerificationFailure(data.run);
+    void showVerificationFailure(data.run);
   }
 }
 

@@ -15,7 +15,6 @@ import {
   StateUpdateOutcomeError,
   findVerificationRun,
   CHALLENGE_TAG_PREFIX,
-  NEUTRAL_CHALLENGE_TAG_PREFIX,
   challengeGist,
   challengeTag,
   deleteState,
@@ -26,7 +25,6 @@ import {
   repository as fetchRepository,
   repositoryTextFile,
   resolveCommit,
-  runDiagnostics,
   writeState,
   transactState,
 } from "./github.js";
@@ -110,9 +108,13 @@ import {
   PENDING_TTL_MS,
   release,
   scheduledMaintenance,
-  confidentialRunsConfigured,
   verificationOrigin,
 } from "./submission-lifecycle.js";
+import {
+  CONFIDENTIAL_REFUSAL,
+  confidentialIntakeAllowed,
+  confidentialIntakeOpen,
+} from "./confidential-intake.js";
 import {
   beginDashboardLogin,
   completeDashboardLogin,
@@ -728,13 +730,11 @@ async function beginSubmission(request, env, { machine = false } = {}) {
   const technicalTest = relationship === "technical-test";
   const confidential = submission.visibility === "confidential";
 
-  if (confidential && (!confidentialRunsConfigured(env) || confidentialIntakeMode(env) === "off")) {
-    return rejected("Confidential submissions are not available on this deployment yet.");
-  }
-  // The agent route cannot make a technical test, and until invitations exist
-  // a technical test is the only confidential submission admitted.
-  if (confidential && machine && confidentialIntakeMode(env) !== "invited") {
-    return rejected("Confidential submissions are not open to the agent route yet.");
+  // Who is asking is not known until sign-in, so before it the only checks
+  // are the switch and the route. The browser is the only route: the pilot is
+  // small, and one route is one set of checks.
+  if (confidential && (machine || !confidentialIntakeOpen(env))) {
+    return rejected(...CONFIDENTIAL_REFUSAL.detail);
   }
 
   if (relationship === "palomar-maintainer" && !registryCorrection) {
@@ -789,7 +789,7 @@ async function beginSubmission(request, env, { machine = false } = {}) {
   if (repo.private) {
     return rejected(
       confidential
-        ? "Palomar cannot read private repositories yet. A confidential submission of a public repository is accepted."
+        ? "Confidential submission of a private repository is not available yet."
         : "Palomar records point at source anyone can inspect, so submissions must be public.",
     );
   }
@@ -873,7 +873,7 @@ async function beginSubmission(request, env, { machine = false } = {}) {
     ...(preflightRepair ? { preflight_repair: preflightRepair } : {}),
     ...(registryCorrection ? { registry_correction: registryCorrection } : {}),
     ...(confidential
-      ? { visibility: "confidential", repository_owner_id: repo.owner?.id ?? null }
+      ? { visibility: "confidential" }
       : {}),
     created_at: recordedAt(),
   };
@@ -909,7 +909,7 @@ async function beginSubmission(request, env, { machine = false } = {}) {
           `Create a tag at the commit you are submitting. Creating a ref needs the`,
           `same write access an ordinary browser submission checks for, which is why it is here:`,
           `  gh api -X POST repos/${repositoryName}/git/refs \\`,
-          `    -f ref=refs/tags/${confidential ? NEUTRAL_CHALLENGE_TAG_PREFIX : CHALLENGE_TAG_PREFIX}${challenge} -f sha=${commit}`,
+          `    -f ref=refs/tags/${CHALLENGE_TAG_PREFIX}${challenge} -f sha=${commit}`,
           `Then a secret gist carrying the same challenge, which is what tells`,
           `Palomar who you are, since a ref records no author:`,
           `  echo '{"public":false,"files":{"palomar.txt":{"content":"${challenge}"}}}' \\`,
@@ -922,7 +922,6 @@ async function beginSubmission(request, env, { machine = false } = {}) {
       challenge,
       repository: repositoryName,
       commit,
-      ...(confidential ? { visibility: "confidential" } : {}),
       instructions: instructions.join("\n"),
       ...(sourceCheck ? { source_preflight: sourceCheck } : {}),
     });
@@ -1392,35 +1391,11 @@ async function admitSubmission(
     preserveOnRefusal = false,
   },
 ) {
-  // Checked again at admission: the switch may have been turned off since
-  // the intake began, and admission is what dispatches work.
-  const intakeMode = confidentialIntakeMode(env);
-  // A test relationship in the pending record is only a claim; the proof's
-  // checked membership of the numeric principal is what admits one.
-  const checkedTest = pending.authorization_relationship === "technical-test" &&
-    proof?.technical_maintainer === true && isTechnicalMaintainer(proof?.principal);
-  if (pending.visibility === "confidential" && (intakeMode === "off" || (
-    intakeMode !== "invited" && !checkedTest
-  ) || ((pending.source_route ?? "public") !== "public" &&
-    !["test-private", "invited"].includes(intakeMode)))) {
-    return {
-      refused: true,
-      retryable: false,
-      status: 403,
-      title: "Confidential submissions are not open yet",
-      detail: ["For now only Palomar Technical Maintainers can make a confidential test submission."],
-    };
-  }
-  if (pending.visibility === "confidential" && !confidentialRunsConfigured(env)) {
-    // The intake was accepted by a deployment that could run it privately and
-    // this one cannot. Admitting it would leave nowhere safe to dispatch to.
-    return {
-      refused: true,
-      retryable: true,
-      status: 503,
-      title: "Confidential submissions are temporarily unavailable",
-      detail: ["Nothing was consumed. Try again later."],
-    };
+  // Checked again at admission, against the proof's numeric principal: the
+  // switch may have been turned off, or the invitation withdrawn, since the
+  // intake began, and admission is what dispatches work.
+  if (pending.visibility === "confidential" && !confidentialIntakeAllowed(env, proof?.principal)) {
+    return { refused: true, retryable: false, status: 403, ...CONFIDENTIAL_REFUSAL };
   }
   const earlyRepair = await authoritativeEarlyRepair(env, pending, proof);
   if (earlyRepair?.problem) {
@@ -1499,13 +1474,7 @@ async function admitSubmission(
       },
       registryCorrection: pending.registry_correction ?? null,
       confidential: pending.visibility === "confidential"
-        ? {
-            runRepository: env.CONFIDENTIAL_RUNS_REPO,
-            route: "public",
-            repositoryId: pending.repository_id ?? null,
-            ownerId: pending.repository_owner_id ?? null,
-            ownerPrincipalId: proof?.principal?.id ?? null,
-          }
+        ? { runRepository: env.CONFIDENTIAL_RUNS_REPO }
         : null,
     }),
     push_proof: proof,
@@ -1820,23 +1789,9 @@ async function verifySubmission(request, env) {
     }, 409);
   }
 
-  const confidential = pending.value.visibility === "confidential";
-  // A confidential intake is told to use the neutral prefix, and the older
-  // one is still accepted so an agent following the general instructions is
-  // not refused for it.
-  let tagPrefix = confidential ? NEUTRAL_CHALLENGE_TAG_PREFIX : CHALLENGE_TAG_PREFIX;
-  let tag = registryCorrection
+  const tag = registryCorrection
     ? { ok: true }
-    : await challengeTag(env.SUBMISSION_TOKEN, repository, challenge, commit, { prefix: tagPrefix });
-  if (confidential && !tag.ok) {
-    const fallback = await challengeTag(
-      env.SUBMISSION_TOKEN, repository, challenge, commit, { prefix: CHALLENGE_TAG_PREFIX },
-    );
-    if (fallback.ok) {
-      tag = fallback;
-      tagPrefix = CHALLENGE_TAG_PREFIX;
-    }
-  }
+    : await challengeTag(env.SUBMISSION_TOKEN, repository, challenge, commit);
   let gist = tag.ok
     ? await challengeGist(env, body.gist_id, challenge, {
         issuedAt: pending.value.created_at,
@@ -1937,7 +1892,7 @@ async function verifySubmission(request, env) {
       ...(
         registryCorrection
           ? []
-          : [`  gh api -X DELETE repos/${repository}/git/refs/tags/${tagPrefix}${challenge}`]
+          : [`  gh api -X DELETE repos/${repository}/git/refs/tags/${CHALLENGE_TAG_PREFIX}${challenge}`]
       ),
       `  gh api -X DELETE gists/${body.gist_id}`,
       `Then send Authorization: Bearer <access_token> on the status and`,
@@ -1945,20 +1900,6 @@ async function verifySubmission(request, env) {
       `for the browser, and it refuses a caller that is not one.`,
     ].join("\n"),
   });
-}
-
-/**
- * The single activation switch for confidential intake (contract v2.1 6.3).
- *
- * `off` admits nothing; `test-public` admits Technical Maintainer tests of
- * public repositories; `test-private` adds Technical Maintainer tests of
- * private repositories through the Source App; `invited` adds invited
- * journal submissions. Anything else, including absence, reads as `off`.
- * Public intake is unaffected by every value.
- */
-function confidentialIntakeMode(env) {
-  const mode = String(env.CONFIDENTIAL_INTAKE ?? "off");
-  return ["off", "test-public", "test-private", "invited"].includes(mode) ? mode : "off";
 }
 
 /** Answer one structurally unusable browser binding without touching State. */
@@ -2182,13 +2123,7 @@ async function completeSubmission(request, env) {
     ));
   }
 
-  // Until invitations exist, confidential intake is open only to Technical
-  // Maintainer tests, so an allowlisted account's confidential submission is
-  // always recorded as one, push access or not.
-  const confidentialTest = pending.value.visibility === "confidential" && technicalMaintainer &&
-    viewer.private !== true &&
-    (pending.value.repository_id == null || viewer.id === pending.value.repository_id);
-  const technicalTest = requestedTechnicalTest || confidentialTest || (
+  const technicalTest = requestedTechnicalTest || (
     !requestedRegistryCorrection &&
     !viewer?.permissions?.push &&
     technicalMaintainer &&
@@ -2465,8 +2400,7 @@ async function typicalReviewSeconds(env) {
  *
  * A public run is returned exactly as recorded. A private run's URL names the
  * private caller repository and opens only for its members, so it is withheld
- * and the run is marked private; the status page asks
- * `/api/submission/diagnostics` for what it would otherwise read from GitHub.
+ * and the run is marked private.
  */
 function submitterRun(run, confidential) {
   if (!run) return null;
@@ -2478,58 +2412,6 @@ function submitterRun(run, confidential) {
     started_at: run.started_at ?? null,
     visibility: "private",
   };
-}
-
-// Completed runs do not change, so their diagnostics are kept per isolate.
-// Bounded so that a burst of different submissions cannot grow it.
-const diagnosticsCache = new Map();
-const MAX_DIAGNOSTICS_CACHE = 64;
-
-/**
- * Bounded diagnostics for the token holder's own private run.
- *
- * The run is the one pinned in the record, read from the record's own run
- * repository; nothing the caller sends can name another. A public run is
- * refused, because its diagnostics are public and the browser reads them
- * without spending Palomar's credential.
- */
-async function submissionDiagnostics(env, record) {
-  if (record.visibility !== "confidential") {
-    return json({ error: "this submission's run is public; read it from GitHub" }, 409);
-  }
-  let origin;
-  try {
-    origin = verificationOrigin(env, record);
-  } catch (error) {
-    if (!(error instanceof StateContractError)) throw error;
-    reportDurableContract(error);
-    return json({ error: "diagnostics are temporarily unavailable" }, 503);
-  }
-  const run = record.run;
-  if (!Number.isSafeInteger(run?.id)) return json({ error: "no verification run yet" }, 404);
-  if (run.status !== "completed") {
-    return json({ error: "the verification run has not finished" }, 409);
-  }
-  const key = `${origin.repository}:${run.id}`;
-  let diagnostics = diagnosticsCache.get(key);
-  if (!diagnostics) {
-    try {
-      diagnostics = await runDiagnostics(env, origin.repository, run.id);
-    } catch (error) {
-      if (!(error instanceof GitHubError)) throw error;
-      console.error("run-diagnostics", record.id, error.message);
-      return json({ error: "diagnostics are temporarily unavailable" }, 503);
-    }
-    diagnosticsCache.set(key, diagnostics);
-    if (diagnosticsCache.size > MAX_DIAGNOSTICS_CACHE) {
-      diagnosticsCache.delete(diagnosticsCache.keys().next().value);
-    }
-  }
-  return json({
-    run: submitterRun(run, true),
-    jobs: diagnostics.jobs,
-    annotations: diagnostics.annotations,
-  });
 }
 
 /** Refresh a verifying submission from the run it dispatched. */
@@ -2941,6 +2823,11 @@ export default {
         if (entry.record.status === "registration-paused") {
           return json({ error: "registration is paused for operator attention" }, 409);
         }
+        // A confidential submission is never registered: it is held, and it
+        // becomes public only as a new public submission of the same commit.
+        if (entry.record.visibility === "confidential") {
+          return json({ error: "a confidential submission is held, not registered" }, 409);
+        }
         if (isTechnicalTest(entry.record)) {
           return json({
             error: "registration would be allowed if this were not a test submission",
@@ -3009,6 +2896,10 @@ export default {
         if (entry instanceof Response) return entry;
         if (isTechnicalTest(entry.record)) {
           return json({ error: "a test submission does not open repair pull requests" }, 409);
+        }
+        // A repair is a pull request on the repository, which is public.
+        if (entry.record.visibility === "confidential") {
+          return json({ error: "a confidential submission does not open repair pull requests" }, 409);
         }
         const body = await request.json().catch(() => null);
         const profileVersion = [1, 2, 3].includes(body?.profile_version)
@@ -3116,12 +3007,6 @@ export default {
         if (result.error) return json({ error: result.error }, result.status);
         await dispatchRepairer(env).catch(() => false);
         return json(result, 202);
-      }
-      if (request.method === "GET" && url.pathname === "/api/submission/diagnostics") {
-        // Guarded like /api/submission: it spends the shared GitHub budget.
-        const entry = await caller(env, request, { mutating: true });
-        if (entry instanceof Response) return entry;
-        return submissionDiagnostics(env, entry.record);
       }
       if (request.method === "GET" && url.pathname === "/api/submission") {
         // A GET, but `refresh` writes records, releases capacity, spends the

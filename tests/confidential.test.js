@@ -26,7 +26,7 @@ const ENV = {
   VERIFY_WORKFLOW: "submission.yml",
   CONFIDENTIAL_RUNS_REPO: RUNS,
   CONFIDENTIAL_VERIFY_WORKFLOW: "verify.yml",
-  CONFIDENTIAL_INTAKE: "test-public",
+  CONFIDENTIAL_INTAKE: "test",
   GITHUB_TOKEN: "state-token",
   SUBMISSION_TOKEN: "dispatch-token",
   TOKEN_PEPPER: "test-pepper",
@@ -193,23 +193,52 @@ test("confidential intake is refused before any GitHub call where it cannot run 
   delete env.CONFIDENTIAL_RUNS_REPO;
   const response = await browser("/submit", SUBMISSION, env);
   assert.equal(response.status, 400);
-  assert.match(await response.text(), /not available/);
+  assert.match(await response.text(), /open only to invited authors/);
   assert.deepEqual(calls, []);
 });
 
-test("the agent route cannot start a confidential submission yet", async () => {
-  const { calls } = stubGitHub();
-  const response = await agent("/api/submit", SUBMISSION);
-  assert.equal(response.status, 400);
-  assert.match(JSON.stringify(await response.json()), /not open to the agent route/);
-  assert.deepEqual(calls.filter((call) => !call.endsWith("/contents/pending")), []);
+test("the agent route cannot start a confidential submission, in any mode", async () => {
+  for (const mode of ["test", "invited"]) {
+    const { calls } = stubGitHub();
+    const response = await agent("/api/submit", SUBMISSION, { ...ENV, CONFIDENTIAL_INTAKE: mode });
+    assert.equal(response.status, 400);
+    assert.match(JSON.stringify(await response.json()), /open only to invited authors, through the browser/);
+    assert.deepEqual(calls.filter((call) => !call.endsWith("/contents/pending")), []);
+  }
+});
+
+test("the uniform refusal is the same words for every reason", async () => {
+  stubGitHub();
+  const machine = await (await agent("/api/submit", SUBMISSION)).json();
+  stubGitHub();
+  const off = await (await browser("/submit", SUBMISSION, { ...ENV, CONFIDENTIAL_INTAKE: "off" })).text();
+  const { CONFIDENTIAL_REFUSAL } = await import("../src/confidential-intake.js");
+  for (const line of CONFIDENTIAL_REFUSAL.detail) {
+    assert.ok(JSON.stringify(machine).includes(line));
+    assert.ok(off.includes(line));
+  }
+});
+
+test("invited mode adds only the listed ids, and test mode only Technical Maintainers", async () => {
+  const { confidentialIntakeAllowed } = await import("../src/confidential-intake.js");
+  const list = new Set([4242]);
+  const author = { id: 4242, login: "someone" };
+  const maintainer = { id: TECHNICAL_MAINTAINER_ID, login: "kim-em" };
+  assert.equal(confidentialIntakeAllowed({ ...ENV, CONFIDENTIAL_INTAKE: "invited" }, author, list), true);
+  assert.equal(confidentialIntakeAllowed({ ...ENV, CONFIDENTIAL_INTAKE: "invited" }, { id: 1 }, list), false);
+  assert.equal(confidentialIntakeAllowed({ ...ENV, CONFIDENTIAL_INTAKE: "test" }, author, list), false);
+  assert.equal(confidentialIntakeAllowed({ ...ENV, CONFIDENTIAL_INTAKE: "test" }, maintainer, list), true);
+  assert.equal(confidentialIntakeAllowed({ ...ENV, CONFIDENTIAL_INTAKE: "off" }, maintainer, list), false);
+  assert.equal(confidentialIntakeAllowed({ ...ENV, CONFIDENTIAL_INTAKE: "invited" }, { login: "no-id" }, list), false);
+  // The shipped list parses, and nobody is invited until PalomarPolicy says so.
+  assert.equal(confidentialIntakeAllowed({ ...ENV, CONFIDENTIAL_INTAKE: "invited" }, author), false);
 });
 
 test("a private repository is still refused for a confidential submission", async () => {
   const { messages } = stubGitHub({ repo: { id: 77, private: true, owner: { login: "owner", id: 5 } } });
   const response = await browser("/submit", SUBMISSION);
   assert.equal(response.status, 400);
-  assert.match(await response.text(), /cannot read private repositories yet/);
+  assert.match(await response.text(), /private repository is not available yet/);
   assert.deepEqual(messages, []);
 });
 
@@ -224,7 +253,6 @@ test("confidential intake answers nothing about the source before the proof", as
   assert.deepEqual(messages, ["Begin submission"]);
   const pending = [...store.entries()].find(([path]) => path.startsWith("pending/"))[1];
   assert.equal(pending.visibility, "confidential");
-  assert.equal(pending.repository_owner_id, 5);
 });
 
 test("a public intake keeps its preflight and its commit message", async () => {
@@ -241,19 +269,6 @@ test("a public intake keeps its preflight and its commit message", async () => {
   assert.equal(body.visibility, undefined);
   assert.deepEqual(messages, [`Begin submission for ${REPOSITORY}`]);
   assert.equal(calls.length > 0, true);
-});
-
-test("the neutral challenge tag is read under its own prefix", async () => {
-  const { challengeTag, NEUTRAL_CHALLENGE_TAG_PREFIX } = await import("../src/github.js");
-  assert.equal(NEUTRAL_CHALLENGE_TAG_PREFIX, "c-");
-  const challenge = "9".repeat(64);
-  const { calls } = stubGitHub({ tags: { [`c-${challenge}`]: COMMIT } });
-  assert.deepEqual(
-    await challengeTag("t", REPOSITORY, challenge, COMMIT, { prefix: NEUTRAL_CHALLENGE_TAG_PREFIX }),
-    { ok: true },
-  );
-  assert.equal((await challengeTag("t", REPOSITORY, challenge, COMMIT)).ok, false);
-  assert.ok(calls.some((call) => call.endsWith(`/git/ref/tags/c-${challenge}`)));
 });
 
 const TECHNICAL_MAINTAINER_ID = 477956;
@@ -285,7 +300,6 @@ async function signIn({ id = TECHNICAL_MAINTAINER_ID, login = "maintainer", push
         authorization_relationship: relationship,
         authorization_evidence: null,
         visibility: "confidential",
-        repository_owner_id: 5,
         created_at: new Date().toISOString(),
       },
     },
@@ -308,20 +322,14 @@ async function signIn({ id = TECHNICAL_MAINTAINER_ID, login = "maintainer", push
   return { ...stub, response };
 }
 
-test("a Technical Maintainer's confidential submission is admitted as a test and runs privately", async () => {
+test("a Technical Maintainer's confidential submission is admitted and runs privately", async () => {
   const { response, store, dispatches, messages } = await signIn();
   assert.equal(response.status, 303);
   const [path, record] = [...store.entries()].find(([key]) => key.endsWith("/state.json"));
   assert.ok(path);
   assert.equal(record.visibility, "confidential");
-  assert.equal(record.test_submission, true);
-  assert.equal(record.authorization.relationship, "technical-test");
-  assert.deepEqual(record.confidential, {
-    schema: 2,
-    run_repository: RUNS,
-    source: { route: "public", repository_id: 77, owner_id: 5, installation_id: null },
-    owner_principal_id: TECHNICAL_MAINTAINER_ID,
-  });
+  assert.equal(record.authorization.relationship, "maintainer");
+  assert.deepEqual(record.confidential, { run_repository: RUNS });
   assert.equal(dispatches.length, 1);
   assert.equal(dispatches[0].repository, RUNS);
   assert.equal(dispatches[0].workflow, "verify.yml");
@@ -331,10 +339,10 @@ test("a Technical Maintainer's confidential submission is admitted as a test and
   for (const message of messages) assert.doesNotMatch(message, /owner|project/, message);
 });
 
-test("anyone else's confidential submission is refused until invitations exist", async () => {
+test("anyone else's confidential submission is refused in test mode", async () => {
   const { response, store, dispatches } = await signIn({ id: 4242, login: "someone" });
   assert.equal(response.status, 403);
-  assert.match(await response.text(), /not open yet/);
+  assert.match(await response.text(), /open only to invited authors/);
   assert.ok(![...store.keys()].some((key) => key.endsWith("/state.json")));
   assert.deepEqual(dispatches, []);
 });
@@ -432,65 +440,14 @@ test("the status API marks a private run and withholds its URL", async () => {
   assert.doesNotMatch(JSON.stringify(body), /PalomarConfidentialRuns/);
 });
 
-test("the diagnostics proxy returns only the token holder's own pinned run", async () => {
-  const run = { id: 9, status: "completed", conclusion: "failure" };
-  const { calls } = stubGitHub({
-    files: await submissionFiles(confidentialRecord({ id: "z9y8x7w6v5u4", status: "verification-failed", run })),
-    jobs: [{ id: 31, name: "verify", status: "completed", conclusion: "failure",
-      steps: [{ name: "Build", conclusion: "failure" }] }],
-    annotations: { 31: [{ annotation_level: "failure", title: "", message: "Challenge.lean:3: unknown identifier" }] },
-  });
-  const response = await bearer("/api/submission/diagnostics?run=1");
-  assert.equal(response.status, 200);
-  assert.equal(response.headers.get("cache-control"), "no-store");
-  const body = await response.json();
-  assert.equal(body.run.id, 9);
-  assert.equal(body.run.url, undefined);
-  assert.equal(body.annotations[0].message, "Challenge.lean:3: unknown identifier");
-  assert.deepEqual(body.jobs[0].steps, [{ name: "Build", conclusion: "failure" }]);
-  // Read from the record's run repository and run, never from the query.
-  assert.ok(calls.some((call) => call.endsWith(`/repos/${RUNS}/actions/runs/9/jobs`)));
-  assert.ok(!calls.some((call) => /runs\/1\b/.test(call)));
-});
-
-test("the diagnostics proxy refuses public and unfinished runs", async () => {
-  stubGitHub({ files: await submissionFiles(confidentialRecord({
-    id: "q1q1q1q1q1q1", run: { id: 5, status: "in_progress" } })) });
-  assert.equal((await bearer("/api/submission/diagnostics")).status, 409);
-  const publicRecord = confidentialRecord({ id: "p1p1p1p1p1p1", status: "verification-failed",
-    run: { id: 5, status: "completed", conclusion: "failure" } });
-  delete publicRecord.visibility;
-  delete publicRecord.confidential;
-  stubGitHub({ files: await submissionFiles(publicRecord) });
-  assert.equal((await bearer("/api/submission/diagnostics")).status, 409);
-  stubGitHub();
-  const anonymous = await worker.fetch(new Request(
-    "https://submit.palomar-registry.org/api/submission/diagnostics",
-    { headers: { authorization: `Bearer ${"0".repeat(64)}` } },
-  ), ENV);
-  assert.equal(anonymous.status, 404);
-});
-
-test("the status page reads a private run's diagnostics only through Palomar", async () => {
-  const { readFile } = await import("node:fs/promises");
-  const script = await readFile(new URL("../public/status.js", import.meta.url), "utf8");
-  assert.match(script, /submissionRequest\(token, "\/api\/submission\/diagnostics"\)/);
-  const { privateVerificationRun } = await import("../public/statuses.js");
-  assert.deepEqual(privateVerificationRun({ id: 9, status: "completed", conclusion: "failure",
-    visibility: "private" }), { runId: 9, private: true });
-  assert.equal(privateVerificationRun({ id: 9, status: "completed", conclusion: "success",
-    visibility: "private" }), null);
-  assert.equal(privateVerificationRun({ id: 9, status: "completed", conclusion: "failure" }), null);
-});
-
 test("the activation switch admits nothing when off, unknown or absent", async () => {
-  for (const mode of ["off", "", "on", "Test-Public", undefined]) {
+  for (const mode of ["off", "", "on", "Test", "test-public", undefined]) {
     const env = { ...ENV, CONFIDENTIAL_INTAKE: mode };
     if (mode === undefined) delete env.CONFIDENTIAL_INTAKE;
     const { calls } = stubGitHub();
     const response = await browser("/submit", SUBMISSION, env);
     assert.equal(response.status, 400, String(mode));
-    assert.match(await response.text(), /not available/);
+    assert.match(await response.text(), /open only to invited authors/);
     assert.deepEqual(calls.filter((call) => !call.endsWith("/contents/pending")), []);
   }
 });
@@ -508,15 +465,8 @@ test("admission rechecks the switch, so turning it off stops a begun intake", as
   }
 });
 
-test("test-public admits no private-route intake, and invited is needed for the agent route", async () => {
-  const { calls } = stubGitHub();
-  const agentResponse = await agent("/api/submit", SUBMISSION, { ...ENV, CONFIDENTIAL_INTAKE: "test-private" });
-  assert.equal(agentResponse.status, 400);
-  assert.ok(!calls.some((call) => call.includes("/repos/owner/project")));
-});
-
 test("public intake is unaffected by every switch value", async () => {
-  for (const mode of ["off", "test-public", "test-private", "invited", "garbage"]) {
+  for (const mode of ["off", "test", "invited", "garbage"]) {
     const { messages } = stubGitHub();
     globalThis.fetch = ((inner) => async (url, init) => {
       if (/git\/trees/.test(String(url))) return Response.json({ tree: [] });
@@ -535,4 +485,27 @@ test("claiming the test relationship does not admit a confidential submission", 
   assert.equal(response.status, 403);
   assert.ok(![...store.keys()].some((key) => key.endsWith("/state.json")));
   assert.deepEqual(dispatches, []);
+});
+
+test("a confidential record is never registered and never opens a repair", async () => {
+  stubGitHub({ files: await submissionFiles(confidentialRecord({ status: "review-ready", review_sha256: "f".repeat(64) })) });
+  const register = await worker.fetch(new Request("https://submit.palomar-registry.org/register", {
+    method: "POST",
+    headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+    body: JSON.stringify({ review_sha256: "f".repeat(64) }),
+  }), ENV);
+  assert.equal(register.status, 409);
+  assert.match((await register.json()).error, /held, not registered/);
+  const repair = await worker.fetch(new Request("https://submit.palomar-registry.org/api/repair", {
+    method: "POST",
+    headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+    body: JSON.stringify({ edits: [] }),
+  }), ENV);
+  assert.equal(repair.status, 409);
+});
+
+test("the form offers confidential visibility only while intake is open", async () => {
+  const { intakeForm } = await import("../src/html.js");
+  assert.match(intakeForm(ENV, {}), /visibility-choice/);
+  assert.doesNotMatch(intakeForm({ ...ENV, CONFIDENTIAL_INTAKE: "off" }, {}), /visibility-choice/);
 });
