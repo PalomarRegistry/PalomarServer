@@ -17,9 +17,12 @@ import { isTechnicalMaintainer } from "./technical-maintainers.js";
 const MODES = new Set(["off", "test", "invited"]);
 
 export function validInvites(value) {
-  return value !== null && typeof value === "object" && value.schema_version === 1 &&
+  return value !== null && typeof value === "object" && !Array.isArray(value) &&
+    Object.keys(value).sort().join() === "github_user_ids,schema" &&
+    value.schema === "palomar-confidential-invites/1" &&
     Array.isArray(value.github_user_ids) &&
-    value.github_user_ids.every((id) => Number.isSafeInteger(id) && id > 0);
+    value.github_user_ids.every((id) => Number.isSafeInteger(id) && id > 0) &&
+    new Set(value.github_user_ids).size === value.github_user_ids.length;
 }
 
 const invited = new Set(validInvites(invites) ? invites.github_user_ids : []);

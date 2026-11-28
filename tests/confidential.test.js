@@ -329,7 +329,7 @@ test("a Technical Maintainer's confidential submission is admitted and runs priv
   assert.ok(path);
   assert.equal(record.visibility, "confidential");
   assert.equal(record.authorization.relationship, "maintainer");
-  assert.deepEqual(record.confidential, { run_repository: RUNS });
+  assert.equal("confidential" in record, false);
   assert.equal(dispatches.length, 1);
   assert.equal(dispatches[0].repository, RUNS);
   assert.equal(dispatches[0].workflow, "verify.yml");
@@ -352,7 +352,6 @@ function confidentialRecord(overrides = {}) {
     schema_version: 1,
     id: "a1b2c3d4e5f6",
     visibility: "confidential",
-    confidential: { run_repository: RUNS },
     status: "verifying",
     repository: REPOSITORY,
     commit: COMMIT,
@@ -374,10 +373,8 @@ test("the dispatch target is derived from the record's visibility and fails clos
     repository: RUNS, workflow: "verify.yml", private: true,
   });
   for (const record of [
-    confidentialRecord({ confidential: { run_repository: "PalomarRegistry/PalomarSubmission" } }),
-    confidentialRecord({ confidential: undefined }),
     confidentialRecord({ visibility: "unlisted" }),
-    { id: "x", confidential: { run_repository: RUNS } },
+    { id: "x", confidential: {} },
   ]) {
     assert.throws(() => verificationOrigin(ENV, record));
   }

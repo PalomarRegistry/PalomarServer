@@ -11,7 +11,7 @@ assert.ok(validInvites(local), "src/invited-confidential.json is malformed");
 // Until PalomarPolicy publishes the list, nobody is invited.
 const policy = existsSync(upstream)
   ? JSON.parse(readFileSync(upstream, "utf8"))
-  : { schema_version: 1, github_user_ids: [] };
+  : { schema: "palomar-confidential-invites/1", github_user_ids: [] };
 assert.ok(validInvites(policy), `${upstream} is malformed`);
 assert.deepEqual(
   [...local.github_user_ids].sort((a, b) => a - b),

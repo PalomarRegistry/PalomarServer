@@ -140,13 +140,16 @@ export function verificationOrigin(env, record) {
   if (record.visibility !== "confidential") {
     throw new StateContractError(`${record.id}: unknown visibility`);
   }
-  const repository = record.confidential?.run_repository;
-  if (!confidentialRunsConfigured(env) || repository !== env.CONFIDENTIAL_RUNS_REPO) {
-    throw new StateContractError(
-      `${record.id}: confidential run repository is not the configured one`,
-    );
+  // Every confidential run is in the one configured private caller, so the
+  // record names no repository; without that configuration nothing runs.
+  if (!confidentialRunsConfigured(env)) {
+    throw new StateContractError(`${record.id}: confidential runs are not configured`);
   }
-  return { repository, workflow: env.CONFIDENTIAL_VERIFY_WORKFLOW, private: true };
+  return {
+    repository: env.CONFIDENTIAL_RUNS_REPO,
+    workflow: env.CONFIDENTIAL_VERIFY_WORKFLOW,
+    private: true,
+  };
 }
 
 /** Dispatch the verification described entirely by one durable State record. */

@@ -1473,9 +1473,7 @@ async function admitSubmission(
           : {}),
       },
       registryCorrection: pending.registry_correction ?? null,
-      confidential: pending.visibility === "confidential"
-        ? { runRepository: env.CONFIDENTIAL_RUNS_REPO }
-        : null,
+      confidential: pending.visibility === "confidential",
     }),
     push_proof: proof,
     created_at: createdAt,
