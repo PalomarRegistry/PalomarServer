@@ -47,6 +47,15 @@ jobs:
           path: upstream-submission
           persist-credentials: false
       - run: node tools/check-formalization-contract.mjs upstream-submission
+      # The confidential invite list is policy data too: PalomarPolicy owns it
+      # and this Worker bundles a copy at deploy time.
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          repository: PalomarRegistry/PalomarPolicy
+          ref: main
+          path: upstream-policy
+          persist-credentials: false
+      - run: node tools/check-confidential-invites.mjs upstream-policy
 
   # This job holds the credential that can deploy the Worker, and an action
   # resolved from a tag runs before the steps that carry it. Pinned by commit,

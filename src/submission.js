@@ -164,10 +164,15 @@ export function withdrawnRecord(record, { at, note }) {
 export function newRecord({
   id, repositoryName, commit, owner, submitter, existingId, context, authorization,
   requestedPaths = {}, testSubmission = false, registryCorrection = null,
+  confidential = false,
 }) {
   return {
     schema_version: 1,
     id,
+    // Present only on a confidential record, so a public record keeps exactly
+    // the shape it always had. Visibility is fixed at admission, and every
+    // dispatch and run lookup derives the private caller from it.
+    ...(confidential ? { visibility: "confidential" } : {}),
     status: "verifying",
     repository: repositoryName,
     commit,

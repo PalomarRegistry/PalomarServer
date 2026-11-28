@@ -1354,6 +1354,9 @@ async function poll() {
   row("Submitted", data.created_at ?? "");
   if (data.preflight_run?.url) row("Preflight run", link(data.preflight_run.url, data.preflight_run.url.split("/").pop()));
   if (data.run?.url) row("Verification run", link(data.run.url, data.run.url.split("/").pop()));
+  if (data.run?.visibility === "private") {
+    row("Verification run", `${data.run.id ?? ""} (private: confidential submissions run where only Palomar can read them)`);
+  }
 
   events.replaceChildren();
   for (const event of data.events ?? []) {

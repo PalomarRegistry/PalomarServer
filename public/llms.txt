@@ -187,6 +187,14 @@ back to your user: `/submissions` (the submission form's **Find my
 submissions** action) lets them authenticate with GitHub and receive a fresh
 link while the submission is still in progress.
 
+## Confidential submissions are not open to agents
+
+Palomar has a confidential mode for an invited journal pilot: a submission is
+verified and reviewed privately, and Palomar never publishes it. It is started
+only through the browser form, by an invited author. `POST /api/submit` with
+`"visibility": "confidential"` is refused, and so is any value other than
+`"public"` or `"confidential"`. Do not look for another way in.
+
 ## A Technical Maintainer may make a Registry correction through the API
 
 This is a separate authority, not a shortcut for an ordinary submission. It is

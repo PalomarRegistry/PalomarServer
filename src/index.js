@@ -108,7 +108,13 @@ import {
   PENDING_TTL_MS,
   release,
   scheduledMaintenance,
+  verificationOrigin,
 } from "./submission-lifecycle.js";
+import {
+  CONFIDENTIAL_REFUSAL,
+  confidentialIntakeAllowed,
+  confidentialIntakeOpen,
+} from "./confidential-intake.js";
 import {
   beginDashboardLogin,
   completeDashboardLogin,
@@ -722,6 +728,14 @@ async function beginSubmission(request, env, { machine = false } = {}) {
     authorization_evidence: evidence,
   } = submission;
   const technicalTest = relationship === "technical-test";
+  const confidential = submission.visibility === "confidential";
+
+  // Who is asking is not known until sign-in, so before it the only checks
+  // are the switch and the route. The browser is the only route: the pilot is
+  // small, and one route is one set of checks.
+  if (confidential && (machine || !confidentialIntakeOpen(env))) {
+    return rejected(...CONFIDENTIAL_REFUSAL.detail);
+  }
 
   if (relationship === "palomar-maintainer" && !registryCorrection) {
     return rejected("The registry correction is missing.");
@@ -774,7 +788,9 @@ async function beginSubmission(request, env, { machine = false } = {}) {
   }
   if (repo.private) {
     return rejected(
-      "Palomar records point at source anyone can inspect, so submissions must be public.",
+      confidential
+        ? "Confidential submission of a private repository is not available yet."
+        : "Palomar records point at source anyone can inspect, so submissions must be public.",
     );
   }
   if (!(await resolveCommit(env.SUBMISSION_TOKEN, repositoryName, commit))) {
@@ -802,7 +818,11 @@ async function beginSubmission(request, env, { machine = false } = {}) {
     }
   }
 
-  const sourceCheck = registryCorrection ? null
+  // A confidential intake answers nothing about the source before the proof:
+  // until identity and repository authorization are complete, the caller is
+  // anyone, and a preflight diagnostic is an oracle on the source's contents.
+  // The full verifier checks every file anyway.
+  const sourceCheck = registryCorrection || confidential ? null
     : await sourcePreflight(env.GITHUB_TOKEN, repositoryName, commit);
   if (sourceCheck?.status === "fail") {
     return machine
@@ -852,6 +872,9 @@ async function beginSubmission(request, env, { machine = false } = {}) {
     authorization_evidence: evidence,
     ...(preflightRepair ? { preflight_repair: preflightRepair } : {}),
     ...(registryCorrection ? { registry_correction: registryCorrection } : {}),
+    ...(confidential
+      ? { visibility: "confidential" }
+      : {}),
     created_at: recordedAt(),
   };
   try {
@@ -859,7 +882,9 @@ async function beginSubmission(request, env, { machine = false } = {}) {
       env,
       `pending/${await digest(nonce)}.json`,
       pending,
-      `Begin submission for ${repositoryName}`,
+      // State history is read by more people than the submission is, so a
+      // confidential intake's commit names nothing about its source.
+      confidential ? "Begin submission" : `Begin submission for ${repositoryName}`,
     );
   } catch {
     // Nothing the submitter did wrong, and nothing they should have to retype.
@@ -1366,6 +1391,12 @@ async function admitSubmission(
     preserveOnRefusal = false,
   },
 ) {
+  // Checked again at admission, against the proof's numeric principal: the
+  // switch may have been turned off, or the invitation withdrawn, since the
+  // intake began, and admission is what dispatches work.
+  if (pending.visibility === "confidential" && !confidentialIntakeAllowed(env, proof?.principal)) {
+    return { refused: true, retryable: false, status: 403, ...CONFIDENTIAL_REFUSAL };
+  }
   const earlyRepair = await authoritativeEarlyRepair(env, pending, proof);
   if (earlyRepair?.problem) {
     return {
@@ -1442,6 +1473,7 @@ async function admitSubmission(
           : {}),
       },
       registryCorrection: pending.registry_correction ?? null,
+      confidential: pending.visibility === "confidential",
     }),
     push_proof: proof,
     created_at: createdAt,
@@ -2361,6 +2393,25 @@ async function typicalReviewSeconds(env) {
   return Math.round(sorted[Math.floor(sorted.length / 2)]);
 }
 
+/**
+ * The run as the token holder may see it.
+ *
+ * A public run is returned exactly as recorded. A private run's URL names the
+ * private caller repository and opens only for its members, so it is withheld
+ * and the run is marked private.
+ */
+function submitterRun(run, confidential) {
+  if (!run) return null;
+  if (!confidential) return run;
+  return {
+    id: run.id ?? null,
+    status: run.status ?? null,
+    conclusion: run.conclusion ?? null,
+    started_at: run.started_at ?? null,
+    visibility: "private",
+  };
+}
+
 /** Refresh a verifying submission from the run it dispatched. */
 async function refresh(env, entry) {
   const record = entry.record;
@@ -2382,6 +2433,7 @@ async function refresh(env, entry) {
   const phase = activeSubmissionPhase(record);
   if (!phase) return record;
   const { run } = await findVerificationRun(env, record.id, {
+    origin: verificationOrigin(env, record),
     pinnedRunId: record[phase.runField]?.id ?? null,
     since: record.execution?.started_at ?? record.created_at,
     executionAttempt: record.execution?.attempt,
@@ -2769,6 +2821,11 @@ export default {
         if (entry.record.status === "registration-paused") {
           return json({ error: "registration is paused for operator attention" }, 409);
         }
+        // A confidential submission is never registered: it is held, and it
+        // becomes public only as a new public submission of the same commit.
+        if (entry.record.visibility === "confidential") {
+          return json({ error: "a confidential submission is held, not registered" }, 409);
+        }
         if (isTechnicalTest(entry.record)) {
           return json({
             error: "registration would be allowed if this were not a test submission",
@@ -2837,6 +2894,10 @@ export default {
         if (entry instanceof Response) return entry;
         if (isTechnicalTest(entry.record)) {
           return json({ error: "a test submission does not open repair pull requests" }, 409);
+        }
+        // A repair is a pull request on the repository, which is public.
+        if (entry.record.visibility === "confidential") {
+          return json({ error: "a confidential submission does not open repair pull requests" }, 409);
         }
         const body = await request.json().catch(() => null);
         const profileVersion = [1, 2, 3].includes(body?.profile_version)
@@ -2961,6 +3022,7 @@ export default {
           reportDurableContract(error);
           return json({ error: "submission status is temporarily unavailable" }, 503);
         }
+        const confidential = record.visibility === "confidential";
         const failureDigest = record.failure
           ? await digest(JSON.stringify(record.failure))
           : null;
@@ -2979,8 +3041,9 @@ export default {
             Object.entries(record.requested_paths ?? {}).filter(([, value]) => value),
           ),
           created_at: record.created_at,
-          preflight_run: record.preflight_run ?? null,
-          run: record.run ?? null,
+          ...(confidential ? { visibility: "confidential" } : {}),
+          preflight_run: submitterRun(record.preflight_run, confidential),
+          run: submitterRun(record.run, confidential),
           failure: publicFailure(record),
           renderability_error: typeof record.renderability_error === "string"
             ? record.renderability_error.slice(0, 500)

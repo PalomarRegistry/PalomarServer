@@ -507,13 +507,22 @@ export async function deleteState(env, path, sha, message) {
  */
 export async function dispatchVerification(
   env,
-  { repositoryName, commit, requestId, options, mode = "full", executionProfile, executionAttempt },
+  {
+    repositoryName, commit, requestId, options, mode = "full", executionProfile, executionAttempt,
+    origin = null, extraInputs = null,
+  },
 ) {
   if (!new Set(["preflight", "full", "correction"]).has(mode)) {
     throw new Error("invalid verification mode");
   }
+  // A confidential submission runs in the private caller repository, whose
+  // run list, inputs, logs and artifacts only its members can read. The same
+  // dispatch credential reaches it: the Submission App installation is
+  // extended to that repository rather than a second secret being added.
+  const repository = origin?.repository ?? env.SUBMISSION_REPO;
+  const workflow = origin?.workflow ?? env.VERIFY_WORKFLOW;
   const response = await fetch(
-    `${API}/repos/${env.SUBMISSION_REPO}/actions/workflows/${env.VERIFY_WORKFLOW}/dispatches`,
+    `${API}/repos/${repository}/actions/workflows/${workflow}/dispatches`,
     {
       method: "POST",
       headers: { ...headers(env.SUBMISSION_TOKEN), "content-type": "application/json" },
@@ -531,6 +540,7 @@ export async function dispatchVerification(
           ...(options && Object.keys(options).length
             ? { options: JSON.stringify(options) }
             : {}),
+          ...(extraInputs ?? {}),
         },
       }),
     },
@@ -588,16 +598,25 @@ function describeRun(run) {
 export async function findVerificationRun(
   env,
   requestId,
-  { pinnedRunId = null, since = null, mode = "full", executionAttempt = null } = {},
+  {
+    pinnedRunId = null, since = null, mode = "full", executionAttempt = null, origin = null,
+  } = {},
 ) {
   if (!new Set(["preflight", "full", "correction"]).has(mode)) {
     throw new Error("invalid verification mode");
   }
-  let expected = mode === "preflight"
-    ? `Preflight submission ${requestId}`
-    : mode === "correction"
-      ? `Validate registry correction ${requestId}`
-      : `Verify submission ${requestId}`;
+  const repository = origin?.repository ?? env.SUBMISSION_REPO;
+  const workflow = origin?.workflow ?? env.VERIFY_WORKFLOW;
+  // The private caller sets one run name, `Verify <id>`, for every mode, and a
+  // reusable workflow's own run-name is ignored when it is called, so a
+  // confidential run is matched on that.
+  let expected = origin?.private
+    ? `Verify ${requestId}`
+    : mode === "preflight"
+      ? `Preflight submission ${requestId}`
+      : mode === "correction"
+        ? `Validate registry correction ${requestId}`
+        : `Verify submission ${requestId}`;
   if (executionAttempt) {
     if (!/^[0-9a-f]{32}$/.test(executionAttempt)) throw new Error("invalid execution attempt");
     expected += ` [${executionAttempt}]`;
@@ -606,7 +625,7 @@ export async function findVerificationRun(
   if (pinnedRunId) {
     const run = await call(
       env.SUBMISSION_TOKEN,
-      `/repos/${env.SUBMISSION_REPO}/actions/runs/${pinnedRunId}`,
+      `/repos/${repository}/actions/runs/${pinnedRunId}`,
     );
     // The repository comes from the path and the workflow and event were
     // established when this id was first discovered and written to private
@@ -624,7 +643,7 @@ export async function findVerificationRun(
     query.set("page", String(page));
     const data = await call(
       env.SUBMISSION_TOKEN,
-      `/repos/${env.SUBMISSION_REPO}/actions/workflows/${env.VERIFY_WORKFLOW}/runs?${query}`,
+      `/repos/${repository}/actions/workflows/${workflow}/runs?${query}`,
     );
     const runs = data?.workflow_runs ?? [];
     const run = runs.find((item) => item.name === expected);

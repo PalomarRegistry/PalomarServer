@@ -1,5 +1,7 @@
 /** Server-rendered pages. No submitted text is ever interpolated unescaped. */
 
+import { confidentialIntakeOpen } from "./confidential-intake.js";
+
 export function escape(value) {
   return String(value ?? "").replace(/[&<>"']/g, (c) => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
@@ -62,6 +64,7 @@ export function intakeForm(
     .some((name) => String(values[name] ?? "") !== "");
   const manualRegistrationOpen = String(values.existing_id ?? "") !== "";
   const approvalApplies = values.authorization_relationship === "approved";
+  const confidential = values.visibility === "confidential";
   const recoveryAction = `<form method="get" action="/submissions">
         <button type="submit" class="secondary" id="find-submissions">Authenticate and find my submissions</button>
       </form>`;
@@ -210,6 +213,30 @@ export function intakeForm(
           answer about that underlying repository, not the wrapper.
         </p>
       </fieldset>
+
+      ${confidentialIntakeOpen(env) ? `<fieldset id="visibility-choice" aria-describedby="visibility-hint">
+        <legend>Visibility</legend>
+        <label class="choice">
+          <input type="radio" name="visibility" value="public"
+                 ${confidential ? "" : "checked"}>
+          Public: verification runs in public, and registration makes the record public
+        </label>
+        <label class="choice">
+          <input type="radio" name="visibility" value="confidential"
+                 ${confidential ? "checked" : ""}>
+          Confidential (invited authors only): verified and reviewed privately,
+          and never made public by Palomar
+        </label>
+        <p class="hint" id="visibility-hint">
+          Choose this now: a submission that starts in public cannot become
+          confidential later. Confidential mode is for new results, so it cannot
+          name an existing Palomar ID. It means not made public; it does not mean
+          unseen. GitHub, Namespace, OpenAI and Cloudflare still process the
+          source and its metadata, and Palomar&rsquo;s Technical Maintainers can
+          read the private record. To make it public later, make the repository
+          public and press &ldquo;submit publicly&rdquo; on its status page.
+        </p>
+      </fieldset>` : ""}
 
       <div class="dependent" id="approval-evidence"${approvalApplies ? "" : " hidden"}>
         <label for="authorization_evidence">

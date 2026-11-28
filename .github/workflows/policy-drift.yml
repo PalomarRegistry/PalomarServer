@@ -41,3 +41,12 @@ jobs:
       # it is a pull request against this repository, not a redeploy: the
       # committed copies have to be brought forward first.
       - run: node tools/check-formalization-contract.mjs upstream-submission
+      # The confidential invite list is policy data too: PalomarPolicy owns it
+      # and this Worker bundles a copy at deploy time.
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          repository: PalomarRegistry/PalomarPolicy
+          ref: main
+          path: upstream-policy
+          persist-credentials: false
+      - run: node tools/check-confidential-invites.mjs upstream-policy
