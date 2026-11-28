@@ -195,6 +195,12 @@ only through the browser form, by an invited author. `POST /api/submit` with
 `"visibility": "confidential"` is refused, and so is any value other than
 `"public"` or `"confidential"`. Do not look for another way in.
 
+A journal or referee holding a Palomar certificate checks it at
+`GET /api/cert/<id>`, using the id in its `status_url`. The answer is
+`{"status": "valid"}` or `{"status": "withdrawn"}`, and is never cached. The
+signing keys are at `/certificate-keys.json`: each certificate's `signature` is
+Ed25519 over the UTF-8 bytes of its `payload` string, exactly as stored.
+
 ## A Technical Maintainer may make a Registry correction through the API
 
 This is a separate authority, not a shortcut for an ordinary submission. It is

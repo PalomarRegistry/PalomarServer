@@ -194,6 +194,9 @@ and never appear in the repository:
 | `SUBMISSION_TOKEN` | starts and reads verification runs, and reads the submitter's public ref while checking a proof | `PalomarSubmission`, actions, plus public reads |
 | `STATE_APP_ID`, `STATE_APP_PRIVATE_KEY` | the **Palomar State Writer** App, whose installation token replaces `GITHUB_TOKEN` | installed on `PalomarSubmissionState` only: Contents and Actions read and write, Metadata read |
 | `SUBMISSION_APP_ID`, `SUBMISSION_APP_PRIVATE_KEY` | the **Palomar Verification Dispatcher** App, whose installation token replaces `SUBMISSION_TOKEN` | installed on `PalomarSubmission` only: Actions read and write, Metadata read |
+| `SOURCE_APP_ID`, `SOURCE_APP_PRIVATE_KEY` | the **Palomar Source** App, from which one read-only token for one repository is minted per confidential intake and dropped, never cached | installed by authors on their own repositories: Contents and Metadata read |
+| `CONFIDENTIAL_R2_ACCESS_KEY_ID`, `CONFIDENTIAL_R2_SECRET_ACCESS_KEY` | an R2 API token that only signs one-hour presigned reads of confidential tarballs and tombstones for private runs | `palomar-confidential-source`, Object Read only |
+| `CERTIFICATE_SIGNING_KEY` | the Ed25519 key (PKCS#8) that signs confidential certificates; its public half is in `public/certificate-keys.json` and PalomarPolicy `keys/certificates.json` | — |
 | `TOKEN_PEPPER` | so a leaked state repository does not yield live links, and to authenticate short-lived GitHub identity cookies under a domain-separated HMAC key | — |
 
 Each GitHub role needs either its App's ID and key or its static token. The
@@ -203,6 +206,11 @@ shares. Store each key as PKCS#8 (`openssl pkcs8 -topk8 -nocrypt -in key.pem`
 converts the file GitHub issues). The Worker mints an installation token when
 it needs one and reuses it until five minutes before it expires. GET reads
 send the last ETag, and GitHub does not count a 304 against the allowance.
+
+Confidential intake (`CONFIDENTIAL_INTAKE`, `off` by default) stays off unless
+the `CONFIDENTIAL_SOURCE` R2 binding and the R2 read token are present. Its
+invite list `src/invited-confidential.json` is a copy of PalomarPolicy's, and
+CI fails when they differ.
 
 The checked-in Technical Maintainer ids are the source of truth. Adding or
 removing authority is an ordinary reviewed change to

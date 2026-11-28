@@ -22,6 +22,6 @@ export default defineProject({
   ],
   test: {
     name: "submission-worker",
-    include: ["runtime-tests/main-worker.test.js"],
+    include: ["runtime-tests/main-worker.test.js", "runtime-tests/confidential-store.test.js"],
   },
 });

@@ -12,6 +12,7 @@
  * differ.
  */
 import invites from "./invited-confidential.json" with { type: "json" };
+import { confidentialStoreConfigured } from "./confidential-store.js";
 import { isTechnicalMaintainer } from "./technical-maintainers.js";
 
 const MODES = new Set(["off", "test", "invited"]);
@@ -42,7 +43,8 @@ export function confidentialRunsConfigured(env) {
 
 /** Could anyone at all start a confidential submission on this deployment? */
 export function confidentialIntakeOpen(env) {
-  return confidentialIntakeMode(env) !== "off" && confidentialRunsConfigured(env);
+  return confidentialIntakeMode(env) !== "off" && confidentialRunsConfigured(env) &&
+    confidentialStoreConfigured(env);
 }
 
 /** May this numeric GitHub principal start a confidential submission now? */

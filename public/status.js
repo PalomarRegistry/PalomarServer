@@ -64,6 +64,12 @@ const decisionIntro = document.getElementById("decision-intro");
 const decisionStatus = document.getElementById("decision-status");
 const registerButton = document.getElementById("register");
 const withdrawButton = document.getElementById("withdraw");
+const confidentialSection = document.getElementById("confidential-section");
+const confidentialState = document.getElementById("confidential-state");
+const confidentialStatus = document.getElementById("confidential-status");
+const certificatesButton = document.getElementById("download-certificates");
+const submitPubliclyButton = document.getElementById("submit-publicly");
+const confidentialWithdrawButton = document.getElementById("confidential-withdraw");
 const registerWarning = document.getElementById("register-warning");
 const withdrawWarning = document.getElementById("withdraw-warning");
 const defaultRegisterWarning = registerWarning.textContent.trim().replace(/\s+/g, " ");
@@ -302,6 +308,78 @@ async function decide(button, path, confirmation, body = null) {
   decisionStatus.textContent = "Recorded.";
   poll();
 }
+
+const CONFIDENTIAL_STATES = {
+  reviewing: "Being verified and reviewed privately. Certificates are made once the review passes.",
+  held: "Held: verified and passed review. Nothing about it is public.",
+  withdrawn: "Withdrawn. Palomar is deleting what it holds, and both certificates read as withdrawn.",
+};
+
+function showConfidential(data) {
+  if (data.visibility !== "confidential") {
+    confidentialSection.hidden = true;
+    return;
+  }
+  const state = data.confidential?.state ?? "withdrawn";
+  confidentialSection.hidden = false;
+  confidentialState.textContent = CONFIDENTIAL_STATES[state] ?? CONFIDENTIAL_STATES.withdrawn;
+  certificatesButton.hidden = state !== "held";
+  submitPubliclyButton.hidden = state !== "held";
+  confidentialWithdrawButton.hidden = state === "withdrawn";
+  // A confidential submission is never registered; its decisions are here.
+  decisionSection.hidden = true;
+}
+
+function download(name, value) {
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(new Blob([JSON.stringify(value, null, 2) + "\n"], { type: "application/json" }));
+  link.download = name;
+  link.click();
+  URL.revokeObjectURL(link.href);
+}
+
+async function confidentialAction(path, method, confirmation) {
+  if (confirmation && !window.confirm(confirmation)) return null;
+  confidentialStatus.textContent = "Working…";
+  const response = await submissionRequest(token, path, method === "POST" ? { method } : {});
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    confidentialStatus.textContent = `That did not work: ${body.error ?? response.status}`;
+    return null;
+  }
+  confidentialStatus.textContent = "";
+  return body;
+}
+
+certificatesButton?.addEventListener("click", async () => {
+  const pair = await confidentialAction("/api/certificates", "GET");
+  if (!pair) return;
+  const id = JSON.parse(pair.full.payload).palomar_id;
+  download(`palomar-certificate-${id}-full.json`, pair.full);
+  download(`palomar-certificate-${id}-anonymous.json`, pair.anonymous);
+});
+
+submitPubliclyButton?.addEventListener("click", async () => {
+  const result = await confidentialAction(
+    "/api/submit-publicly", "POST",
+    "This starts an ordinary public submission of the same commit: it is verified and " +
+      "reviewed again in public, and can then be registered. Continue?",
+  );
+  if (!result) return;
+  confidentialStatus.replaceChildren(
+    "The public submission has started. ",
+    ...(result.status_url ? [link(result.status_url, "Open its status page (bookmark it)")] : []),
+  );
+});
+
+confidentialWithdrawButton?.addEventListener("click", async () => {
+  const result = await confidentialAction(
+    "/withdraw", "POST",
+    "Withdrawing deletes the source and certificates Palomar holds for this submission, " +
+      "and both certificates will read as withdrawn. It cannot be undone. Withdraw?",
+  );
+  if (result) poll();
+});
 
 registerButton?.addEventListener("click", () =>
   decide(
@@ -1431,6 +1509,7 @@ async function poll() {
   withdrawButton.disabled = decisionInFlight || !presentation.withdraw;
   registerWarning.hidden = !presentation.register;
   withdrawWarning.hidden = !presentation.withdraw;
+  showConfidential(data);
   registerWarning.textContent = data.mathlib_cache_available === false
     ? `${missingMathlibCacheWarning} ${defaultRegisterWarning}`
     : defaultRegisterWarning;
