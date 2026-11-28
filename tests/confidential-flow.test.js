@@ -238,7 +238,7 @@ test("a private repository is read once at admission and runs from a presigned t
   assert.equal(body.inputs.source_sha256, lifecycle.source_sha256);
   assert.match(body.inputs.source_url,
     new RegExp(`^https://account\\.r2\\.cloudflarestorage\\.com/palomar-confidential-source/conf/${id}/source\\.tar\\.gz\\?.*X-Amz-Expires=3600&`));
-  assert.match(body.inputs.tombstone_url, new RegExp(`/conf-tombstones/${id}\\?.*X-Amz-Expires=86400&`));
+  assert.match(body.inputs.tombstone_url, new RegExp(`/conf-tombstones/${id}\\?.*X-Amz-Expires=604800&`));
 
   // The token reached no response, log line, request body, State file or R2 object.
   const everything = [
