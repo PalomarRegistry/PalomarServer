@@ -513,3 +513,37 @@ test("a hold interrupted by a withdrawal leaves no anonymous mapping behind", as
   assert.equal((await readLifecycle(env, id)).value.state, "withdrawn");
   assert.deepEqual([...bucket.objects.keys()].filter((key) => key.startsWith("conf-anon/")), []);
 });
+
+test("the author sees the reviewer's private failure text, checked against its digest", async () => {
+  const env = environment();
+  const { store, token, id } = await admitted(env);
+  const document = { failure: { phase: "verification", diagnostics: [{ code: "lean.build", summary: "Challenge.lean:3: unknown identifier" }] } };
+  const errors = { renderability_error: "render failed at Project/Challenge.lean" };
+  const pointer = async (value) => {
+    const bytes = new TextEncoder().encode(JSON.stringify(value));
+    const sha = Buffer.from(await crypto.subtle.digest("SHA-256", bytes)).toString("hex");
+    await env.CONFIDENTIAL_SOURCE.put(`conf/${id}/text/${sha}.json`, bytes);
+    return { key: `conf/${id}/text/${sha}.json`, sha256: sha };
+  };
+  const path = statePath(id, "state.json");
+  store.set(path, {
+    ...store.get(path), status: "verification-failed",
+    failure: { phase: "verification", diagnostics: [{ code: "lean.build" }], text: await pointer(document) },
+    confidential: { ...store.get(path).confidential, error_text: await pointer(errors) },
+  });
+  const body = await (await bearer(env, token, "/api/submission")).json();
+  assert.equal(body.failure.diagnostics[0].summary, "Challenge.lean:3: unknown identifier");
+  assert.equal(body.renderability_error, errors.renderability_error);
+  assert.deepEqual(body.confidential_errors, errors);
+  // A pointer outside this submission, or bytes that do not match, show nothing.
+  const other = await pointer(document);
+  store.set(path, { ...store.get(path), failure: { phase: "verification", diagnostics: [{ code: "lean.build" }],
+    text: { key: other.key.replace(id, "zzzzzzzzzzzz"), sha256: other.sha256 } } });
+  await env.CONFIDENTIAL_SOURCE.put(`conf/${id}/text/${(await pointer(errors)).sha256}.json`, "tampered");
+  const again = await (await bearer(env, token, "/api/submission")).json();
+  assert.equal(again.failure.diagnostics[0].summary, undefined);
+  assert.equal(again.confidential_errors, undefined);
+  // And without the token, nothing at all.
+  const anonymous = await worker.fetch(new Request("https://submit.palomar-registry.org/api/submission"), env);
+  assert.notEqual(anonymous.status, 200);
+});

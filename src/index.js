@@ -119,6 +119,7 @@ import {
   captureSource,
   certificatePair,
   certificateStatus,
+  confidentialText,
   confidentialViewer,
   dailyConfidentialPass,
   discardSource,
@@ -3251,7 +3252,14 @@ export default {
         const confidential = record.visibility === "confidential";
         // The author's own polling is what normally holds a passed review.
         let lifecycle = null;
+        // The reviewer keeps a confidential record's failure prose and error
+        // strings in R2, not State; only this token holder sees them.
+        let text = { failure: null, errors: null };
         if (confidential) {
+          text = await confidentialText(env, record).catch((error) => {
+            console.error("confidential-text", record.id, String(error?.message ?? error));
+            return text;
+          });
           try {
             lifecycle = await promoteHeld(env, record.id, SUBMIT_ORIGIN, { record });
           } catch (error) {
@@ -3289,10 +3297,21 @@ export default {
             : {}),
           preflight_run: submitterRun(record.preflight_run, confidential),
           run: submitterRun(record.run, confidential),
-          failure: publicFailure(record),
+          failure: publicFailure(text.failure ? { ...record, failure: text.failure } : record),
           renderability_error: typeof record.renderability_error === "string"
             ? record.renderability_error.slice(0, 500)
-            : null,
+            : typeof text.errors?.renderability_error === "string"
+              ? text.errors.renderability_error.slice(0, 500)
+              : null,
+          ...(text.errors
+            ? {
+                confidential_errors: Object.fromEntries(
+                  ["review_error", "registration_error", "renderability_error", "registration_failure_detail"]
+                    .filter((name) => typeof text.errors[name] === "string")
+                    .map((name) => [name, text.errors[name].slice(0, 2000)]),
+                ),
+              }
+            : {}),
           failure_digest: failureDigest,
           repair: record.repair
             ? submitterRepair(repairEntry?.value) ?? {

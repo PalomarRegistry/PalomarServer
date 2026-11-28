@@ -323,6 +323,10 @@ function showConfidential(data) {
   const state = data.confidential?.state ?? "withdrawn";
   confidentialSection.hidden = false;
   confidentialState.textContent = CONFIDENTIAL_STATES[state] ?? CONFIDENTIAL_STATES.withdrawn;
+  // Error text the reviewer kept out of State, shown only to this token holder.
+  for (const message of Object.values(data.confidential_errors ?? {})) {
+    confidentialState.append(el("br"), String(message));
+  }
   certificatesButton.hidden = state !== "held";
   submitPubliclyButton.hidden = state !== "held";
   confidentialWithdrawButton.hidden = state === "withdrawn";

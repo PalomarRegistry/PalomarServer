@@ -379,3 +379,34 @@ async function commitOnDefaultBranch(env, repository, branch, commit) {
   const comparison = await response.json();
   return ["identical", "behind"].includes(comparison?.status);
 }
+
+/**
+ * The reviewer's private text for a confidential record (part 11.2): the full
+ * failure behind `failure.text`, and the error strings behind
+ * `confidential.error_text`, each `{key, sha256}` naming
+ * `conf/<id>/text/<sha256>.json`. Read only for the authenticated author, and
+ * only when the object is under this submission's prefix and its bytes hash
+ * to the recorded digest; anything else reads as nothing.
+ */
+export async function confidentialText(env, record) {
+  const read = async (pointer) => {
+    const sha = pointer?.sha256;
+    if (!/^[0-9a-f]{64}$/.test(sha ?? "") || pointer.key !== `conf/${record.id}/text/${sha}.json`) return null;
+    const object = await env.CONFIDENTIAL_SOURCE.get(pointer.key);
+    if (!object) return null;
+    const bytes = new Uint8Array(await object.arrayBuffer());
+    const digest = [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))]
+      .map((byte) => byte.toString(16).padStart(2, "0")).join("");
+    if (digest !== sha) return null;
+    try {
+      return JSON.parse(new TextDecoder().decode(bytes));
+    } catch {
+      return null;
+    }
+  };
+  const [failure, errors] = await Promise.all([read(record.failure?.text), read(record.confidential?.error_text)]);
+  return {
+    failure: failure?.failure && typeof failure.failure === "object" ? failure.failure : null,
+    errors: errors && typeof errors === "object" ? errors : null,
+  };
+}
