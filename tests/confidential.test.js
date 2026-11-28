@@ -10,6 +10,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import worker from "../src/index.js";
+import { fakeR2 } from "./fake-r2.js";
+import { githubTarball, githubTree, PLAIN_PROJECT } from "./tarball.js";
 import { validateIntake } from "../src/intake-contract.js";
 import { tokenDigest, statePath } from "../src/submission.js";
 import {
@@ -33,6 +35,10 @@ const ENV = {
   OAUTH_CLIENT_ID: "client-id",
   OAUTH_CLIENT_SECRET: "client-secret",
   INTAKE_LIMITER: { limit: async () => ({ success: true }) },
+  CONFIDENTIAL_SOURCE: fakeR2(),
+  CONFIDENTIAL_R2_ACCOUNT_ID: "account",
+  CONFIDENTIAL_R2_ACCESS_KEY_ID: "r2-read-key",
+  CONFIDENTIAL_R2_SECRET_ACCESS_KEY: "r2-read-secret",
 };
 const REPOSITORY = "owner/project";
 const COMMIT = "c".repeat(40);
@@ -112,6 +118,8 @@ function stubGitHub({ files = {}, repo = { id: 77, private: false, owner: { logi
     }
     if (path === `/repos/${REPOSITORY}`) return repo ? Response.json(repo) : new Response("", { status: 404 });
     if (path === `/repos/${REPOSITORY}/commits/${COMMIT}`) return Response.json({ sha: COMMIT });
+    if (path === `/repos/${REPOSITORY}/git/trees/${COMMIT}`) return Response.json(githubTree(PLAIN_PROJECT));
+    if (path === `/repos/${REPOSITORY}/tarball/${COMMIT}`) return new Response(githubTarball(PLAIN_PROJECT));
     const tag = /^\/repos\/owner\/project\/git\/ref\/tags\/(.+)$/.exec(path);
     if (tag) {
       return tags[tag[1]]
@@ -234,22 +242,15 @@ test("invited mode adds only the listed ids, and test mode only Technical Mainta
   assert.equal(confidentialIntakeAllowed({ ...ENV, CONFIDENTIAL_INTAKE: "invited" }, author), false);
 });
 
-test("a private repository is still refused for a confidential submission", async () => {
-  const { messages } = stubGitHub({ repo: { id: 77, private: true, owner: { login: "owner", id: 5 } } });
-  const response = await browser("/submit", SUBMISSION);
-  assert.equal(response.status, 400);
-  assert.match(await response.text(), /private repository is not available yet/);
-  assert.deepEqual(messages, []);
-});
-
 test("confidential intake answers nothing about the source before the proof", async () => {
   const { calls, messages, store } = stubGitHub({
     repo: { id: 77, private: false, owner: { login: "owner", id: 5 } },
   });
   const response = await browser("/submit", SUBMISSION);
   assert.equal(response.status, 303);
-  // No tree or file read: the preflight is skipped, not merely hidden.
-  assert.ok(!calls.some((call) => /git\/trees|raw\.githubusercontent/.test(call)), calls.join("\n"));
+  // Nothing about the repository is read before sign-in: not the repository,
+  // not the commit, and no preflight. It may be private.
+  assert.ok(!calls.some((call) => call.includes(`/repos/${REPOSITORY}`)), calls.join("\n"));
   assert.deepEqual(messages, ["Begin submission"]);
   const pending = [...store.entries()].find(([path]) => path.startsWith("pending/"))[1];
   assert.equal(pending.visibility, "confidential");
@@ -329,7 +330,8 @@ test("a Technical Maintainer's confidential submission is admitted and runs priv
   assert.ok(path);
   assert.equal(record.visibility, "confidential");
   assert.equal(record.authorization.relationship, "maintainer");
-  assert.equal("confidential" in record, false);
+  assert.match(record.confidential.source_sha256, /^[0-9a-f]{64}$/);
+  assert.equal(Object.keys(record.confidential).length, 1);
   assert.equal(dispatches.length, 1);
   assert.equal(dispatches[0].repository, RUNS);
   assert.equal(dispatches[0].workflow, "verify.yml");

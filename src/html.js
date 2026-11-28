@@ -581,6 +581,28 @@ export function statusPage(env) {
     </div>
     <p class="hint" id="decision-status" role="status"></p>
 
+    <section id="confidential-section" hidden>
+      <h2>Confidential submission</h2>
+      <p id="confidential-state"></p>
+      <div class="decision">
+        <button type="button" id="download-certificates" hidden>Download the certificates</button>
+        <button type="button" id="submit-publicly" class="secondary" hidden>Submit publicly</button>
+        <button type="button" id="confidential-withdraw" class="secondary">Withdraw and delete</button>
+      </div>
+      <p class="hint">
+        The full certificate names this repository and commit, for the journal.
+        The anonymous one carries only the Challenge, the toolchain and the
+        verdict, for a double-blind referee. Both say where to check that they
+        are still valid. To make this result public, make the repository public,
+        keep the Palomar Source App installed, and press &ldquo;Submit
+        publicly&rdquo;: that starts an ordinary public submission of the same
+        commit, verified and reviewed again. Withdrawing deletes the source and
+        certificates Palomar holds and makes both certificates read as withdrawn;
+        review text stays in Palomar&rsquo;s private State history.
+      </p>
+      <p class="hint" id="confidential-status" role="status"></p>
+    </section>
+
     <section class="disclosure">
       <h2>Keep this link</h2>
       <p>

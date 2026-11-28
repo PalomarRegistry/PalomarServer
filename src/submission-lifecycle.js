@@ -7,6 +7,7 @@
  */
 
 import { confidentialRunsConfigured } from "./confidential-intake.js";
+import { confidentialRunInputs } from "./confidential.js";
 import {
   deleteState,
   dispatchVerification,
@@ -153,16 +154,15 @@ export function verificationOrigin(env, record) {
 }
 
 /** Dispatch the verification described entirely by one durable State record. */
-export function dispatchSubmissionVerification(env, record, mode = "full") {
+export async function dispatchSubmissionVerification(env, record, mode = "full") {
   const effectiveMode = record.registry_correction ? "correction" : mode;
-  let origin;
-  try {
-    origin = verificationOrigin(env, record);
-  } catch (error) {
-    return Promise.reject(error);
-  }
+  const origin = verificationOrigin(env, record);
+  // A confidential job gets its source as a presigned read of the tarball,
+  // and the tombstone URL it checks before starting and before each upload.
+  const extraInputs = origin.private ? await confidentialRunInputs(env, record) : null;
   return dispatchVerification(env, {
     origin,
+    extraInputs,
     repositoryName: record.repository,
     commit: record.commit,
     requestId: record.id,

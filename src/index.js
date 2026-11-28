@@ -116,6 +116,23 @@ import {
   confidentialIntakeOpen,
 } from "./confidential-intake.js";
 import {
+  captureSource,
+  certificatePair,
+  certificateStatus,
+  confidentialText,
+  confidentialViewer,
+  dailyConfidentialPass,
+  discardSource,
+  dispatchCleanup,
+  promoteHeld,
+  publicSubmissionId,
+  SourceRefusal,
+  SourceUnavailable,
+  submitPubliclyRefusal,
+  withdrawConfidential,
+} from "./confidential.js";
+import { readLifecycle } from "./confidential-store.js";
+import {
   beginDashboardLogin,
   completeDashboardLogin,
   dashboardPrincipal,
@@ -331,6 +348,10 @@ const REQUIRED_SECRETS = [
   [["OAUTH_CLIENT_SECRET"]],
 ];
 
+// The second cron in wrangler.jsonc; every other trigger is the ten-minute pass.
+export const DAILY_CRON = "23 3 * * *";
+const SUBMIT_ORIGIN = "https://submit.palomar-registry.org";
+
 const PAUSED_OPERATIONS = new Set([
   "POST /api/submit",
   "POST /api/verify",
@@ -342,6 +363,9 @@ const PAUSED_OPERATIONS = new Set([
   "POST /withdraw",
   "POST /register",
   "POST /api/repair",
+  "POST /api/submit-publicly",
+  // Holding a confidential submission writes its lifecycle and certificates.
+  "GET /api/certificates",
   // Refreshing a status can update the record, release capacity and dispatch
   // a reviewer, despite its GET method.
   "GET /api/submission",
@@ -782,18 +806,19 @@ async function beginSubmission(request, env, { machine = false } = {}) {
              { "retry-after": "300" });
   }
 
-  const repo = await fetchRepository(env.GITHUB_TOKEN, repositoryName);
-  if (!repo) {
+  // A confidential intake reads nothing about the repository until the
+  // author has signed in: the repository may be private, and before sign-in
+  // the caller is anyone.
+  const repo = confidential ? null : await fetchRepository(env.GITHUB_TOKEN, repositoryName);
+  if (!confidential && !repo) {
     return rejected(`${repositoryName} could not be read. Palomar accepts public repositories only.`);
   }
-  if (repo.private) {
+  if (repo?.private) {
     return rejected(
-      confidential
-        ? "Confidential submission of a private repository is not available yet."
-        : "Palomar records point at source anyone can inspect, so submissions must be public.",
+      "Palomar records point at source anyone can inspect, so submissions must be public.",
     );
   }
-  if (!(await resolveCommit(env.SUBMISSION_TOKEN, repositoryName, commit))) {
+  if (!confidential && !(await resolveCommit(env.SUBMISSION_TOKEN, repositoryName, commit))) {
     return rejected(`${commit} was not found in ${repositoryName}.`);
   }
   if (registryCorrection) {
@@ -861,7 +886,7 @@ async function beginSubmission(request, env, { machine = false } = {}) {
       ? registryCorrection ? "maintainer-gist" : "tag-and-gist"
       : "oauth",
     challenge,
-    repository_id: repo.id ?? null,
+    repository_id: repo?.id ?? null,
     attempts: 0,
     repository: repositoryName,
     commit,
@@ -1389,6 +1414,9 @@ async function admitSubmission(
     proof,
     replaceId = null,
     preserveOnRefusal = false,
+    // Only "submit publicly" names the id: it derives one from the
+    // confidential id, so a second press finds the first one's submission.
+    fixedId = null,
   },
 ) {
   // Checked again at admission, against the proof's numeric principal: the
@@ -1432,9 +1460,38 @@ async function admitSubmission(
       console.error("admission-rate-reset", String(error?.stack ?? error));
     }
   }
-  const id = newSubmissionId();
+  const id = fixedId ?? newSubmissionId();
   const token = newAccessToken();
   const createdAtMs = Date.now();
+  // C2: a confidential submission's source is read once, now, before
+  // anything is admitted, so nothing runs on a tree the pilot refuses.
+  let sourceSha256 = null;
+  if (pending.visibility === "confidential") {
+    try {
+      sourceSha256 = await captureSource(env, {
+        id, repository: pending.repository, commit: pending.commit,
+        repositoryId: proof?.repository_id ?? null,
+      });
+    } catch (error) {
+      if (error instanceof SourceRefusal) {
+        return {
+          refused: true, retryable: false, status: 422,
+          title: "That commit cannot be submitted confidentially",
+          detail: [error.message],
+        };
+      }
+      if (error instanceof SourceUnavailable) {
+        console.error("confidential-source", id, error.message);
+        await discardSource(env, id).catch(() => {});
+        return {
+          refused: true, retryable: true, status: 503,
+          title: "Palomar could not read that repository just now",
+          detail: ["Start the submission again in a moment."],
+        };
+      }
+      throw error;
+    }
+  }
   const createdAt = new Date(createdAtMs).toISOString().replace(/\.\d+Z$/, "Z");
   const tokenSha256 = await tokenDigest(env, token);
   const principalIndexPath = proof?.principal?.id
@@ -1473,7 +1530,7 @@ async function admitSubmission(
           : {}),
       },
       registryCorrection: pending.registry_correction ?? null,
-      confidential: pending.visibility === "confidential",
+      confidential: sourceSha256 ? { sourceSha256 } : null,
     }),
     push_proof: proof,
     created_at: createdAt,
@@ -1626,6 +1683,11 @@ async function admitSubmission(
           result: { ...admission, retryable: preserveOnRefusal || admission.retryable },
         };
       }
+      if (fixedId && files[recordPath]?.sha !== null) {
+        return {
+          changes: [], message: "", result: { refused: false, existing: true, id },
+        };
+      }
       if (
         files[recordPath]?.sha !== null || files[tokenPath]?.sha !== null ||
         (repairPath && files[repairPath]?.sha !== null)
@@ -1694,7 +1756,11 @@ async function admitSubmission(
     }
     throw error;
   }
-  if (result.refused) return result;
+  if (result.refused) {
+    if (sourceSha256) await discardSource(env, id).catch(() => {});
+    return result;
+  }
+  if (result.existing) return result;
   if (earlyRepair) {
     await dispatchRepairer(env).catch(() => false);
     return { refused: false, id, token };
@@ -2064,7 +2130,31 @@ async function completeSubmission(request, env) {
     ]), 409));
   }
 
-  const viewer = await fetchRepository(granted.access_token, pending.value.repository);
+  const confidential = pending.value.visibility === "confidential";
+  // Who may make a confidential submission is decided before the Source App
+  // is asked anything about the repository.
+  if (confidential && !confidentialIntakeAllowed(env, principal)) {
+    if (!(await deleteState(env, pendingPath, pending.sha, "Discard a refused confidential intake"))) {
+      console.error("pending", `could not discard ${pendingPath}`);
+    }
+    return identified(html(
+      errorPage(env, CONFIDENTIAL_REFUSAL.title, spentSignInProblems(CONFIDENTIAL_REFUSAL.detail)),
+      403,
+      { "set-cookie": await intakeCookie(nonce, null, { clear: true }) },
+    ));
+  }
+  let viewer;
+  try {
+    viewer = confidential
+      ? await confidentialViewer(env, pending.value.repository, principal, granted.access_token)
+      : await fetchRepository(granted.access_token, pending.value.repository);
+  } catch (error) {
+    if (!(error instanceof SourceUnavailable)) throw error;
+    console.error("confidential-viewer", error.message);
+    return identified(html(errorPage(env, "Palomar could not read that repository just now", [
+      "Nothing was consumed. Try again in a moment.",
+    ]), 503));
+  }
 
   const requestedTechnicalTest =
     pending.value.authorization_relationship === "technical-test";
@@ -2394,6 +2484,113 @@ async function typicalReviewSeconds(env) {
 }
 
 /**
+ * C8 withdraw for a confidential submission: tombstone first, then C5
+ * `withdrawn`, then the usual scrubbed State withdrawal, then the cleanup
+ * job. Every step is idempotent, so pressing again after a failure finishes
+ * the job, and the daily pass re-dispatches any cleanup still pending.
+ * Unlike a public withdrawal it is allowed in every status, because it is how
+ * the author has Palomar delete what it holds.
+ */
+async function withdrawConfidentialSubmission(env, entry) {
+  const record = entry.record;
+  try {
+    await withdrawConfidential(env, record.id);
+  } catch (error) {
+    console.error("confidential-withdraw", record.id, String(error?.message ?? error));
+    return json({ error: "the withdrawal could not be completed just now; press withdraw again" }, 503);
+  }
+  if (record.status !== "withdrawn") {
+    if (record.status === "verifying") {
+      try {
+        await assertInflightContract(env);
+      } catch (error) {
+        if (!(error instanceof StateContractError)) throw error;
+        reportDurableContract(error);
+        return json({ error: "submission decisions are temporarily unavailable" }, 503);
+      }
+    }
+    const next = withdrawnRecord(record, { at: recordedAt(), note: "Withdrawn by the submitter" });
+    await writeState(env, statePath(next.id, "state.json"), next, `Withdraw ${next.id}`, entry.sha);
+    if (record.status === "verifying") await release(env, next.id);
+  }
+  await dispatchCleanup(env, record.id).catch(() => false);
+  return json({ ok: true });
+}
+
+/**
+ * C7: make an ordinary public submission of a held confidential one.
+ *
+ * Checked at click time: the confidential record is held, the repository is
+ * now public and the same repository, the commit is on its default branch,
+ * and the author who proved write access at intake administers it now. The
+ * public submission's id is derived from the confidential id, so a second
+ * press returns the same submission. Nothing here writes the lifecycle.
+ */
+async function submitPublicly(env, entry, url) {
+  const record = entry.record;
+  if (record.visibility !== "confidential") {
+    return json({ error: "only a confidential submission can be submitted publicly" }, 409);
+  }
+  const principal = record.push_proof?.principal;
+  if (!Number.isSafeInteger(principal?.id) || typeof principal.login !== "string") {
+    return json({ error: "this submission no longer records who made it" }, 409);
+  }
+  const lifecycle = (await readLifecycle(env, record.id))?.value ?? null;
+  let refusal;
+  try {
+    refusal = await submitPubliclyRefusal(env, lifecycle, principal);
+  } catch (error) {
+    if (!(error instanceof SourceUnavailable)) throw error;
+    console.error("submit-publicly", record.id, error.message);
+    return json({ error: "Palomar could not check the repository just now; try again" }, 503);
+  }
+  if (refusal) return json({ error: refusal }, 409);
+
+  const publicId = await publicSubmissionId(env, record.id);
+  const origin = new URL(url).origin;
+  const answer = (token) => json({ id: publicId, status_url: token ? `${origin}/s#${token}` : null });
+  if ((await readState(env, statePath(publicId, "state.json"))).value) {
+    return answer(await issueRecoveryLink(env, principal, publicId));
+  }
+  // An ordinary pending intake, consumed at once by the ordinary admission.
+  // It is never handed to a browser, so it carries no binding.
+  const pendingPath = `pending/${await digest(newAccessToken())}.json`;
+  await writeState(env, pendingPath, {
+    schema_version: 2,
+    method: "oauth",
+    challenge: newAccessToken(),
+    repository_id: lifecycle.repository_id,
+    attempts: 0,
+    repository: lifecycle.repository,
+    commit: lifecycle.commit,
+    existing_id: null,
+    context: null,
+    requested_paths: record.requested_paths ?? {},
+    authorization_relationship: record.authorization?.relationship ?? "maintainer",
+    authorization_evidence: record.authorization?.evidence ?? null,
+    created_at: recordedAt(),
+  }, "Begin submission");
+  const pending = await readState(env, pendingPath);
+  const admitted = await admitSubmission(env, {
+    pendingPath,
+    pendingSha: pending.sha,
+    pending: pending.value,
+    owner: lifecycle.repository.split("/")[0],
+    submitter: principal.login,
+    proof: { ...record.push_proof, verified_at: recordedAt() },
+    fixedId: publicId,
+  });
+  if (admitted.refused) {
+    return json({ error: admitted.title, detail: admitted.detail }, admitted.status ?? 409);
+  }
+  if (admitted.existing) {
+    await deleteState(env, pendingPath, pending.sha, "Discard a duplicate public submission").catch(() => false);
+    return answer(await issueRecoveryLink(env, principal, publicId));
+  }
+  return answer(admitted.token);
+}
+
+/**
  * The run as the token holder may see it.
  *
  * A public run is returned exactly as recorded. A private run's URL names the
@@ -2539,6 +2736,12 @@ export default {
   async scheduled(event, env) {
     if (env.PALOMAR_WRITES_PAUSED === "true") {
       console.log("maintenance", "scheduled writes paused");
+      return;
+    }
+    if (event.cron === DAILY_CRON) {
+      // Confidential withdrawal re-dispatch and the hold backstop (part 11.5).
+      if (!env.CONFIDENTIAL_SOURCE) return;
+      await dailyConfidentialPass(await withInstallationTokens(env), SUBMIT_ORIGIN);
       return;
     }
     await scheduledMaintenance(await withInstallationTokens(env));
@@ -2761,6 +2964,9 @@ export default {
       if (request.method === "POST" && url.pathname === "/withdraw") {
         const entry = await caller(env, request, { mutating: true });
         if (entry instanceof Response) return entry;
+        if (entry.record.visibility === "confidential") {
+          return withdrawConfidentialSubmission(env, entry);
+        }
         if (CLOSED.has(entry.record.status)) {
           return json({ error: `already ${entry.record.status}` }, 409);
         }
@@ -2788,6 +2994,27 @@ export default {
                          `Withdraw ${next.id}`, entry.sha);
         if (entry.record.status === "verifying") await release(env, next.id);
         return json({ ok: true });
+      }
+      if (request.method === "GET" && url.pathname.startsWith("/api/cert/")) {
+        // Public, and never cached: `withdrawn` must be seen at once.
+        const status = await certificateStatus(env, url.pathname.slice("/api/cert/".length));
+        return json({ status });
+      }
+      if (request.method === "GET" && url.pathname === "/api/certificates") {
+        const entry = await caller(env, request, { mutating: true });
+        if (entry instanceof Response) return entry;
+        if (entry.record.visibility !== "confidential") {
+          return json({ error: "only a confidential submission has certificates" }, 409);
+        }
+        await promoteHeld(env, entry.record.id, SUBMIT_ORIGIN, { record: entry.record });
+        const pair = await certificatePair(env, entry.record.id);
+        if (!pair) return json({ error: "certificates are made once the submission is held" }, 409);
+        return json(pair);
+      }
+      if (request.method === "POST" && url.pathname === "/api/submit-publicly") {
+        const entry = await caller(env, request, { mutating: true });
+        if (entry instanceof Response) return entry;
+        return submitPublicly(env, entry, url);
       }
       if (request.method === "GET" && url.pathname === "/api/review") {
         // The submitter sees the outcome and useful prose, but not the internal
@@ -3023,6 +3250,23 @@ export default {
           return json({ error: "submission status is temporarily unavailable" }, 503);
         }
         const confidential = record.visibility === "confidential";
+        // The author's own polling is what normally holds a passed review.
+        let lifecycle = null;
+        // The reviewer keeps a confidential record's failure prose and error
+        // strings in R2, not State; only this token holder sees them.
+        let text = { failure: null, errors: null };
+        if (confidential) {
+          text = await confidentialText(env, record).catch((error) => {
+            console.error("confidential-text", record.id, String(error?.message ?? error));
+            return text;
+          });
+          try {
+            lifecycle = await promoteHeld(env, record.id, SUBMIT_ORIGIN, { record });
+          } catch (error) {
+            console.error("confidential-hold", record.id, String(error?.message ?? error));
+            lifecycle = (await readLifecycle(env, record.id))?.value ?? null;
+          }
+        }
         const failureDigest = record.failure
           ? await digest(JSON.stringify(record.failure))
           : null;
@@ -3041,13 +3285,33 @@ export default {
             Object.entries(record.requested_paths ?? {}).filter(([, value]) => value),
           ),
           created_at: record.created_at,
-          ...(confidential ? { visibility: "confidential" } : {}),
+          ...(confidential
+            ? {
+                visibility: "confidential",
+                // Missing reads as withdrawn, as everywhere else.
+                confidential: {
+                  state: lifecycle?.state ?? "withdrawn",
+                  held_at: lifecycle?.held_at ?? null,
+                },
+              }
+            : {}),
           preflight_run: submitterRun(record.preflight_run, confidential),
           run: submitterRun(record.run, confidential),
-          failure: publicFailure(record),
+          failure: publicFailure(text.failure ? { ...record, failure: text.failure } : record),
           renderability_error: typeof record.renderability_error === "string"
             ? record.renderability_error.slice(0, 500)
-            : null,
+            : typeof text.errors?.renderability_error === "string"
+              ? text.errors.renderability_error.slice(0, 500)
+              : null,
+          ...(text.errors
+            ? {
+                confidential_errors: Object.fromEntries(
+                  ["review_error", "registration_error", "renderability_error", "registration_failure_detail"]
+                    .filter((name) => typeof text.errors[name] === "string")
+                    .map((name) => [name, text.errors[name].slice(0, 2000)]),
+                ),
+              }
+            : {}),
           failure_digest: failureDigest,
           repair: record.repair
             ? submitterRepair(repairEntry?.value) ?? {

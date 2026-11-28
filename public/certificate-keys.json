@@ -1,0 +1,12 @@
+{
+  "schema": "palomar-certificate-keys/1",
+  "keys": [
+    {
+      "key_id": "006e2cc51fc4572f",
+      "alg": "Ed25519",
+      "public_key": "pHf9qMx90tc3rv1YBWNaL5uKMWWRk43wr8fMwPTx3mo=",
+      "not_before": "2026-11-28T02:25:47Z",
+      "revoked_at": null
+    }
+  ]
+}
