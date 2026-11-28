@@ -48,7 +48,9 @@ import { readTarGz } from "./tar.js";
 export { SourceRefusal, SourceUnavailable };
 
 const API = "https://api.github.com";
-export const SOURCE_URL_SECONDS = 60 * 60;
+// 24 hours rather than the contract's one, because Namespace runs can queue
+// that long before they download it.
+export const SOURCE_URL_SECONDS = 24 * 60 * 60;
 // SigV4's maximum, so it outlives the longest job profile (1,440 minutes) plus
 // queueing; it reveals only whether a tombstone exists.
 export const TOMBSTONE_URL_SECONDS = 7 * 24 * 60 * 60;

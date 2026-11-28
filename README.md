@@ -195,7 +195,7 @@ and never appear in the repository:
 | `STATE_APP_ID`, `STATE_APP_PRIVATE_KEY` | the **Palomar State Writer** App, whose installation token replaces `GITHUB_TOKEN` | installed on `PalomarSubmissionState` only: Contents and Actions read and write, Metadata read |
 | `SUBMISSION_APP_ID`, `SUBMISSION_APP_PRIVATE_KEY` | the **Palomar Verification Dispatcher** App, whose installation token replaces `SUBMISSION_TOKEN` | installed on `PalomarSubmission` only: Actions read and write, Metadata read |
 | `SOURCE_APP_ID`, `SOURCE_APP_PRIVATE_KEY` | the **Palomar Source** App, from which one read-only token for one repository is minted per confidential intake and dropped, never cached | installed by authors on their own repositories: Contents and Metadata read |
-| `CONFIDENTIAL_R2_ACCESS_KEY_ID`, `CONFIDENTIAL_R2_SECRET_ACCESS_KEY` | an R2 API token that only signs one-hour presigned reads of confidential tarballs and tombstones for private runs | `palomar-confidential-source`, Object Read only |
+| `CONFIDENTIAL_R2_ACCESS_KEY_ID`, `CONFIDENTIAL_R2_SECRET_ACCESS_KEY` | an R2 API token that only signs 24-hour presigned reads of confidential tarballs and tombstones for private runs | `palomar-confidential-source`, Object Read only |
 | `CERTIFICATE_SIGNING_KEY` | the Ed25519 key (PKCS#8) that signs confidential certificates; its public half is in `public/certificate-keys.json` and PalomarPolicy `keys/certificates.json` | — |
 | `TOKEN_PEPPER` | so a leaked state repository does not yield live links, and to authenticate short-lived GitHub identity cookies under a domain-separated HMAC key | — |
 
